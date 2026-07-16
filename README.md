@@ -83,4 +83,6 @@ AgentDock 的供应商与 MCP 管理工作流参考了开源项目 [cc-switch](h
 
 ## License
 
-[MIT](LICENSE) Copyright (c) 2026 Cailiang.
+AgentDock 自有源码与资产采用 [MIT](LICENSE) 许可证，Copyright (c) 2026 Cailiang。
+
+第三方客户端名称、Logo 和商标不包含在 AgentDock 的 MIT 授权中，仅用于说明兼容性，权利归各自所有者。详见 [`ASSET_NOTICES.md`](ASSET_NOTICES.md)。

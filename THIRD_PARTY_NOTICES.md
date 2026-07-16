@@ -1,5 +1,7 @@
 # Third-Party Notices
 
+Third-party client names and logos are covered separately by [ASSET_NOTICES.md](ASSET_NOTICES.md).
+
 AgentDock's provider and MCP management workflows were informed by [cc-switch](https://github.com/farion1231/cc-switch). cc-switch is distributed under the MIT License:
 
 ```text
