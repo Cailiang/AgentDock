@@ -756,6 +756,7 @@
     import "@fontsource-variable/geist";
     import { invoke } from "@tauri-apps/api/core";
     import { createIcons, icons } from "lucide";
+    import { EXTENDED_UI_COPY } from "./i18n.js";
 
     const APP_META = {
       "claude-code": { name: "Claude Code", short: "CC", logo: "/client-logos/claude-code.svg", autoInstall: true },
@@ -823,6 +824,7 @@
         "source.settingsCategory": "Kategorien", "source.settingsHint": "Allgemeine Einstellungen werden lokal automatisch gespeichert", "source.general": "Allgemein", "status.connected": "Lokaler Dienst verbunden", "status.deviceConnected": "Verbunden", "terminal.system": "Systemterminal", "search.filter": "Aktuelle Liste filtern", "search.logs": "Diagnose durchsuchen", "search.mcp": "Server durchsuchen"
       }
     };
+    for (const [locale, copy] of Object.entries(EXTENDED_UI_COPY)) UI_COPY[locale] = { ...(UI_COPY[locale] || {}), ...copy };
 
     const COMMON_PRESETS = [
       { id: "custom", name: "自定义配置", short: "CU", type: "custom", baseUrl: "", model: "", website: "", format: "auto", category: "custom" }
@@ -951,7 +953,7 @@
 
     const mock = {
       status: {
-        appVersion: "0.1.11", platform: "browser-preview", dataDir: "/AgentDock/data", configDir: "/AgentDock/config", managedRuntimeReady: true,
+        appVersion: "0.1.12", platform: "browser-preview", dataDir: "/AgentDock/data", configDir: "/AgentDock/config", managedRuntimeReady: true,
         clients: APP_ORDER.map((id) => { const installed = ["codex", "claude-desktop"].includes(id); return { id, name: APP_META[id].name, installed, version: installed ? id === "codex" ? "0.91.0" : "detected" : null, executable: installed ? `/Applications/${id}` : null, configPath: installed ? `/AgentDock/${id}/config` : null, managedByAgentdock: id === "codex" }; })
       },
       settings: { language: "zh-CN", theme: "system", launchOnStartup: false, silentStartup: false, minimizeToTrayOnClose: false, preferredTerminal: "terminal", visibleClients: [...APP_ORDER], clientOrder: [...APP_ORDER], skillStorageLocation: "agentdock", skillSyncMethod: "copy" },
@@ -967,13 +969,14 @@
     if (!state.desktop) document.body.classList.add("preview-mode");
 
     const escapeHtml = (value) => String(value ?? "").replaceAll("&", "&amp;").replaceAll("<", "&lt;").replaceAll(">", "&gt;").replaceAll('"', "&quot;").replaceAll("'", "&#039;");
-    const refreshIcons = () => createIcons({ icons, attrs: { "stroke-width": 1.8 } });
-    const nowLabel = () => new Intl.DateTimeFormat("zh-CN", { hour: "2-digit", minute: "2-digit", second: "2-digit" }).format(new Date());
+    const refreshIcons = () => { localizeLiteralUi(); createIcons({ icons, attrs: { "stroke-width": 1.8 } }); };
+    const activeLocale = () => state.settings?.language || document.documentElement.lang || "zh-CN";
+    const nowLabel = () => new Intl.DateTimeFormat(activeLocale(), { hour: "2-digit", minute: "2-digit", second: "2-digit" }).format(new Date());
     const errorText = (error) => typeof error === "string" ? error : error?.message || String(error);
     const clientMeta = (id) => APP_META[id] || { name: id, short: id.slice(0, 2).toUpperCase(), logo: "/client-logos/codex.svg", autoInstall: false };
     const selectedClient = () => state.status?.clients.find((client) => client.id === state.activeClient);
     const clientLogo = (id, extra = "") => { const meta = clientMeta(id); return `<img class="client-logo logo-${escapeHtml(id)} ${extra}" src="${meta.logo}" alt="${escapeHtml(meta.name)} Logo" />`; };
-    const formatNumber = (value) => new Intl.NumberFormat("zh-CN", { notation: Number(value) >= 100000 ? "compact" : "standard", maximumFractionDigits: 1 }).format(Number(value) || 0);
+    const formatNumber = (value) => new Intl.NumberFormat(activeLocale(), { notation: Number(value) >= 100000 ? "compact" : "standard", maximumFractionDigits: 1 }).format(Number(value) || 0);
     const formatCost = (value) => `$${Number(value || 0).toLocaleString("en-US", { minimumFractionDigits: 2, maximumFractionDigits: Number(value) < 1 ? 4 : 2 })}`;
 
     function addLog(level, message) { state.logs.push({ level, message: String(message), time: nowLabel() }); if (state.logs.length > 300) state.logs.shift(); renderLogs(); if (state.activeView === "logs" && document.getElementById("source-list")) { renderSourceSidebar(); refreshIcons(); } }
@@ -1050,7 +1053,7 @@
       if (command === "run_diagnostics") return {
         generatedAt: new Date().toISOString(), score: 90, passed: 6, warnings: 2, failed: 0,
         checks: [
-          { id: "system-platform", category: "系统", status: "pass", title: "桌面运行环境", detail: "AgentDock 0.1.11 · macOS arm64", action: "" },
+          { id: "system-platform", category: "系统", status: "pass", title: "桌面运行环境", detail: "AgentDock 0.1.12 · macOS arm64", action: "" },
           { id: "system-data-dir", category: "系统", status: "pass", title: "数据目录可写", detail: "/AgentDock/data", action: "" },
           { id: "client-claude", category: "客户端", status: "pass", title: "Claude Desktop 可正常启动", detail: "1.0.2 · 系统安装", action: "" },
           { id: "client-codex", category: "客户端", status: "warning", title: "Codex 尚未安装", detail: "这是推荐客户端，可由 AgentDock 自动安装", action: "前往客户端页面点击一键安装" },
@@ -1111,6 +1114,36 @@
       return UI_COPY[state.settings?.language]?.[key] || fallback;
     }
 
+    function trf(key, fallback, values = {}) {
+      return tr(key, fallback).replace(/\{([A-Za-z0-9_]+)\}/g, (match, name) => values[name] ?? match);
+    }
+
+    const literalTextSources = new WeakMap();
+    const literalAttributeSources = new WeakMap();
+    const userContentSelector = ".source-copy, .software-identity, .software-description, .provider-copy, .row-copy, .mcp-copy, .diagnostic-row-copy, .mcp-tool-item, .mcp-tool-title-line, .mcp-tool-description, .mcp-param-copy, #provider-form-heading";
+    function localizeLiteralUi(root = document.body) {
+      if (!root) return;
+      const walker = document.createTreeWalker(root, NodeFilter.SHOW_TEXT);
+      for (let node = walker.nextNode(); node; node = walker.nextNode()) {
+        if (node.parentElement?.closest(userContentSelector)) continue;
+        const source = literalTextSources.get(node) ?? node.nodeValue;
+        literalTextSources.set(node, source);
+        const value = source.trim(); if (!value) continue;
+        const translated = tr(value, value);
+        if (translated !== value || node.nodeValue === source) node.nodeValue = source.replace(value, translated);
+      }
+      for (const element of root.querySelectorAll("[placeholder], [title], [aria-label]")) {
+        if (element.closest(userContentSelector)) continue;
+        const sources = literalAttributeSources.get(element) || {};
+        for (const attribute of ["placeholder", "title", "aria-label"]) {
+          if (!element.hasAttribute(attribute)) continue;
+          const current = element.getAttribute(attribute); const source = sources[attribute] ?? current; const translated = tr(source, source);
+          sources[attribute] = source; if (translated !== source || current === source) element.setAttribute(attribute, translated);
+        }
+        literalAttributeSources.set(element, sources);
+      }
+    }
+
     function localizedViewMeta(name) {
       const [title, subtitle] = VIEW_META[name];
       return [tr(`nav.${name}`, title), tr(`view.${name}.subtitle`, subtitle)];
@@ -1160,9 +1193,9 @@
 
     async function withBusy(button, task, operationKey = null) {
       const key = operationKey || (button ? `${button.dataset.action || "action"}:${button.dataset.id || button.dataset.field || "global"}` : Symbol("operation"));
-      if (state.inFlightOperations.has(key)) { notify("该操作正在进行中"); return; }
+      if (state.inFlightOperations.has(key)) { notify(tr("该操作正在进行中", "该操作正在进行中")); return; }
       state.inFlightOperations.add(key); const original = button?.innerHTML;
-      if (button) { button.disabled = true; button.innerHTML = `<i data-lucide="loader-circle"></i><span>处理中</span>`; refreshIcons(); }
+      if (button) { button.disabled = true; button.innerHTML = `<i data-lucide="loader-circle"></i><span>${tr("处理中", "处理中")}</span>`; refreshIcons(); }
       try { await task(); }
       catch (error) { const message = errorText(error); addLog("error", message); notify(message, "error"); showProviderError(message); }
       finally { state.inFlightOperations.delete(key); if (button && document.body.contains(button)) { button.disabled = false; button.innerHTML = original; refreshIcons(); } }
@@ -1234,40 +1267,40 @@
       const title = document.getElementById("source-title"); const summary = document.getElementById("source-summary"); const list = document.getElementById("source-list"); const action = document.getElementById("source-action"); const search = document.getElementById("command-search"); const searchShell = search.closest(".command-search");
       const installedClients = state.status?.clients?.filter((client) => client.installed).length || 0;
       const sourceAction = {
-        clients: ["客户端", `${installedClients}/${state.status?.clients?.length || APP_ORDER.length} 已安装`, "refresh-cw", "重新检测客户端"],
-        software: ["推荐软件", `${state.softwareCatalog.length} 个工具`, "refresh-cw", "检查软件更新"],
-        skills: ["Skills", `${state.skills.filter((skill) => skill.installed).length} 个已安装`, "refresh-cw", "同步 Skills"],
-        mcp: ["MCP 服务器", `${state.mcpServers.filter((server) => server.enabled).length} 个已启用`, "plus", "添加 MCP 服务器"],
-        stats: ["统计视图", `近 ${state.usageDays} 天`, "refresh-cw", "刷新统计"],
-        logs: ["诊断", state.diagnostics ? `${state.diagnostics.checks.length} 项检查` : "尚未检测", "scan-heart", "重新运行诊断"],
-        settings: [tr("nav.settings", "设置"), tr("source.general", "通用"), "refresh-cw", tr("source.settingsCategory", "重新读取设置")]
+        clients: [tr("nav.clients", "客户端"), trf("count.installedRatio", "已安装 {installed}/{total}", { installed: installedClients, total: state.status?.clients?.length || APP_ORDER.length }), "refresh-cw", tr("重新检测客户端", "重新检测客户端")],
+        software: [tr("page.software.title", "推荐软件"), trf("count.tools", "{count} 个工具", { count: state.softwareCatalog.length }), "refresh-cw", tr("检查软件更新", "检查软件更新")],
+        skills: ["Skills", trf("count.installed", "{count} 个已安装", { count: state.skills.filter((skill) => skill.installed).length }), "refresh-cw", tr("同步 Skills", "同步 Skills")],
+        mcp: [tr("page.mcp.title", "MCP 服务器"), trf("count.enabled", "{count} 个已启用", { count: state.mcpServers.filter((server) => server.enabled).length }), "plus", tr("添加 MCP 服务器", "添加 MCP 服务器")],
+        stats: [tr("nav.stats", "统计"), trf("range.days", "近 {days} 天", { days: state.usageDays }), "refresh-cw", tr("刷新统计", "刷新统计")],
+        logs: [tr("nav.logs", "诊断"), state.diagnostics ? trf("count.checks", "{count} 项检查", { count: state.diagnostics.checks.length }) : tr("尚未检测", "尚未检测"), "scan-heart", tr("重新运行诊断", "重新运行诊断")],
+        settings: [tr("nav.settings", "设置"), tr("source.general", "通用"), "refresh-cw", tr("重新读取设置", "重新读取设置")]
       }[state.activeView];
       title.textContent = sourceAction[0]; summary.textContent = sourceAction[1]; action.title = sourceAction[3]; action.setAttribute("aria-label", sourceAction[3]); action.innerHTML = `<i data-lucide="${sourceAction[2]}"></i>`;
       const searchEnabled = !["stats", "settings"].includes(state.activeView); search.disabled = !searchEnabled; searchShell.classList.toggle("disabled", !searchEnabled); search.placeholder = state.activeView === "logs" ? tr("search.logs", "搜索诊断项") : state.activeView === "mcp" ? tr("search.mcp", "搜索服务器") : tr("search.filter", "筛选当前列表"); search.setAttribute("aria-label", search.placeholder);
       if (state.activeView === "clients") {
         const clients = visibleClientIds().map((id) => ({ id, meta: clientMeta(id), client: state.status?.clients.find((item) => item.id === id), catalog: state.softwareCatalog.find((item) => item.clientId === id) })).filter(({ id, meta }) => contextMatches(id, meta.name));
         const rows = clients.map(({ id, meta, client, catalog }) => {
-          const installed = Boolean(client?.installed); const update = Boolean(catalog?.updateAvailable); const status = installed ? `${escapeHtml(client.version || "已安装")}${update ? " · 可更新" : ""}` : meta.autoInstall ? "可一键安装" : "未检测到";
+          const installed = Boolean(client?.installed); const update = Boolean(catalog?.updateAvailable); const status = installed ? `${escapeHtml(client.version || tr("已安装", "已安装"))}${update ? tr("status.updateSuffix", " · 可更新") : ""}` : meta.autoInstall ? tr("可一键安装", "可一键安装") : tr("未检测到", "未检测到");
           return `<button class="source-item ${state.activeClient === id ? "active" : ""}" data-action="select-client" data-id="${id}" aria-pressed="${state.activeClient === id}">${clientLogo(id)}<span class="source-copy"><strong>${escapeHtml(meta.name)}</strong><small>${status}</small></span><i class="source-state ${update ? "warn" : installed ? "ok" : ""}"></i></button>`;
         }).join("");
-        list.innerHTML = `<div class="source-group-label"><span>支持的客户端</span><b>${clients.length}</b></div>${rows || `<div class="source-empty"><i data-lucide="search-x"></i>没有匹配的客户端</div>`}`;
+        list.innerHTML = `<div class="source-group-label"><span>${tr("支持的客户端", "支持的客户端")}</span><b>${clients.length}</b></div>${rows || `<div class="source-empty"><i data-lucide="search-x"></i>${tr("没有匹配的客户端", "没有匹配的客户端")}</div>`}`;
       } else if (state.activeView === "software") {
         const items = state.softwareCatalog.filter((item) => contextMatches(item.name, item.description, item.publisher, item.category)); const updates = state.softwareCatalog.filter((item) => item.updateAvailable).length;
-        list.innerHTML = `<div class="source-group-label">筛选</div>${sourceFilterButton("all", "全部软件", "layout-list", state.softwareCatalog.length, state.softwareFilter === "all", "set-software-filter")}${sourceFilterButton("installed", "已安装", "circle-check", state.softwareCatalog.filter((item) => item.installed).length, state.softwareFilter === "installed", "set-software-filter")}${sourceFilterButton("updates", "可更新", "arrow-up-circle", updates, state.softwareFilter === "updates", "set-software-filter")}${sourceFilterButton("recommended", "推荐", "sparkles", state.softwareCatalog.filter((item) => item.recommended).length, state.softwareFilter === "recommended", "set-software-filter")}<div class="source-rule"></div><div class="source-group-label"><span>软件目录</span><b>${items.length}</b></div>${items.map((item) => `<button class="source-item" data-action="focus-software" data-id="${escapeHtml(item.id)}">${clientLogo(item.clientId)}<span class="source-copy"><strong>${escapeHtml(item.name)}</strong><small>${item.updateAvailable ? "可更新" : item.installed ? `已安装 ${escapeHtml(item.currentVersion || "")}` : "未安装"}</small></span><i class="source-state ${item.updateAvailable ? "warn" : item.installed ? "ok" : ""}"></i></button>`).join("")}`;
+        list.innerHTML = `<div class="source-group-label">${tr("筛选", "筛选")}</div>${sourceFilterButton("all", tr("全部软件", "全部软件"), "layout-list", state.softwareCatalog.length, state.softwareFilter === "all", "set-software-filter")}${sourceFilterButton("installed", tr("已安装", "已安装"), "circle-check", state.softwareCatalog.filter((item) => item.installed).length, state.softwareFilter === "installed", "set-software-filter")}${sourceFilterButton("updates", tr("可更新", "可更新"), "arrow-up-circle", updates, state.softwareFilter === "updates", "set-software-filter")}${sourceFilterButton("recommended", tr("推荐", "推荐"), "sparkles", state.softwareCatalog.filter((item) => item.recommended).length, state.softwareFilter === "recommended", "set-software-filter")}<div class="source-rule"></div><div class="source-group-label"><span>${tr("软件目录", "软件目录")}</span><b>${items.length}</b></div>${items.map((item) => `<button class="source-item" data-action="focus-software" data-id="${escapeHtml(item.id)}">${clientLogo(item.clientId)}<span class="source-copy"><strong>${escapeHtml(item.name)}</strong><small>${item.updateAvailable ? tr("可更新", "可更新") : item.installed ? trf("status.installedVersion", "已安装 {version}", { version: escapeHtml(item.currentVersion || "") }) : tr("未安装", "未安装")}</small></span><i class="source-state ${item.updateAvailable ? "warn" : item.installed ? "ok" : ""}"></i></button>`).join("")}`;
       } else if (state.activeView === "skills") {
         const items = state.skills.filter((skill) => contextMatches(skill.name, skill.description, skill.source));
-        list.innerHTML = `<div class="source-group-label">筛选</div>${sourceFilterButton("all", "全部 Skills", "layout-list", state.skills.length, state.skillFilter === "all", "set-skill-filter")}${sourceFilterButton("installed", "已安装", "circle-check", state.skills.filter((skill) => skill.installed).length, state.skillFilter === "installed", "set-skill-filter")}${sourceFilterButton("available", "可安装", "download", state.skills.filter((skill) => !skill.installed).length, state.skillFilter === "available", "set-skill-filter")}<div class="source-rule"></div><div class="source-group-label"><span>Skill 列表</span><b>${items.length}</b></div>${items.map((skill) => `<button class="source-item" data-action="focus-skill" data-id="${escapeHtml(skill.id)}"><span class="source-symbol"><i data-lucide="wand-sparkles"></i></span><span class="source-copy"><strong>${escapeHtml(skill.name)}</strong><small>${escapeHtml(skill.source)}</small></span><i class="source-state ${skill.installed ? "ok" : ""}"></i></button>`).join("")}`;
+        list.innerHTML = `<div class="source-group-label">${tr("筛选", "筛选")}</div>${sourceFilterButton("all", tr("全部 Skills", "全部 Skills"), "layout-list", state.skills.length, state.skillFilter === "all", "set-skill-filter")}${sourceFilterButton("installed", tr("已安装", "已安装"), "circle-check", state.skills.filter((skill) => skill.installed).length, state.skillFilter === "installed", "set-skill-filter")}${sourceFilterButton("available", tr("可安装", "可安装"), "download", state.skills.filter((skill) => !skill.installed).length, state.skillFilter === "available", "set-skill-filter")}<div class="source-rule"></div><div class="source-group-label"><span>${tr("Skill 列表", "Skill 列表")}</span><b>${items.length}</b></div>${items.map((skill) => `<button class="source-item" data-action="focus-skill" data-id="${escapeHtml(skill.id)}"><span class="source-symbol"><i data-lucide="wand-sparkles"></i></span><span class="source-copy"><strong>${escapeHtml(skill.name)}</strong><small>${escapeHtml(skill.source)}</small></span><i class="source-state ${skill.installed ? "ok" : ""}"></i></button>`).join("")}`;
       } else if (state.activeView === "mcp") {
         const servers = state.mcpServers.filter((server) => contextMatches(server.name, server.id, server.description, server.tags?.join(" ")));
-        const rows = servers.map((server) => `<button class="source-item ${state.inspectingMcpId === server.id ? "active" : ""}" data-action="inspect-mcp" data-id="${escapeHtml(server.id)}"><span class="source-symbol"><i data-lucide="blocks"></i></span><span class="source-copy"><strong>${escapeHtml(server.name || server.id)}</strong><small>${escapeHtml(server.description || server.transport?.toUpperCase() || "MCP")}</small></span><b class="source-count">${server.apps?.length || 0}</b></button>`).join("");
-        list.innerHTML = `<div class="source-group-label"><span>已添加</span><b>${servers.length}</b></div>${rows || `<div class="source-empty"><i data-lucide="blocks"></i>还没有 MCP 服务器</div>`}`;
+        const rows = servers.map((server) => { const description = server.id === "filesystem" ? tr(server.description, server.description) : server.description; return `<button class="source-item ${state.inspectingMcpId === server.id ? "active" : ""}" data-action="inspect-mcp" data-id="${escapeHtml(server.id)}"><span class="source-symbol"><i data-lucide="blocks"></i></span><span class="source-copy"><strong>${escapeHtml(server.name || server.id)}</strong><small>${escapeHtml(description || server.transport?.toUpperCase() || "MCP")}</small></span><b class="source-count">${server.apps?.length || 0}</b></button>`; }).join("");
+        list.innerHTML = `<div class="source-group-label"><span>${tr("已添加", "已添加")}</span><b>${servers.length}</b></div>${rows || `<div class="source-empty"><i data-lucide="blocks"></i>${tr("还没有 MCP 服务器", "还没有 MCP 服务器")}</div>`}`;
       } else if (state.activeView === "stats") {
-        list.innerHTML = `<div class="source-group-label">时间范围</div>${[7, 30, 90].map((days) => sourceFilterButton(String(days), `近 ${days} 天`, days === 7 ? "calendar-days" : days === 30 ? "calendar-range" : "calendar", undefined, state.usageDays === days, "set-stats-days")).join("")}<div class="source-rule"></div><div class="source-group-label">分组方式</div>${sourceFilterButton("client", "按客户端", "monitor", undefined, state.breakdown === "client", "set-breakdown")}${sourceFilterButton("provider", "按供应商", "network", undefined, state.breakdown === "provider", "set-breakdown")}${sourceFilterButton("model", "按模型", "box", undefined, state.breakdown === "model", "set-breakdown")}`;
+        list.innerHTML = `<div class="source-group-label">${tr("时间范围", "时间范围")}</div>${[7, 30, 90].map((days) => sourceFilterButton(String(days), trf("range.days", "近 {days} 天", { days }), days === 7 ? "calendar-days" : days === 30 ? "calendar-range" : "calendar", undefined, state.usageDays === days, "set-stats-days")).join("")}<div class="source-rule"></div><div class="source-group-label">${tr("分组方式", "分组方式")}</div>${sourceFilterButton("client", tr("按客户端", "按客户端"), "monitor", undefined, state.breakdown === "client", "set-breakdown")}${sourceFilterButton("provider", tr("按供应商", "按供应商"), "network", undefined, state.breakdown === "provider", "set-breakdown")}${sourceFilterButton("model", tr("按模型", "按模型"), "box", undefined, state.breakdown === "model", "set-breakdown")}`;
       } else if (state.activeView === "settings") {
         list.innerHTML = `<div class="source-group-label">${tr("source.settingsCategory", "设置分类")}</div><button class="source-filter active" aria-current="page"><i data-lucide="sliders-horizontal"></i><span>${tr("source.general", "通用")}</span></button><div class="source-rule"></div><div class="source-empty"><i data-lucide="cloud-check"></i>${tr("source.settingsHint", "通用设置会自动保存到本机")}</div>`;
       } else {
         const checks = state.diagnostics?.checks || []; const counts = Object.fromEntries(["pass", "warning", "error"].map((status) => [status, checks.filter((item) => item.status === status).length]));
-        list.innerHTML = `<div class="source-group-label">检查状态</div>${sourceFilterButton("all", "全部项目", "list-checks", checks.length, state.diagnosticFilter === "all", "set-diagnostic-filter")}${sourceFilterButton("pass", "通过", "circle-check", counts.pass, state.diagnosticFilter === "pass", "set-diagnostic-filter")}${sourceFilterButton("warning", "警告", "triangle-alert", counts.warning, state.diagnosticFilter === "warning", "set-diagnostic-filter")}${sourceFilterButton("error", "错误", "circle-x", counts.error, state.diagnosticFilter === "error", "set-diagnostic-filter")}<div class="source-rule"></div><div class="source-empty"><i data-lucide="shield-check"></i>诊断报告不包含 API Key、MCP 环境变量值或请求头内容</div>`;
+        list.innerHTML = `<div class="source-group-label">${tr("检查状态", "检查状态")}</div>${sourceFilterButton("all", tr("全部项目", "全部项目"), "list-checks", checks.length, state.diagnosticFilter === "all", "set-diagnostic-filter")}${sourceFilterButton("pass", tr("通过", "通过"), "circle-check", counts.pass, state.diagnosticFilter === "pass", "set-diagnostic-filter")}${sourceFilterButton("warning", tr("警告", "警告"), "triangle-alert", counts.warning, state.diagnosticFilter === "warning", "set-diagnostic-filter")}${sourceFilterButton("error", tr("错误", "错误"), "circle-x", counts.error, state.diagnosticFilter === "error", "set-diagnostic-filter")}<div class="source-rule"></div><div class="source-empty"><i data-lucide="shield-check"></i>${tr("诊断报告不包含 API Key、MCP 环境变量值或请求头内容", "诊断报告不包含 API Key、MCP 环境变量值或请求头内容")}</div>`;
       }
     }
 
@@ -1286,7 +1319,7 @@
       document.getElementById("nav-mcp-count").textContent = state.mcpServers.filter((server) => server.enabled).length;
       document.getElementById("ready-inline").className = `badge ${state.ready?.blockers?.length ? "warn" : "ok"}`;
       document.getElementById("ready-inline").textContent = `Ready ${state.ready?.score ?? "--"}`;
-      document.getElementById("client-page-summary").textContent = `已安装 ${installed}/${total}，选择客户端后配置供应商`;
+      document.getElementById("client-page-summary").textContent = trf("clients.summary", "已安装 {installed}/{total}，选择客户端后配置供应商", { installed, total });
     }
 
     function renderClients() {
@@ -1296,7 +1329,7 @@
       switcher.innerHTML = visible.map((id) => {
         const meta = clientMeta(id); const client = state.status?.clients.find((item) => item.id === id); const installed = Boolean(client?.installed);
         return `<button class="client-tab ${state.activeClient === id ? "active" : ""}" data-action="select-client" data-id="${id}" aria-pressed="${state.activeClient === id}">
-          ${clientLogo(id)}<span class="client-dot ${installed ? "on" : ""}"></span><strong>${meta.name}</strong><small>${installed ? "已安装" : meta.autoInstall ? "可一键安装" : "未检测到"}</small>
+          ${clientLogo(id)}<span class="client-dot ${installed ? "on" : ""}"></span><strong>${meta.name}</strong><small>${installed ? tr("已安装", "已安装") : meta.autoInstall ? tr("可一键安装", "可一键安装") : tr("未检测到", "未检测到")}</small>
         </button>`;
       }).join("");
       renderClientStage();
@@ -1304,27 +1337,28 @@
 
     function renderClientStage() {
       const stage = document.getElementById("client-stage"); const client = selectedClient(); const meta = clientMeta(state.activeClient);
-      if (!client) { stage.innerHTML = `<div class="client-empty">正在检测客户端</div>`; return; }
+      if (!client) { stage.innerHTML = `<div class="client-empty">${tr("正在检测客户端", "正在检测客户端")}</div>`; return; }
       const providers = state.providers.filter((provider) => provider.enabledApps?.includes(state.activeClient));
       const catalog = state.softwareCatalog.find((item) => item.clientId === client.id);
       const installing = state.inFlightOperations.has(`install-client:${client.id}`);
       const currentProvider = providers.find((provider) => provider.activeApps?.includes(state.activeClient));
       const enabledMcp = state.mcpServers.filter((server) => server.enabled && server.apps?.includes(state.activeClient)).length;
-      const currentModel = currentProvider ? providerDefaultModel(currentProvider) || "跟随客户端" : "尚未配置";
+      const currentModel = currentProvider ? providerDefaultModel(currentProvider) || tr("跟随客户端", "跟随客户端") : tr("尚未配置", "尚未配置");
+      const clientName = escapeHtml(meta.name);
       const clientActions = client.installed ? `
-        ${client.configPath ? `<button class="icon-btn" data-action="open-path" data-path="${escapeHtml(client.configPath)}" title="打开配置位置" aria-label="打开配置位置"><i data-lucide="folder-open"></i></button>` : ""}
-        ${catalog?.updateAvailable && catalog.installSupported ? `<button class="btn" data-action="install-client" data-id="${client.id}" ${installing ? "disabled" : ""}><i data-lucide="${installing ? "loader-circle" : "arrow-up-circle"}"></i>${installing ? "正在升级" : `更新到 ${escapeHtml(catalog.latestVersion || "最新版")}`}</button>` : ""}
-        <button class="icon-btn" data-action="refresh-catalog" title="检查 ${meta.name} 更新" aria-label="检查 ${meta.name} 更新"><i data-lucide="refresh-cw"></i></button>
-        ${client.managedByAgentdock ? `<button class="icon-btn" data-action="uninstall-client" data-id="${client.id}" title="卸载" aria-label="卸载 ${meta.name}"><i data-lucide="trash-2"></i></button>` : ""}
-        <button class="btn primary" data-action="launch-client" data-id="${client.id}"><i data-lucide="play"></i>启动 ${meta.name}</button>` : meta.autoInstall ? `<button class="btn primary" data-action="install-client" data-id="${client.id}" ${installing ? "disabled" : ""}><i data-lucide="${installing ? "loader-circle" : "download"}"></i>${installing ? "正在安装" : `一键安装 ${meta.name}`}</button>` : `<span class="badge">当前仅支持本机检测</span>`;
+        ${client.configPath ? `<button class="icon-btn" data-action="open-path" data-path="${escapeHtml(client.configPath)}" title="${tr("打开配置位置", "打开配置位置")}" aria-label="${tr("打开配置位置", "打开配置位置")}"><i data-lucide="folder-open"></i></button>` : ""}
+        ${catalog?.updateAvailable && catalog.installSupported ? `<button class="btn" data-action="install-client" data-id="${client.id}" ${installing ? "disabled" : ""}><i data-lucide="${installing ? "loader-circle" : "arrow-up-circle"}"></i>${installing ? tr("正在升级", "正在升级") : trf("client.updateTo", "更新到 {version}", { version: escapeHtml(catalog.latestVersion || tr("最新版", "最新版")) })}</button>` : ""}
+        <button class="icon-btn" data-action="refresh-catalog" title="${trf("client.checkUpdate", "检查 {name} 更新", { name: clientName })}" aria-label="${trf("client.checkUpdate", "检查 {name} 更新", { name: clientName })}"><i data-lucide="refresh-cw"></i></button>
+        ${client.managedByAgentdock ? `<button class="icon-btn" data-action="uninstall-client" data-id="${client.id}" title="${tr("卸载", "卸载")}" aria-label="${trf("client.uninstall", "卸载 {name}", { name: clientName })}"><i data-lucide="trash-2"></i></button>` : ""}
+        <button class="btn primary" data-action="launch-client" data-id="${client.id}"><i data-lucide="play"></i>${trf("client.launch", "启动 {name}", { name: clientName })}</button>` : meta.autoInstall ? `<button class="btn primary" data-action="install-client" data-id="${client.id}" ${installing ? "disabled" : ""}><i data-lucide="${installing ? "loader-circle" : "download"}"></i>${installing ? tr("正在安装", "正在安装") : trf("client.install", "一键安装 {name}", { name: clientName })}</button>` : `<span class="badge">${tr("当前仅支持本机检测", "当前仅支持本机检测")}</span>`;
       stage.innerHTML = `
-        <div class="client-stage-head"><div class="client-identity">${clientLogo(client.id)}<div><h3>${meta.name}</h3><p>${client.installed ? `${escapeHtml(client.version || "已安装")}${client.managedByAgentdock ? " · AgentDock 托管" : " · 本机安装"}` : "未检测到可执行程序"}</p></div></div><div class="client-stage-actions">${clientActions}</div></div>
-        <section class="client-readiness" aria-label="客户端就绪状态">
-          <div class="readiness-item"><span class="readiness-icon ${client.installed ? "" : "muted"}"><i data-lucide="${client.installed ? "circle-check" : "circle-dashed"}"></i></span><div><strong>${client.installed ? "客户端可用" : "等待安装"}</strong><small>${client.installed ? "可执行文件与配置目录已检测" : "安装时会自动处理下载源和依赖"}</small></div></div>
-          <div class="readiness-item"><span class="readiness-icon ${providers.length ? "" : "warn"}"><i data-lucide="key-round"></i></span><div><strong>${providers.length} 个供应商</strong><small>${currentProvider ? `当前使用 ${escapeHtml(currentProvider.name)}` : "添加供应商后即可调用模型"}</small></div></div>
-          <div class="readiness-item"><span class="readiness-icon ${enabledMcp ? "" : "muted"}"><i data-lucide="blocks"></i></span><div><strong>${enabledMcp} 个 MCP</strong><small>${enabledMcp ? `已同步到 ${escapeHtml(meta.name)}` : "可在 MCP 页面启用扩展工具"}</small></div></div>
+        <div class="client-stage-head"><div class="client-identity">${clientLogo(client.id)}<div><h3>${clientName}</h3><p>${client.installed ? `${escapeHtml(client.version || tr("已安装", "已安装"))}${client.managedByAgentdock ? tr("client.managed", " · AgentDock 托管") : tr("client.systemInstall", " · 本机安装")}` : tr("未检测到可执行程序", "未检测到可执行程序")}</p></div></div><div class="client-stage-actions">${clientActions}</div></div>
+        <section class="client-readiness" aria-label="${tr("客户端就绪状态", "客户端就绪状态")}">
+          <div class="readiness-item"><span class="readiness-icon ${client.installed ? "" : "muted"}"><i data-lucide="${client.installed ? "circle-check" : "circle-dashed"}"></i></span><div><strong>${client.installed ? tr("客户端可用", "客户端可用") : tr("等待安装", "等待安装")}</strong><small>${client.installed ? tr("可执行文件与配置目录已检测", "可执行文件与配置目录已检测") : tr("安装时会自动处理下载源和依赖", "安装时会自动处理下载源和依赖")}</small></div></div>
+          <div class="readiness-item"><span class="readiness-icon ${providers.length ? "" : "warn"}"><i data-lucide="key-round"></i></span><div><strong>${trf("count.providers", "{count} 个供应商", { count: providers.length })}</strong><small>${currentProvider ? trf("provider.current", "当前使用 {name}", { name: escapeHtml(currentProvider.name) }) : tr("添加供应商后即可调用模型", "添加供应商后即可调用模型")}</small></div></div>
+          <div class="readiness-item"><span class="readiness-icon ${enabledMcp ? "" : "muted"}"><i data-lucide="blocks"></i></span><div><strong>${trf("count.mcp", "{count} 个 MCP", { count: enabledMcp })}</strong><small>${enabledMcp ? trf("mcp.syncedTo", "已同步到 {name}", { name: clientName }) : tr("可在 MCP 页面启用扩展工具", "可在 MCP 页面启用扩展工具")}</small></div></div>
         </section>
-        ${client.installed ? `<section class="client-section"><div class="provider-section-head"><div><h3>供应商</h3><p>${providers.length ? `已配置 ${providers.length} 个，使用操作会立即写入 ${escapeHtml(meta.name)}` : "还没有配置供应商"}</p></div><button class="btn primary" data-action="open-provider-editor"><i data-lucide="plus"></i>添加供应商</button></div><div class="provider-list" id="provider-list">${providerCards(providers)}</div></section><section class="client-config-summary"><header><div><h3>配置摘要</h3><p>由 AgentDock 管理并写入真实客户端配置</p></div>${client.configPath ? `<button class="btn text" data-action="open-path" data-path="${escapeHtml(client.configPath)}"><i data-lucide="external-link"></i>查看完整文件</button>` : `<span class="badge">等待生成</span>`}</header><div class="client-config-values"><span><small>配置位置</small><code>${escapeHtml(client.configPath || "安装后自动创建")}</code></span><span><small>默认模型</small><code>${escapeHtml(currentModel)}</code></span><span><small>API 协议</small><code>${escapeHtml(currentProvider?.apiFormat || "跟随供应商")}</code></span></div></section>` : `<div class="client-empty"><div><span class="empty-symbol"><i data-lucide="download"></i></span><h3>${meta.name} 尚未安装</h3><p>${meta.autoInstall ? "AgentDock 会优先使用国内可用镜像，自动回退备用源并校验官方包完整性。" : "安装后重新扫描即可配置供应商。"}</p>${meta.autoInstall ? `<button class="btn primary" data-action="install-client" data-id="${client.id}"><i data-lucide="download"></i>一键安装</button>` : ""}</div></div>`}
+        ${client.installed ? `<section class="client-section"><div class="provider-section-head"><div><h3>${tr("供应商", "供应商")}</h3><p>${providers.length ? trf("provider.configured", "已配置 {count} 个，使用操作会立即写入 {name}", { count: providers.length, name: clientName }) : tr("还没有配置供应商", "还没有配置供应商")}</p></div><button class="btn primary" data-action="open-provider-editor"><i data-lucide="plus"></i>${tr("添加供应商", "添加供应商")}</button></div><div class="provider-list" id="provider-list">${providerCards(providers)}</div></section><section class="client-config-summary"><header><div><h3>${tr("配置摘要", "配置摘要")}</h3><p>${tr("由 AgentDock 管理并写入真实客户端配置", "由 AgentDock 管理并写入真实客户端配置")}</p></div>${client.configPath ? `<button class="btn text" data-action="open-path" data-path="${escapeHtml(client.configPath)}"><i data-lucide="external-link"></i>${tr("查看完整文件", "查看完整文件")}</button>` : `<span class="badge">${tr("等待生成", "等待生成")}</span>`}</header><div class="client-config-values"><span><small>${tr("配置位置", "配置位置")}</small><code>${escapeHtml(client.configPath || tr("安装后自动创建", "安装后自动创建"))}</code></span><span><small>${tr("默认模型", "默认模型")}</small><code>${escapeHtml(currentModel)}</code></span><span><small>${tr("API 协议", "API 协议")}</small><code>${escapeHtml(currentProvider?.apiFormat || tr("跟随供应商", "跟随供应商"))}</code></span></div></section>` : `<div class="client-empty"><div><span class="empty-symbol"><i data-lucide="download"></i></span><h3>${trf("client.notInstalled", "{name} 尚未安装", { name: clientName })}</h3><p>${meta.autoInstall ? tr("AgentDock 会优先使用国内可用镜像，自动回退备用源并校验官方包完整性。", "AgentDock 会优先使用国内可用镜像，自动回退备用源并校验官方包完整性。") : tr("安装后重新扫描即可配置供应商。", "安装后重新扫描即可配置供应商。")}</p>${meta.autoInstall ? `<button class="btn primary" data-action="install-client" data-id="${client.id}"><i data-lucide="download"></i>${tr("一键安装", "一键安装")}</button>` : ""}</div></div>`}
       `;
     }
 
@@ -1333,12 +1367,13 @@
       const installed = state.softwareCatalog.filter((item) => item.installed).length;
       const updates = state.softwareCatalog.filter((item) => item.updateAvailable).length;
       const items = state.softwareCatalog.filter((item) => contextMatches(item.name, item.description, item.publisher, item.category)).filter((item) => state.softwareFilter === "all" || state.softwareFilter === "installed" && item.installed || state.softwareFilter === "updates" && item.updateAvailable || state.softwareFilter === "recommended" && item.recommended);
-      document.getElementById("software-summary").textContent = `${state.softwareCatalog.length} 个工具，已安装 ${installed} 个${updates ? `，${updates} 个可更新` : ""}${items.length !== state.softwareCatalog.length ? ` · 当前显示 ${items.length} 个` : ""}`;
+      document.getElementById("software-summary").textContent = `${trf("software.summary", "{total} 个工具，已安装 {installed} 个", { total: state.softwareCatalog.length, installed })}${updates ? trf("software.updates", "，{count} 个可更新", { count: updates }) : ""}${items.length !== state.softwareCatalog.length ? trf("software.filtered", " · 当前显示 {count} 个", { count: items.length }) : ""}`;
       list.innerHTML = items.length ? items.map((item) => {
-        const status = item.updateAvailable ? `<span class="badge warn">可更新</span>` : item.installed ? `<span class="badge ok">已安装</span>` : item.recommended ? `<span class="badge">推荐</span>` : "";
-        const installing = state.inFlightOperations.has(`install-client:${item.clientId}`); const action = item.updateAvailable && item.installSupported ? `<button class="btn primary" data-action="install-client" data-id="${item.clientId}" ${installing ? "disabled" : ""}><i data-lucide="${installing ? "loader-circle" : "arrow-up-circle"}"></i>${installing ? "升级中" : "更新"}</button>` : item.installed ? `<button class="btn" data-action="select-software-client" data-id="${item.clientId}">管理</button>` : item.installSupported ? `<button class="btn primary" data-action="install-client" data-id="${item.clientId}" ${installing ? "disabled" : ""}><i data-lucide="${installing ? "loader-circle" : "download"}"></i>${installing ? "安装中" : "安装"}</button>` : `<span class="badge">仅检测</span>`;
-        return `<article class="software-item" data-software-id="${escapeHtml(item.id)}"><div class="software-item-head"><div class="software-identity">${clientLogo(item.clientId)}<div><h3>${escapeHtml(item.name)}</h3><p>${escapeHtml(item.publisher)} · ${escapeHtml(item.category)}</p></div></div>${status}</div><p class="software-description">${escapeHtml(item.description)}</p><div class="software-foot"><span class="version-pair">${escapeHtml(item.currentVersion || "未安装")} → ${escapeHtml(item.latestVersion || "等待检查")}</span>${action}</div></article>`;
-      }).join("") : `<div class="empty">当前筛选条件下没有软件</div>`;
+        const description = item.description === `安装和管理 ${item.name} 客户端` ? trf("software.manageClient", "安装和管理 {name} 客户端", { name: item.name }) : tr(item.description, item.description);
+        const status = item.updateAvailable ? `<span class="badge warn">${tr("可更新", "可更新")}</span>` : item.installed ? `<span class="badge ok">${tr("已安装", "已安装")}</span>` : item.recommended ? `<span class="badge">${tr("推荐", "推荐")}</span>` : "";
+        const installing = state.inFlightOperations.has(`install-client:${item.clientId}`); const action = item.updateAvailable && item.installSupported ? `<button class="btn primary" data-action="install-client" data-id="${item.clientId}" ${installing ? "disabled" : ""}><i data-lucide="${installing ? "loader-circle" : "arrow-up-circle"}"></i>${installing ? tr("升级中", "升级中") : tr("更新", "更新")}</button>` : item.installed ? `<button class="btn" data-action="select-software-client" data-id="${item.clientId}">${tr("管理", "管理")}</button>` : item.installSupported ? `<button class="btn primary" data-action="install-client" data-id="${item.clientId}" ${installing ? "disabled" : ""}><i data-lucide="${installing ? "loader-circle" : "download"}"></i>${installing ? tr("安装中", "安装中") : tr("安装", "安装")}</button>` : `<span class="badge">${tr("仅检测", "仅检测")}</span>`;
+        return `<article class="software-item" data-software-id="${escapeHtml(item.id)}"><div class="software-item-head"><div class="software-identity">${clientLogo(item.clientId)}<div><h3>${escapeHtml(item.name)}</h3><p>${escapeHtml(item.publisher)} · ${escapeHtml(tr(item.category, item.category))}</p></div></div>${status}</div><p class="software-description">${escapeHtml(description)}</p><div class="software-foot"><span class="version-pair">${escapeHtml(item.currentVersion || tr("未安装", "未安装"))} → ${escapeHtml(item.latestVersion || tr("等待检查", "等待检查"))}</span>${action}</div></article>`;
+      }).join("") : `<div class="empty">${tr("当前筛选条件下没有软件", "当前筛选条件下没有软件")}</div>`;
     }
 
     function providerLogoContent(preset) {
@@ -1351,45 +1386,48 @@
     }
 
     function providerCards(providers) {
-      if (!providers.length) return `<div class="empty"><div>还没有为 ${clientMeta(state.activeClient).name} 配置供应商</div><button class="btn primary" data-action="open-provider-editor"><i data-lucide="plus"></i>添加供应商</button></div>`;
+      if (!providers.length) return `<div class="empty"><div>${trf("provider.empty", "还没有为 {name} 配置供应商", { name: escapeHtml(clientMeta(state.activeClient).name) })}</div><button class="btn primary" data-action="open-provider-editor"><i data-lucide="plus"></i>${tr("添加供应商", "添加供应商")}</button></div>`;
       return providers.map((provider) => {
-        const current = provider.activeApps?.includes(state.activeClient); const preset = findPreset(provider.presetId); const short = preset?.short || provider.name.slice(0, 2).toUpperCase(); const model = providerDefaultModel(provider) || "跟随客户端";
+        const current = provider.activeApps?.includes(state.activeClient); const preset = findPreset(provider.presetId); const short = preset?.short || provider.name.slice(0, 2).toUpperCase(); const model = providerDefaultModel(provider) || tr("跟随客户端", "跟随客户端");
         const logoPreset = preset || { name: provider.name, short };
-        return `<article class="provider-card ${current ? "current" : ""}"><div class="provider-main">${providerLogoMarkup(logoPreset)}<div class="provider-copy"><div class="provider-name-line"><strong>${escapeHtml(provider.name)}</strong>${current ? `<span class="badge ok">当前使用</span>` : ""}<span class="badge ${provider.providerType === "official" || provider.apiKeyConfigured ? "" : "warn"}">${provider.providerType === "official" ? "客户端登录" : provider.apiKeyConfigured ? "密钥已保存" : "缺少密钥"}</span></div><p>${escapeHtml(provider.notes || provider.baseUrl || "官方直连")}</p></div></div><div class="provider-model"><small>默认模型</small><code title="${escapeHtml(model)}">${escapeHtml(model)}</code></div><div class="row-actions">${current ? `<button class="btn text" data-action="activate-provider" data-id="${provider.id}"><i data-lucide="refresh-cw"></i>重新应用</button>` : `<button class="btn primary" data-action="activate-provider" data-id="${provider.id}">使用</button>`}<button class="icon-btn" data-action="test-provider" data-id="${provider.id}" title="测试连接" aria-label="测试 ${escapeHtml(provider.name)}"><i data-lucide="activity"></i></button><button class="icon-btn" data-action="edit-provider" data-id="${provider.id}" title="编辑" aria-label="编辑 ${escapeHtml(provider.name)}"><i data-lucide="pencil"></i></button><button class="icon-btn" data-action="delete-provider" data-id="${provider.id}" title="删除" aria-label="删除 ${escapeHtml(provider.name)}"><i data-lucide="trash-2"></i></button></div></article>`;
+        const name = escapeHtml(provider.name);
+        const notes = provider.id === "packycode-preview" ? tr(provider.notes, provider.notes) : provider.notes;
+        return `<article class="provider-card ${current ? "current" : ""}"><div class="provider-main">${providerLogoMarkup(logoPreset)}<div class="provider-copy"><div class="provider-name-line"><strong>${name}</strong>${current ? `<span class="badge ok">${tr("当前使用", "当前使用")}</span>` : ""}<span class="badge ${provider.providerType === "official" || provider.apiKeyConfigured ? "" : "warn"}">${provider.providerType === "official" ? tr("客户端登录", "客户端登录") : provider.apiKeyConfigured ? tr("密钥已保存", "密钥已保存") : tr("缺少密钥", "缺少密钥")}</span></div><p>${escapeHtml(notes || provider.baseUrl || tr("官方直连", "官方直连"))}</p></div></div><div class="provider-model"><small>${tr("默认模型", "默认模型")}</small><code title="${escapeHtml(model)}">${escapeHtml(model)}</code></div><div class="row-actions">${current ? `<button class="btn text" data-action="activate-provider" data-id="${provider.id}"><i data-lucide="refresh-cw"></i>${tr("重新应用", "重新应用")}</button>` : `<button class="btn primary" data-action="activate-provider" data-id="${provider.id}">${tr("使用", "使用")}</button>`}<button class="icon-btn" data-action="test-provider" data-id="${provider.id}" title="${tr("测试连接", "测试连接")}" aria-label="${trf("provider.test", "测试 {name}", { name })}"><i data-lucide="activity"></i></button><button class="icon-btn" data-action="edit-provider" data-id="${provider.id}" title="${tr("编辑", "编辑")}" aria-label="${trf("provider.edit", "编辑 {name}", { name })}"><i data-lucide="pencil"></i></button><button class="icon-btn" data-action="delete-provider" data-id="${provider.id}" title="${tr("删除", "删除")}" aria-label="${trf("provider.delete", "删除 {name}", { name })}"><i data-lucide="trash-2"></i></button></div></article>`;
       }).join("");
     }
 
     function renderSkills() {
       const list = document.getElementById("skill-list");
       const items = state.skills.filter((skill) => contextMatches(skill.name, skill.description, skill.source)).filter((skill) => state.skillFilter === "all" || state.skillFilter === "installed" && skill.installed || state.skillFilter === "available" && !skill.installed);
-      list.innerHTML = items.length ? items.map((skill) => `<article class="data-row" data-skill-id="${escapeHtml(skill.id)}"><div class="row-main"><span class="row-icon"><i data-lucide="wand-sparkles"></i></span><div class="row-copy"><strong>${escapeHtml(skill.name)}</strong><small>${escapeHtml(skill.description)} · ${escapeHtml(skill.source)}</small></div></div><div class="row-actions">${skill.installed ? ["codex", "claude-code", "antigravity", "grok"].map((app) => `<label class="check-control"><input type="checkbox" data-change="skill-app" data-id="${skill.id}" data-app="${app}" ${skill.apps.includes(app) ? "checked" : ""}>${clientMeta(app).name}</label>`).join("") : ""}<span class="badge ${skill.installed ? "ok" : ""}">${skill.installed ? "已安装" : "未安装"}</span>${skill.installed ? `<button class="btn danger" data-action="uninstall-skill" data-id="${skill.id}">卸载</button>` : `<button class="btn primary" data-action="install-skill" data-id="${skill.id}">安装</button>`}</div></article>`).join("") : `<div class="empty">当前筛选条件下没有 Skill</div>`;
+      list.innerHTML = items.length ? items.map((skill) => { const description = skill.source === "built-in" ? tr(skill.description, skill.description) : skill.description; return `<article class="data-row" data-skill-id="${escapeHtml(skill.id)}"><div class="row-main"><span class="row-icon"><i data-lucide="wand-sparkles"></i></span><div class="row-copy"><strong>${escapeHtml(skill.name)}</strong><small>${escapeHtml(description)} · ${escapeHtml(skill.source)}</small></div></div><div class="row-actions">${skill.installed ? ["codex", "claude-code", "antigravity", "grok"].map((app) => `<label class="check-control"><input type="checkbox" data-change="skill-app" data-id="${skill.id}" data-app="${app}" ${skill.apps.includes(app) ? "checked" : ""}>${clientMeta(app).name}</label>`).join("") : ""}<span class="badge ${skill.installed ? "ok" : ""}">${skill.installed ? tr("已安装", "已安装") : tr("未安装", "未安装")}</span>${skill.installed ? `<button class="btn danger" data-action="uninstall-skill" data-id="${skill.id}">${tr("卸载", "卸载")}</button>` : `<button class="btn primary" data-action="install-skill" data-id="${skill.id}">${tr("安装", "安装")}</button>`}</div></article>`; }).join("") : `<div class="empty">${tr("当前筛选条件下没有 Skill", "当前筛选条件下没有 Skill")}</div>`;
     }
 
     function renderMcp() {
       const list = document.getElementById("mcp-list");
       const counts = Object.fromEntries(APP_ORDER.map((app) => [app, state.mcpServers.filter((server) => server.enabled && server.apps.includes(app)).length]));
-      document.getElementById("mcp-summary").innerHTML = `<span class="mcp-summary-total">${state.mcpServers.length} 个服务器</span><div class="mcp-counts">${APP_ORDER.map((app) => `<span class="mcp-count">${clientMeta(app).name}<strong>${counts[app]}</strong></span>`).join("")}</div>`;
+      document.getElementById("mcp-summary").innerHTML = `<span class="mcp-summary-total">${trf("mcp.serverCount", "{count} 个服务器", { count: state.mcpServers.length })}</span><div class="mcp-counts">${APP_ORDER.map((app) => `<span class="mcp-count">${clientMeta(app).name}<strong>${counts[app]}</strong></span>`).join("")}</div>`;
       const servers = state.mcpServers.filter((server) => contextMatches(server.name, server.id, server.description, server.tags?.join(" ")));
       list.innerHTML = servers.length ? servers.map((server) => {
-        const detail = server.description || server.tags?.join(", ") || ""; const docs = server.docs || server.homepage || "";
-        return `<article class="mcp-row"><button class="mcp-inspect-trigger" data-action="inspect-mcp" data-id="${escapeHtml(server.id)}" aria-label="查看 ${escapeHtml(server.name || server.id)} 的工具列表"><div class="mcp-copy"><div class="mcp-name-line"><strong>${escapeHtml(server.name || server.id)}</strong></div>${detail ? `<small title="${escapeHtml(detail)}">${escapeHtml(detail)}</small>` : ""}</div><i data-lucide="chevron-right"></i></button><div class="mcp-apps">${APP_ORDER.map((app) => { const active = server.enabled && server.apps.includes(app); return `<label class="mcp-app-toggle" title="${active ? "停用" : "启用"} ${clientMeta(app).name}"><input type="checkbox" data-change="mcp-app" data-id="${escapeHtml(server.id)}" data-app="${app}" ${active ? "checked" : ""}>${clientLogo(app)}</label>`; }).join("")}</div><div class="mcp-row-actions">${docs ? `<button class="icon-btn" data-action="open-external" data-url="${escapeHtml(docs)}" title="打开文档" aria-label="打开 ${escapeHtml(server.name || server.id)} 文档"><i data-lucide="external-link"></i></button>` : ""}<button class="icon-btn" data-action="edit-mcp" data-id="${escapeHtml(server.id)}" title="编辑" aria-label="编辑 ${escapeHtml(server.name || server.id)}"><i data-lucide="pencil"></i></button><button class="icon-btn" data-action="delete-mcp" data-id="${escapeHtml(server.id)}" title="删除" aria-label="删除 ${escapeHtml(server.name || server.id)}"><i data-lucide="trash-2"></i></button></div></article>`;
-      }).join("") : `<div class="empty"><div>${state.mcpServers.length ? "没有匹配的 MCP 服务器" : "还没有 MCP 服务器"}</div><button class="btn primary" data-action="import-mcp"><i data-lucide="import"></i>导入已有配置</button></div>`;
+        const detail = (server.id === "filesystem" ? tr(server.description, server.description) : server.description) || server.tags?.join(", ") || ""; const docs = server.docs || server.homepage || "";
+        const name = escapeHtml(server.name || server.id);
+        return `<article class="mcp-row"><button class="mcp-inspect-trigger" data-action="inspect-mcp" data-id="${escapeHtml(server.id)}" aria-label="${trf("mcp.openTools", "查看 {name} 的工具列表", { name })}"><div class="mcp-copy"><div class="mcp-name-line"><strong>${name}</strong></div>${detail ? `<small title="${escapeHtml(detail)}">${escapeHtml(detail)}</small>` : ""}</div><i data-lucide="chevron-right"></i></button><div class="mcp-apps">${APP_ORDER.map((app) => { const active = server.enabled && server.apps.includes(app); return `<label class="mcp-app-toggle" title="${trf("mcp.toggleApp", "{action} {name}", { action: active ? tr("停用", "停用") : tr("启用", "启用"), name: clientMeta(app).name })}"><input type="checkbox" data-change="mcp-app" data-id="${escapeHtml(server.id)}" data-app="${app}" ${active ? "checked" : ""}>${clientLogo(app)}</label>`; }).join("")}</div><div class="mcp-row-actions">${docs ? `<button class="icon-btn" data-action="open-external" data-url="${escapeHtml(docs)}" title="${tr("打开文档", "打开文档")}" aria-label="${trf("mcp.openDocs", "打开 {name} 文档", { name })}"><i data-lucide="external-link"></i></button>` : ""}<button class="icon-btn" data-action="edit-mcp" data-id="${escapeHtml(server.id)}" title="${tr("编辑", "编辑")}" aria-label="${trf("provider.edit", "编辑 {name}", { name })}"><i data-lucide="pencil"></i></button><button class="icon-btn" data-action="delete-mcp" data-id="${escapeHtml(server.id)}" title="${tr("删除", "删除")}" aria-label="${trf("provider.delete", "删除 {name}", { name })}"><i data-lucide="trash-2"></i></button></div></article>`;
+      }).join("") : `<div class="empty"><div>${state.mcpServers.length ? tr("没有匹配的 MCP 服务器", "没有匹配的 MCP 服务器") : tr("还没有 MCP 服务器", "还没有 MCP 服务器")}</div><button class="btn primary" data-action="import-mcp"><i data-lucide="import"></i>${tr("导入已有配置", "导入已有配置")}</button></div>`;
     }
     function renderStats() {
       const stats = state.usageStats; if (!stats) return;
-      document.getElementById("stats-range").textContent = `${stats.from} 至 ${stats.to}`;
+      document.getElementById("stats-range").textContent = trf("stats.range", "{from} 至 {to}", { from: stats.from, to: stats.to });
       document.querySelectorAll('[data-action="set-stats-days"]').forEach((button) => button.classList.toggle("active", Number(button.dataset.id) === state.usageDays));
       document.querySelectorAll('[data-action="set-trend-metric"]').forEach((button) => button.classList.toggle("active", button.dataset.id === state.trendMetric));
       document.querySelectorAll('[data-action="set-breakdown"]').forEach((button) => button.classList.toggle("active", button.dataset.id === state.breakdown));
-      document.getElementById("stats-kpis").innerHTML = `<article class="stat-kpi"><span>Token 总量</span><strong>${formatNumber(stats.summary.totalTokens)}</strong><small>输入 ${formatNumber(stats.summary.inputTokens)} · 输出 ${formatNumber(stats.summary.outputTokens)} · 缓存 ${formatNumber(stats.summary.cachedTokens)}</small></article><article class="stat-kpi"><span>请求次数</span><strong>${formatNumber(stats.summary.requests)}</strong><small>本机可识别的完整响应</small></article><article class="stat-kpi"><span>成本</span><strong>${formatCost(stats.summary.costUsd)}</strong><small>${stats.summary.unpricedRequests ? `${stats.summary.unpricedRequests} 次请求缺少公开价格，未计入` : "已识别请求均已计价"}</small></article>`;
+      document.getElementById("stats-kpis").innerHTML = `<article class="stat-kpi"><span>${tr("Token 总量", "Token 总量")}</span><strong>${formatNumber(stats.summary.totalTokens)}</strong><small>${trf("stats.tokenParts", "输入 {input} · 输出 {output} · 缓存 {cached}", { input: formatNumber(stats.summary.inputTokens), output: formatNumber(stats.summary.outputTokens), cached: formatNumber(stats.summary.cachedTokens) })}</small></article><article class="stat-kpi"><span>${tr("请求次数", "请求次数")}</span><strong>${formatNumber(stats.summary.requests)}</strong><small>${tr("本机可识别的完整响应", "本机可识别的完整响应")}</small></article><article class="stat-kpi"><span>${tr("成本", "成本")}</span><strong>${formatCost(stats.summary.costUsd)}</strong><small>${stats.summary.unpricedRequests ? trf("stats.unpriced", "{count} 次请求缺少公开价格，未计入", { count: stats.summary.unpricedRequests }) : tr("已识别请求均已计价", "已识别请求均已计价")}</small></article>`;
       renderTrendChart(); renderBreakdown();
-      const sourceText = stats.sources.length ? `数据源：${stats.sources.join("、")}` : "暂未发现本地会话记录";
-      document.getElementById("stats-note").textContent = `${sourceText}${stats.errors.length ? `；${stats.errors.length} 个文件读取失败，详见诊断日志` : ""}。成本基于客户端记录或内置公开单价估算。`;
+      const sourceText = stats.sources.length ? trf("stats.sources", "数据源：{sources}", { sources: stats.sources.map((source) => tr(source, source)).join(", ") }) : tr("暂未发现本地会话记录", "暂未发现本地会话记录");
+      document.getElementById("stats-note").textContent = `${sourceText}${stats.errors.length ? trf("stats.errors", "；{count} 个文件读取失败，详见诊断日志", { count: stats.errors.length }) : ""}${tr("stats.disclaimer", "。成本基于客户端记录或内置公开单价估算。")}`;
     }
     function renderTrendChart() {
       const stats = state.usageStats; const values = stats.trend.map((item) => Number(item[state.trendMetric]) || 0); const max = Math.max(...values, 1);
-      const labels = { totalTokens: ["Token", formatNumber], requests: ["请求", formatNumber], costUsd: ["成本", formatCost] }; const [caption, formatter] = labels[state.trendMetric];
-      document.getElementById("trend-caption").textContent = `按天统计${caption}`;
+      const labels = { totalTokens: ["Token", formatNumber], requests: [tr("请求", "请求"), formatNumber], costUsd: [tr("成本", "成本"), formatCost] }; const [caption, formatter] = labels[state.trendMetric];
+      document.getElementById("trend-caption").textContent = trf("stats.daily", "按天统计{metric}", { metric: caption });
       const width = 900, height = 260, left = 52, right = 18, top = 16, bottom = 38, innerWidth = width - left - right, innerHeight = height - top - bottom;
       const points = values.map((value, index) => ({ x: left + (values.length === 1 ? innerWidth / 2 : index * innerWidth / (values.length - 1)), y: top + innerHeight - value / max * innerHeight, value, date: stats.trend[index].date }));
       const line = points.map((point, index) => `${index ? "L" : "M"}${point.x.toFixed(1)},${point.y.toFixed(1)}`).join(" ");
@@ -1398,31 +1436,54 @@
       const labelStep = Math.max(1, Math.ceil(stats.trend.length / 6));
       const xLabels = points.map((point, index) => index % labelStep === 0 || index === points.length - 1 ? `<text class="chart-axis-label" x="${point.x}" y="${height - 10}" text-anchor="middle">${point.date.slice(5)}</text>` : "").join("");
       const dots = points.map((point) => `<circle class="chart-point" cx="${point.x}" cy="${point.y}" r="4"><title>${point.date} · ${formatter(point.value)}</title></circle>`).join("");
-      document.getElementById("trend-chart").innerHTML = `<svg viewBox="0 0 ${width} ${height}" role="img" aria-label="${stats.days} 天${caption}趋势">${grid}<path class="chart-area" d="${area}"/><path class="chart-line" d="${line}"/>${dots}${xLabels}</svg>`;
+      document.getElementById("trend-chart").innerHTML = `<svg viewBox="0 0 ${width} ${height}" role="img" aria-label="${trf("stats.chartLabel", "{days} 天{metric}趋势", { days: stats.days, metric: caption })}">${grid}<path class="chart-area" d="${area}"/><path class="chart-line" d="${line}"/>${dots}${xLabels}</svg>`;
     }
     function renderBreakdown() {
       const key = state.breakdown === "client" ? "byClient" : state.breakdown === "provider" ? "byProvider" : "byModel"; const values = state.usageStats[key] || [];
-      document.getElementById("breakdown-list").innerHTML = values.length ? values.slice(0, 8).map((item) => `<article class="breakdown-item"><div class="breakdown-line"><div class="breakdown-name">${state.breakdown === "client" ? clientLogo(item.id) : ""}<span>${escapeHtml(item.name)}</span></div><span class="breakdown-value">${formatNumber(item.totalTokens)} · ${formatCost(item.costUsd)}</span></div><div class="breakdown-track"><div class="breakdown-fill" style="width:${Math.max(1, item.share * 100).toFixed(1)}%"></div></div></article>`).join("") : `<div class="empty">当前范围没有用量数据</div>`;
+      document.getElementById("breakdown-list").innerHTML = values.length ? values.slice(0, 8).map((item) => `<article class="breakdown-item"><div class="breakdown-line"><div class="breakdown-name">${state.breakdown === "client" ? clientLogo(item.id) : ""}<span>${escapeHtml(item.name)}</span></div><span class="breakdown-value">${formatNumber(item.totalTokens)} · ${formatCost(item.costUsd)}</span></div><div class="breakdown-track"><div class="breakdown-fill" style="width:${Math.max(1, item.share * 100).toFixed(1)}%"></div></div></article>`).join("") : `<div class="empty">${tr("当前范围没有用量数据", "当前范围没有用量数据")}</div>`;
     }
     function renderLogs() {
       const output = document.getElementById("log-output"); const logs = state.logs.filter((item) => contextMatches(item.message, item.level, item.time));
-      document.getElementById("log-count").textContent = `${logs.length}/${state.logs.length} 条`; output.innerHTML = logs.length ? logs.map((item) => `<span class="log-line ${item.level}">[${item.time}] [${item.level}] ${escapeHtml(item.message)}</span>`).join("") : `<span class="log-line info">本次运行还没有操作记录</span>`; output.scrollTop = output.scrollHeight;
+      document.getElementById("log-count").textContent = trf("logs.count", "{shown}/{total} 条", { shown: logs.length, total: state.logs.length }); output.innerHTML = logs.length ? logs.map((item) => `<span class="log-line ${item.level}">[${item.time}] [${item.level}] ${escapeHtml(item.message)}</span>`).join("") : `<span class="log-line info">${tr("本次运行还没有操作记录", "本次运行还没有操作记录")}</span>`; output.scrollTop = output.scrollHeight;
       renderDiagnostics();
+    }
+    function localizeDiagnosticText(value) {
+      if (!value) return value;
+      const direct = tr(value, value); if (direct !== value) return direct;
+      const templates = [
+        [/^(.+) 可正常启动$/, "diagnostics.clientReady", "{name} 可正常启动", ([, name]) => ({ name })],
+        [/^(.+) 有新版本$/, "diagnostics.clientUpdate", "{name} 有新版本", ([, name]) => ({ name })],
+        [/^当前 (.+)，最新 (.+)$/, "diagnostics.versions", "当前 {current}，最新 {latest}", ([, current, latest]) => ({ current, latest })],
+        [/^(.+) 配置位置可用$/, "diagnostics.configReady", "{name} 配置位置可用", ([, name]) => ({ name })],
+        [/^(.+) 尚未生成配置$/, "diagnostics.configMissing", "{name} 尚未生成配置", ([, name]) => ({ name })],
+        [/^(.+) 尚未安装$/, "client.notInstalled", "{name} 尚未安装", ([, name]) => ({ name })],
+        [/^(.+) 连接正常$/, "diagnostics.providerReady", "{name} 连接正常", ([, name]) => ({ name })],
+        [/^(.+) 无法使用$/, "diagnostics.providerUnavailable", "{name} 无法使用", ([, name]) => ({ name })],
+        [/^(.+) 检查失败$/, "diagnostics.providerFailed", "{name} 检查失败", ([, name]) => ({ name })],
+        [/^(.+) 没有当前供应商$/, "diagnostics.providerMissing", "{name} 没有当前供应商", ([, name]) => ({ name })],
+        [/^(.+) 配置有效$/, "diagnostics.mcpValid", "{name} 配置有效", ([, name]) => ({ name })],
+        [/^(.+) 配置无效$/, "diagnostics.mcpInvalid", "{name} 配置无效", ([, name]) => ({ name })],
+        [/^已启用到 (\d+) 个客户端$/, "diagnostics.enabledClients", "已启用到 {count} 个客户端", ([, count]) => ({ count })],
+        [/^已识别：(.*)$/, "diagnostics.sources", "已识别：{sources}", ([, sources]) => ({ sources: sources.split(/[、,]/).map((source) => tr(source.trim(), source.trim())).join(", ") })]
+      ];
+      for (const [pattern, key, fallback, values] of templates) { const match = value.match(pattern); if (match) return trf(key, fallback, values(match)); }
+      if (value.includes(" · ")) return value.split(" · ").map(localizeDiagnosticText).join(" · ");
+      return value;
     }
     function renderDiagnostics() {
       const report = state.diagnostics; const list = document.getElementById("diagnostic-list");
       if (!report) {
-        document.getElementById("diagnostic-score").textContent = state.diagnosticRunning ? "..." : "--"; document.getElementById("diagnostic-state").textContent = state.diagnosticRunning ? "正在检测" : "等待检测";
-        document.getElementById("diagnostic-passed").textContent = "--"; document.getElementById("diagnostic-warnings").textContent = "--"; document.getElementById("diagnostic-failed").textContent = "--"; document.getElementById("diagnostic-time").textContent = state.diagnosticRunning ? "正在连接供应商并检查本机配置" : "尚未运行主动检查"; document.getElementById("diagnostic-result-count").textContent = "0 项";
-        list.innerHTML = `<div class="diagnostic-empty"><i class="${state.diagnosticRunning ? "spin" : ""}" data-lucide="${state.diagnosticRunning ? "loader-circle" : "scan-heart"}"></i><strong>${state.diagnosticRunning ? "正在执行完整诊断" : "运行一次诊断以查看本机状态"}</strong><small>${state.diagnosticRunning ? "供应商连接检查可能需要几秒钟" : "将检查目录、客户端、供应商、MCP 和统计数据"}</small></div>`; refreshIcons(); return;
+        document.getElementById("diagnostic-score").textContent = state.diagnosticRunning ? "..." : "--"; document.getElementById("diagnostic-state").textContent = state.diagnosticRunning ? tr("正在检测", "正在检测") : tr("等待检测", "等待检测");
+        document.getElementById("diagnostic-passed").textContent = "--"; document.getElementById("diagnostic-warnings").textContent = "--"; document.getElementById("diagnostic-failed").textContent = "--"; document.getElementById("diagnostic-time").textContent = state.diagnosticRunning ? tr("正在连接供应商并检查本机配置", "正在连接供应商并检查本机配置") : tr("尚未运行主动检查", "尚未运行主动检查"); document.getElementById("diagnostic-result-count").textContent = trf("diagnostics.resultCount", "{shown}/{total} 项", { shown: 0, total: 0 });
+        list.innerHTML = `<div class="diagnostic-empty"><i class="${state.diagnosticRunning ? "spin" : ""}" data-lucide="${state.diagnosticRunning ? "loader-circle" : "scan-heart"}"></i><strong>${state.diagnosticRunning ? tr("正在执行完整诊断", "正在执行完整诊断") : tr("运行一次诊断以查看本机状态", "运行一次诊断以查看本机状态")}</strong><small>${state.diagnosticRunning ? tr("供应商连接检查可能需要几秒钟", "供应商连接检查可能需要几秒钟") : tr("将检查目录、客户端、供应商、MCP 和统计数据", "将检查目录、客户端、供应商、MCP 和统计数据")}</small></div>`; refreshIcons(); return;
       }
-      document.getElementById("diagnostic-score").textContent = report.score; document.getElementById("diagnostic-state").textContent = report.failed ? "需要处理" : report.warnings ? "基本正常" : "运行良好";
+      document.getElementById("diagnostic-score").textContent = report.score; document.getElementById("diagnostic-state").textContent = report.failed ? tr("需要处理", "需要处理") : report.warnings ? tr("基本正常", "基本正常") : tr("运行良好", "运行良好");
       document.getElementById("diagnostic-passed").textContent = report.passed; document.getElementById("diagnostic-warnings").textContent = report.warnings; document.getElementById("diagnostic-failed").textContent = report.failed;
-      const generated = new Date(report.generatedAt); document.getElementById("diagnostic-time").textContent = Number.isNaN(generated.getTime()) ? report.generatedAt : `检测于 ${generated.toLocaleString("zh-CN", { hour12: false })}`;
+      const generated = new Date(report.generatedAt); document.getElementById("diagnostic-time").textContent = Number.isNaN(generated.getTime()) ? report.generatedAt : trf("diagnostics.detectedAt", "检测于 {time}", { time: generated.toLocaleString(activeLocale(), { hour12: false }) });
       const checks = report.checks.filter((check) => (state.diagnosticFilter === "all" || check.status === state.diagnosticFilter) && contextMatches(check.title, check.detail, check.category, check.action));
-      document.getElementById("diagnostic-result-count").textContent = `${checks.length}/${report.checks.length} 项`;
-      const meta = { pass: ["circle-check", "通过"], warning: ["triangle-alert", "警告"], error: ["circle-x", "错误"] };
-      list.innerHTML = checks.length ? checks.map((check) => { const [icon, label] = meta[check.status] || ["circle-help", check.status]; return `<article class="diagnostic-row ${check.status}"><span class="diagnostic-row-icon"><i data-lucide="${icon}"></i></span><div class="diagnostic-row-copy"><div><span class="diagnostic-category">${escapeHtml(check.category)}</span><strong>${escapeHtml(check.title)}</strong></div><p>${escapeHtml(check.detail)}</p>${check.action ? `<small><i data-lucide="wrench"></i>${escapeHtml(check.action)}</small>` : ""}</div><span class="diagnostic-status">${label}</span></article>`; }).join("") : `<div class="diagnostic-empty"><i data-lucide="search-x"></i><strong>没有匹配的检查项</strong><small>调整左侧状态筛选或搜索内容</small></div>`;
+      document.getElementById("diagnostic-result-count").textContent = trf("diagnostics.resultCount", "{shown}/{total} 项", { shown: checks.length, total: report.checks.length });
+      const meta = { pass: ["circle-check", tr("通过", "通过")], warning: ["triangle-alert", tr("警告", "警告")], error: ["circle-x", tr("错误", "错误")] };
+      list.innerHTML = checks.length ? checks.map((check) => { const [icon, label] = meta[check.status] || ["circle-help", check.status]; return `<article class="diagnostic-row ${check.status}"><span class="diagnostic-row-icon"><i data-lucide="${icon}"></i></span><div class="diagnostic-row-copy"><div><span class="diagnostic-category">${escapeHtml(localizeDiagnosticText(check.category))}</span><strong>${escapeHtml(localizeDiagnosticText(check.title))}</strong></div><p>${escapeHtml(localizeDiagnosticText(check.detail))}</p>${check.action ? `<small><i data-lucide="wrench"></i>${escapeHtml(localizeDiagnosticText(check.action))}</small>` : ""}</div><span class="diagnostic-status">${label}</span></article>`; }).join("") : `<div class="diagnostic-empty"><i data-lucide="search-x"></i><strong>${tr("没有匹配的检查项", "没有匹配的检查项")}</strong><small>${tr("调整左侧状态筛选或搜索内容", "调整左侧状态筛选或搜索内容")}</small></div>`;
       refreshIcons();
     }
     async function refreshDiagnostics() {
@@ -1532,7 +1593,7 @@
     }
     function setConfigEditState(manual) {
       state.configManuallyEdited = manual; const badge = document.getElementById("config-edit-state");
-      badge.className = `badge ${manual ? "warn" : "ok"}`; badge.textContent = manual ? "已手动修改" : "自动生成";
+      badge.className = `badge ${manual ? "warn" : "ok"}`; badge.textContent = manual ? tr("已手动修改", "已手动修改") : tr("自动生成", "自动生成");
     }
     function setConfigImportStatus(message = "", success = true) {
       const status = document.getElementById("config-import-status");
@@ -1555,13 +1616,13 @@
     }
     function normalizedProviderUrl(value) { return String(value || "").trim().replace(/\/+$/, "").toLowerCase(); }
     function importedProviderName(baseUrl) {
-      try { return new URL(baseUrl).hostname.replace(/^api\./, ""); } catch { return "自定义供应商"; }
+      try { return new URL(baseUrl).hostname.replace(/^api\./, ""); } catch { return tr("自定义供应商", "自定义供应商"); }
     }
     function applyParsedProviderConfig(parsed) {
       const form = document.getElementById("provider-form"); const fields = [];
       const importedFormat = parsed.apiFormat || (state.activeClient.startsWith("claude") ? "anthropic" : state.activeClient === "antigravity" ? "gemini" : null);
       if (parsed.baseUrl) {
-        form.elements["provider-base-url"].value = parsed.baseUrl; fields.push("请求地址");
+        form.elements["provider-base-url"].value = parsed.baseUrl; fields.push(tr("请求地址", "请求地址"));
         const matched = (PRESETS[state.activeClient] || COMMON_PRESETS).find((preset) => preset.baseUrl && normalizedProviderUrl(preset.baseUrl) === normalizedProviderUrl(parsed.baseUrl));
         const preset = matched || findPreset("custom"); state.selectedPresetId = preset.id;
         form.elements["provider-preset-id"].value = preset.id; form.elements["provider-type"].value = matched?.type || (importedFormat === "anthropic" ? "anthropic" : importedFormat === "gemini" ? "gemini" : "openai");
@@ -1571,14 +1632,14 @@
       if (parsed.apiKey) { form.elements["provider-api-key"].value = parsed.apiKey; fields.push("API Key"); }
       if (parsed.model) {
         const options = [...form.elements["provider-model"].options].map((option) => option.value).filter(Boolean);
-        setModelOptions([...new Set([parsed.model, ...options])], parsed.model, `${parsed.sourceFormat} 配置导入`); fields.push("默认模型");
+        setModelOptions([...new Set([parsed.model, ...options])], parsed.model, trf("provider.importSource", "{format} 配置导入", { format: parsed.sourceFormat })); fields.push(tr("默认模型", "默认模型"));
         if (["codex", "grok", "opencode", "openclaw", "hermes"].includes(state.activeClient)) form.elements["advanced-codex-model"].value = parsed.model;
         if (state.activeClient.startsWith("claude")) form.elements["advanced-claude-sonnet"].value = parsed.model;
       }
       if (importedFormat && [...form.elements["provider-api-format"].options].some((option) => option.value === importedFormat)) {
-        form.elements["provider-api-format"].value = importedFormat; fields.push("API 协议");
+        form.elements["provider-api-format"].value = importedFormat; fields.push(tr("API 协议", "API 协议"));
       }
-      setConfigEditState(true); setConfigImportStatus(`已识别 ${fields.join("、")}`, true); updateProviderFormPresentation(findPreset(state.selectedPresetId));
+      setConfigEditState(true); setConfigImportStatus(trf("provider.importedFields", "已识别 {fields}", { fields: fields.join(", ") }), true); updateProviderFormPresentation(findPreset(state.selectedPresetId));
     }
     async function importProviderConfig(content) {
       const request = ++state.configImportRequest;
@@ -1593,17 +1654,17 @@
     function collectProviderSettingsConfig() {
       const form = document.getElementById("provider-form"); const main = form.elements["provider-main-config"].value.trim();
       if (state.activeClient === "codex") {
-        let auth; try { auth = JSON.parse(form.elements["provider-auth-config"].value || "{}"); } catch { throw new Error("auth.json 不是有效 JSON"); }
-        if (!auth || Array.isArray(auth) || typeof auth !== "object") throw new Error("auth.json 必须是 JSON 对象");
-        if (!main) throw new Error("config.toml 不能为空");
+        let auth; try { auth = JSON.parse(form.elements["provider-auth-config"].value || "{}"); } catch { throw new Error(tr("auth.json 不是有效 JSON", "auth.json 不是有效 JSON")); }
+        if (!auth || Array.isArray(auth) || typeof auth !== "object") throw new Error(tr("auth.json 必须是 JSON 对象", "auth.json 必须是 JSON 对象"));
+        if (!main) throw new Error(tr("config.toml 不能为空", "config.toml 不能为空"));
         return JSON.stringify({ auth, config: main }, null, 2);
       }
       if (state.activeClient === "grok") {
-        if (!main) throw new Error("config.toml 不能为空");
+        if (!main) throw new Error(tr("config.toml 不能为空", "config.toml 不能为空"));
         return JSON.stringify({ config: main, env: { XAI_API_KEY: configKeyPlaceholder, GROK_DEFAULT_MODEL: "agentdock" } }, null, 2);
       }
-      let settings; try { settings = JSON.parse(main || "{}"); } catch { throw new Error(`${document.getElementById("provider-main-filename").textContent} 不是有效 JSON`); }
-      if (!settings || Array.isArray(settings) || typeof settings !== "object") throw new Error("配置文件内容必须是 JSON 对象");
+      let settings; try { settings = JSON.parse(main || "{}"); } catch { throw new Error(trf("error.invalidJson", "{name} 不是有效 JSON", { name: document.getElementById("provider-main-filename").textContent })); }
+      if (!settings || Array.isArray(settings) || typeof settings !== "object") throw new Error(tr("配置文件内容必须是 JSON 对象", "配置文件内容必须是 JSON 对象"));
       return JSON.stringify(settings, null, 2);
     }
 
@@ -1611,9 +1672,9 @@
       state.configImportRequest += 1; state.editingProviderId = provider?.id || null; state.selectedPresetId = provider?.presetId || "custom";
       const form = document.getElementById("provider-form"); const meta = clientMeta(state.activeClient);
       document.getElementById("provider-editor").hidden = false;
-      document.getElementById("provider-editor-title").textContent = `${provider ? "编辑" : "添加"} ${meta.name} 供应商`;
-      document.getElementById("provider-submit-label").textContent = provider ? "保存并使用" : "添加并使用";
-      document.getElementById("provider-form-app").textContent = `${meta.name} 供应商`;
+      document.getElementById("provider-editor-title").textContent = trf("provider.editorTitle", "{action} {name} 供应商", { action: provider ? tr("action.edit", "编辑") : tr("action.add", "添加"), name: meta.name });
+      document.getElementById("provider-submit-label").textContent = provider ? tr("保存并使用", "保存并使用") : tr("添加并使用", "添加并使用");
+      document.getElementById("provider-form-app").textContent = trf("provider.app", "{name} 供应商", { name: meta.name });
       form.elements["provider-id"].value = provider?.id || "";
       form.elements["provider-preset-id"].value = state.selectedPresetId;
       form.elements["provider-type"].value = provider?.providerType || "custom";
@@ -1622,7 +1683,7 @@
       form.elements["provider-base-url"].value = provider?.baseUrl || "";
       form.elements["provider-api-key"].value = "";
       const selectedModel = state.activeClient === "antigravity" ? provider?.geminiModel || "" : state.activeClient.startsWith("claude") ? provider?.claudeSonnetModel || "" : provider?.codexModel || "";
-      setModelOptions(selectedModel ? [selectedModel] : [], selectedModel, "正在读取客户端模型");
+      setModelOptions(selectedModel ? [selectedModel] : [], selectedModel, tr("正在读取客户端模型", "正在读取客户端模型"));
       form.elements["provider-api-format"].value = provider?.apiFormat || "auto";
       form.elements["advanced-codex-model"].value = provider?.codexModel || "gpt-5.6-sol";
       form.elements["advanced-claude-sonnet"].value = provider?.claudeSonnetModel || "claude-sonnet-5";
@@ -1639,38 +1700,38 @@
       form.elements["provider-preset-id"].value = preset.id; form.elements["provider-type"].value = preset.type;
       form.elements["provider-name"].value = preset.id === "custom" ? "" : preset.name;
       form.elements["provider-base-url"].value = preset.baseUrl;
-      setModelOptions(preset.model ? [preset.model] : [], preset.model, "正在读取供应商模型"); form.elements["provider-api-format"].value = preset.format;
+      setModelOptions(preset.model ? [preset.model] : [], preset.model, tr("正在读取供应商模型", "正在读取供应商模型")); form.elements["provider-api-format"].value = preset.format;
       if (["codex", "grok"].includes(state.activeClient)) form.elements["advanced-codex-model"].value = preset.model || (state.activeClient === "grok" ? "grok-4.5" : "gpt-5.6-sol");
       if (state.activeClient.startsWith("claude")) form.elements["advanced-claude-sonnet"].value = preset.model || "claude-sonnet-5";
       updateProviderFormPresentation(preset); renderPresetGrid(); regenerateProviderConfig();
     }
     function setModelOptions(models, selected, source) {
       const select = document.querySelector('[name="provider-model"]'); const values = [...new Set([selected, ...models].filter(Boolean))];
-      select.innerHTML = values.length ? values.map((model) => `<option value="${escapeHtml(model)}">${escapeHtml(model)}</option>`).join("") : `<option value="">暂无可用模型</option>`;
+      select.innerHTML = values.length ? values.map((model) => `<option value="${escapeHtml(model)}">${escapeHtml(model)}</option>`).join("") : `<option value="">${tr("暂无可用模型", "暂无可用模型")}</option>`;
       if (selected && values.includes(selected)) select.value = selected;
       document.getElementById("model-source").textContent = source;
     }
     async function loadProviderModels() {
       const form = document.getElementById("provider-form"); const selected = form.elements["provider-model"].value;
-      document.getElementById("model-source").textContent = "正在读取模型列表";
+      document.getElementById("model-source").textContent = tr("正在读取模型列表", "正在读取模型列表");
       const result = await call("fetch_provider_models", { appId: state.activeClient, baseUrl: form.elements["provider-base-url"].value.trim(), apiKey: form.elements["provider-api-key"].value.trim() || null, apiFormat: form.elements["provider-api-format"].value });
-      const preferred = selected || result.models[0] || ""; setModelOptions(result.models, preferred, `${result.source} · ${result.models.length} 个模型`); if (!state.configManuallyEdited) regenerateProviderConfig();
+      const preferred = selected || result.models[0] || ""; setModelOptions(result.models, preferred, trf("provider.models", "{source} · {count} 个模型", { source: result.source, count: result.models.length })); if (!state.configManuallyEdited) regenerateProviderConfig();
     }
     function updateProviderFormPresentation(preset) {
       const form = document.getElementById("provider-form"); const official = (preset?.type || form.elements["provider-type"].value) === "official";
       const short = preset?.short || form.elements["provider-name"].value.slice(0, 2).toUpperCase() || "CU";
       const logo = document.getElementById("provider-form-logo"); const logoPreset = preset || { name: form.elements["provider-name"].value, short };
-      logo.classList.toggle("has-image", Boolean(PROVIDER_LOGOS[logoPreset.id])); logo.innerHTML = providerLogoContent(logoPreset); document.getElementById("provider-form-heading").textContent = preset?.name || form.elements["provider-name"].value || "自定义配置";
+      logo.classList.toggle("has-image", Boolean(PROVIDER_LOGOS[logoPreset.id])); logo.innerHTML = providerLogoContent(logoPreset); document.getElementById("provider-form-heading").textContent = preset?.name ? tr(preset.name, preset.name) : form.elements["provider-name"].value || tr("自定义配置", "自定义配置");
       document.getElementById("base-url-field").hidden = official; document.getElementById("api-key-field").hidden = official;
       form.elements["provider-base-url"].required = !official; form.elements["provider-api-key"].required = !official && !state.editingProviderId;
-      const hints = { official: "官方供应商使用客户端登录，无需填写 API Key", cn_official: "请求地址已预设，只需填写 API Key", aggregator: "请求地址已预设，只需填写 API Key", third_party: "确认请求地址后填写 API Key", custom: "填写供应商提供的请求地址和 API Key" };
+      const hints = { official: tr("官方供应商使用客户端登录，无需填写 API Key", "官方供应商使用客户端登录，无需填写 API Key"), cn_official: tr("请求地址已预设，只需填写 API Key", "请求地址已预设，只需填写 API Key"), aggregator: tr("请求地址已预设，只需填写 API Key", "请求地址已预设，只需填写 API Key"), third_party: tr("确认请求地址后填写 API Key", "确认请求地址后填写 API Key"), custom: tr("填写供应商提供的请求地址和 API Key", "填写供应商提供的请求地址和 API Key") };
       document.querySelector("#preset-hint span").textContent = hints[preset?.category || "custom"];
     }
     function showProviderError(message) { const editor = document.getElementById("provider-editor"); if (editor?.hidden) return; const error = document.getElementById("provider-form-error"); error.textContent = message; error.classList.add("visible"); }
     function hideProviderError() { const error = document.getElementById("provider-form-error"); if (error) { error.textContent = ""; error.classList.remove("visible"); } }
     function providerInput() {
       const form = document.getElementById("provider-form"); const official = form.elements["provider-type"].value === "official";
-      if (!form.reportValidity()) throw new Error(official ? "请填写供应商名称" : "请完整填写供应商名称、请求地址和 API Key");
+      if (!form.reportValidity()) throw new Error(official ? tr("请填写供应商名称", "请填写供应商名称") : tr("请完整填写供应商名称、请求地址和 API Key", "请完整填写供应商名称、请求地址和 API Key"));
       const old = state.providers.find((provider) => provider.id === state.editingProviderId); const model = form.elements["provider-model"].value.trim();
       return { id: form.elements["provider-id"].value || null, name: form.elements["provider-name"].value.trim(), notes: form.elements["provider-notes"].value.trim(), websiteUrl: old?.websiteUrl || "", presetId: form.elements["provider-preset-id"].value, providerType: form.elements["provider-type"].value, baseUrl: form.elements["provider-base-url"].value.trim(), apiKey: form.elements["provider-api-key"].value.trim() || null, apiFormat: form.elements["provider-api-format"].value, settingsConfig: collectProviderSettingsConfig(), enabledApps: [state.activeClient], activeApps: [...new Set([...(old?.activeApps || []).filter((app) => app !== state.activeClient), state.activeClient])], codexModel: !state.activeClient.startsWith("claude") && state.activeClient !== "antigravity" ? model : form.elements["advanced-codex-model"].value.trim(), geminiModel: state.activeClient === "antigravity" ? model : old?.geminiModel || "gemini-3.5-pro", claudeSonnetModel: state.activeClient.startsWith("claude") ? model : form.elements["advanced-claude-sonnet"].value.trim(), claudeHaikuModel: form.elements["advanced-claude-haiku"].value.trim(), claudeOpusModel: form.elements["advanced-claude-opus"].value.trim(), active: true };
     }
@@ -1678,8 +1739,8 @@
       hideProviderError(); const provider = await call("save_provider", { input: providerInput() });
       await call("activate_provider", { providerId: provider.id, appId: state.activeClient });
       const applied = await call("apply_provider_config", { providerId: provider.id, appId: state.activeClient });
-      addLog("ok", `${clientMeta(state.activeClient).name} 已使用供应商 ${provider.name}，写入 ${applied.writtenFiles.length} 个配置文件`);
-      notify(`${provider.name} 已添加并启用`); closeProviderEditor(); await loadAll({ quiet: true });
+      addLog("ok", trf("provider.appliedFiles", "{client} 已使用供应商 {provider}，写入 {count} 个配置文件", { client: clientMeta(state.activeClient).name, provider: provider.name, count: applied.writtenFiles.length }));
+      notify(trf("provider.added", "{name} 已添加并启用", { name: provider.name })); closeProviderEditor(); await loadAll({ quiet: true });
     }
 
     function mcpSchemaType(schema = {}) {
@@ -1692,48 +1753,48 @@
     function mcpSchemaValue(value) { try { return JSON.stringify(value); } catch { return String(value); } }
     function mcpAnnotationBadges(annotations = {}) {
       const badges = [];
-      if (annotations.readOnlyHint) badges.push(["只读", "ok"]);
-      if (annotations.destructiveHint) badges.push(["会修改数据", "warn"]);
-      if (annotations.idempotentHint) badges.push(["可重复调用", ""]);
-      if (annotations.openWorldHint) badges.push(["可访问外部服务", ""]);
+      if (annotations.readOnlyHint) badges.push([tr("只读", "只读"), "ok"]);
+      if (annotations.destructiveHint) badges.push([tr("会修改数据", "会修改数据"), "warn"]);
+      if (annotations.idempotentHint) badges.push([tr("可重复调用", "可重复调用"), ""]);
+      if (annotations.openWorldHint) badges.push([tr("可访问外部服务", "可访问外部服务"), ""]);
       return badges.map(([label, kind]) => `<span class="badge ${kind}">${label}</span>`).join("");
     }
     function renderMcpToolDetail() {
       const detail = document.getElementById("mcp-tool-detail"); const tools = state.mcpToolsResult?.tools || [];
       const tool = tools.find((item) => item.name === state.activeMcpToolName) || tools[0];
-      if (!tool) { detail.innerHTML = `<div class="mcp-tools-state"><div><i data-lucide="wrench"></i><h3>没有可展示的工具</h3><p>服务器已连接，但没有返回工具定义。</p></div></div>`; refreshIcons(); return; }
+      if (!tool) { detail.innerHTML = `<div class="mcp-tools-state"><div><i data-lucide="wrench"></i><h3>${tr("没有可展示的工具", "没有可展示的工具")}</h3><p>${tr("服务器已连接，但没有返回工具定义。", "服务器已连接，但没有返回工具定义。")}</p></div></div>`; refreshIcons(); return; }
       state.activeMcpToolName = tool.name; const schema = tool.inputSchema || {}; const properties = Object.entries(schema.properties || {}); const required = new Set(schema.required || []);
       const params = properties.length ? properties.map(([name, value]) => {
         const meta = [];
-        if (Object.hasOwn(value, "default")) meta.push(`默认值 ${mcpSchemaValue(value.default)}`);
-        if (Array.isArray(value.enum)) meta.push(`可选值 ${value.enum.map(mcpSchemaValue).join(" / ")}`);
-        if (value.minimum !== undefined) meta.push(`最小 ${value.minimum}`);
-        if (value.maximum !== undefined) meta.push(`最大 ${value.maximum}`);
-        if (value.pattern) meta.push(`格式 ${value.pattern}`);
-        return `<article class="mcp-param-row"><div class="mcp-param-name"><code>${escapeHtml(name)}</code><span>${escapeHtml(mcpSchemaType(value))}${required.has(name) ? " · 必填" : " · 可选"}</span></div><div class="mcp-param-copy"><p>${escapeHtml(value.description || "暂无参数说明")}</p>${meta.length ? `<div class="mcp-param-meta">${meta.map((item) => `<code>${escapeHtml(item)}</code>`).join("")}</div>` : ""}</div></article>`;
-      }).join("") : `<div class="empty">此工具不需要参数</div>`;
-      detail.innerHTML = `<div class="mcp-tool-title-line"><h3>${escapeHtml(tool.name)}</h3>${tool.title && tool.title !== tool.name ? `<span class="badge">${escapeHtml(tool.title)}</span>` : ""}</div><p class="mcp-tool-description">${escapeHtml(tool.description || "服务器没有提供工具说明")}</p>${tool.annotations ? `<div class="mcp-tool-annotations">${mcpAnnotationBadges(tool.annotations)}</div>` : ""}<section class="mcp-params"><h4>参数</h4><div class="mcp-param-list">${params}</div></section><details class="mcp-schema-details"><summary>完整输入参数 Schema</summary><pre>${escapeHtml(JSON.stringify(schema, null, 2))}</pre></details>${tool.outputSchema ? `<details class="mcp-schema-details"><summary>输出结果 Schema</summary><pre>${escapeHtml(JSON.stringify(tool.outputSchema, null, 2))}</pre></details>` : ""}`;
+        if (Object.hasOwn(value, "default")) meta.push(trf("mcp.defaultValue", "默认值 {value}", { value: mcpSchemaValue(value.default) }));
+        if (Array.isArray(value.enum)) meta.push(trf("mcp.enumValues", "可选值 {value}", { value: value.enum.map(mcpSchemaValue).join(" / ") }));
+        if (value.minimum !== undefined) meta.push(trf("mcp.minimum", "最小 {value}", { value: value.minimum }));
+        if (value.maximum !== undefined) meta.push(trf("mcp.maximum", "最大 {value}", { value: value.maximum }));
+        if (value.pattern) meta.push(trf("mcp.pattern", "格式 {value}", { value: value.pattern }));
+        return `<article class="mcp-param-row"><div class="mcp-param-name"><code>${escapeHtml(name)}</code><span>${escapeHtml(mcpSchemaType(value))} · ${required.has(name) ? tr("必填", "必填") : tr("可选", "可选")}</span></div><div class="mcp-param-copy"><p>${escapeHtml(value.description || tr("暂无参数说明", "暂无参数说明"))}</p>${meta.length ? `<div class="mcp-param-meta">${meta.map((item) => `<code>${escapeHtml(item)}</code>`).join("")}</div>` : ""}</div></article>`;
+      }).join("") : `<div class="empty">${tr("此工具不需要参数", "此工具不需要参数")}</div>`;
+      detail.innerHTML = `<div class="mcp-tool-title-line"><h3>${escapeHtml(tool.name)}</h3>${tool.title && tool.title !== tool.name ? `<span class="badge">${escapeHtml(tool.title)}</span>` : ""}</div><p class="mcp-tool-description">${escapeHtml(tool.description || tr("服务器没有提供工具说明", "服务器没有提供工具说明"))}</p>${tool.annotations ? `<div class="mcp-tool-annotations">${mcpAnnotationBadges(tool.annotations)}</div>` : ""}<section class="mcp-params"><h4>${tr("参数", "参数")}</h4><div class="mcp-param-list">${params}</div></section><details class="mcp-schema-details"><summary>${tr("完整输入参数 Schema", "完整输入参数 Schema")}</summary><pre>${escapeHtml(JSON.stringify(schema, null, 2))}</pre></details>${tool.outputSchema ? `<details class="mcp-schema-details"><summary>${tr("输出结果 Schema", "输出结果 Schema")}</summary><pre>${escapeHtml(JSON.stringify(tool.outputSchema, null, 2))}</pre></details>` : ""}`;
       refreshIcons();
     }
     function renderMcpTools() {
       const server = state.mcpServers.find((item) => item.id === state.inspectingMcpId); const result = state.mcpToolsResult; const error = state.mcpToolsError;
-      document.getElementById("mcp-tools-title").textContent = server ? `${server.name || server.id} 的工具` : "MCP 工具";
-      document.getElementById("mcp-tools-server-name").textContent = server?.name || server?.id || "MCP 服务器";
+      document.getElementById("mcp-tools-title").textContent = server ? trf("mcp.toolsTitle", "{name} 的工具", { name: server.name || server.id }) : tr("MCP 工具", "MCP 工具");
+      document.getElementById("mcp-tools-server-name").textContent = server?.name || server?.id || tr("MCP 服务器", "MCP 服务器");
       document.getElementById("mcp-tools-transport").textContent = (result?.transport || server?.transport || "MCP").toUpperCase();
       const connection = document.getElementById("mcp-tools-connection"); const list = document.getElementById("mcp-tool-list"); const detail = document.getElementById("mcp-tool-detail");
-      connection.className = `badge ${error ? "danger" : result ? "ok" : ""}`; connection.textContent = error ? "连接失败" : result ? "已连接" : "正在连接";
+      connection.className = `badge ${error ? "danger" : result ? "ok" : ""}`; connection.textContent = error ? tr("连接失败", "连接失败") : result ? tr("status.deviceConnected", "已连接") : tr("正在连接", "正在连接");
       if (error) {
-        document.getElementById("mcp-tools-summary").textContent = "未能读取工具列表"; document.getElementById("mcp-tool-count").textContent = "--"; list.innerHTML = "";
-        detail.innerHTML = `<div class="mcp-tools-state"><div><i data-lucide="circle-alert"></i><h3>无法读取工具</h3><p>${escapeHtml(error)}</p><button class="btn primary" data-action="refresh-mcp-tools"><i data-lucide="refresh-cw"></i>重新连接</button></div></div>`; refreshIcons(); return;
+        document.getElementById("mcp-tools-summary").textContent = tr("未能读取工具列表", "未能读取工具列表"); document.getElementById("mcp-tool-count").textContent = "--"; list.innerHTML = "";
+        detail.innerHTML = `<div class="mcp-tools-state"><div><i data-lucide="circle-alert"></i><h3>${tr("无法读取工具", "无法读取工具")}</h3><p>${escapeHtml(error)}</p><button class="btn primary" data-action="refresh-mcp-tools"><i data-lucide="refresh-cw"></i>${tr("重新连接", "重新连接")}</button></div></div>`; refreshIcons(); return;
       }
       if (!result) {
-        document.getElementById("mcp-tools-summary").textContent = "正在初始化服务器并读取工具"; document.getElementById("mcp-tool-count").textContent = "--";
-        list.innerHTML = `<div class="mcp-tools-state"><i class="spin" data-lucide="loader-circle"></i></div>`; detail.innerHTML = `<div class="mcp-tools-state"><div><i class="spin" data-lucide="loader-circle"></i><h3>正在读取工具</h3><p>首次连接时，服务器可能需要准备运行依赖。</p></div></div>`; refreshIcons(); return;
+        document.getElementById("mcp-tools-summary").textContent = tr("正在初始化服务器并读取工具", "正在初始化服务器并读取工具"); document.getElementById("mcp-tool-count").textContent = "--";
+        list.innerHTML = `<div class="mcp-tools-state"><i class="spin" data-lucide="loader-circle"></i></div>`; detail.innerHTML = `<div class="mcp-tools-state"><div><i class="spin" data-lucide="loader-circle"></i><h3>${tr("正在读取工具", "正在读取工具")}</h3><p>${tr("首次连接时，服务器可能需要准备运行依赖。", "首次连接时，服务器可能需要准备运行依赖。")}</p></div></div>`; refreshIcons(); return;
       }
       const tools = result.tools || []; if (!tools.some((item) => item.name === state.activeMcpToolName)) state.activeMcpToolName = tools[0]?.name || "";
-      document.getElementById("mcp-tools-summary").textContent = `${tools.length} 个工具 · ${result.latencyMs} ms`;
+      document.getElementById("mcp-tools-summary").textContent = trf("mcp.toolsSummary", "{count} 个工具 · {latency} ms", { count: tools.length, latency: result.latencyMs });
       document.getElementById("mcp-tool-count").textContent = tools.length;
-      list.innerHTML = tools.length ? tools.map((tool) => `<button class="mcp-tool-item ${state.activeMcpToolName === tool.name ? "active" : ""}" data-action="select-mcp-tool" data-id="${escapeHtml(tool.name)}"><span><strong>${escapeHtml(tool.title || tool.name)}</strong><small>${escapeHtml(tool.description || tool.name)}</small></span><i data-lucide="chevron-right"></i></button>`).join("") : `<div class="empty">服务器没有返回工具</div>`;
+      list.innerHTML = tools.length ? tools.map((tool) => `<button class="mcp-tool-item ${state.activeMcpToolName === tool.name ? "active" : ""}" data-action="select-mcp-tool" data-id="${escapeHtml(tool.name)}"><span><strong>${escapeHtml(tool.title || tool.name)}</strong><small>${escapeHtml(tool.description || tool.name)}</small></span><i data-lucide="chevron-right"></i></button>`).join("") : `<div class="empty">${tr("服务器没有返回工具", "服务器没有返回工具")}</div>`;
       renderMcpToolDetail(); refreshIcons();
     }
     async function refreshMcpTools() {
@@ -1765,7 +1826,7 @@
     };
     function appCheckboxes(containerId, selected = []) { document.getElementById(containerId).innerHTML = APP_ORDER.map((id) => `<label class="check-control"><input type="checkbox" value="${id}" ${selected.includes(id) ? "checked" : ""}>${clientMeta(id).name}</label>`).join(""); }
     function renderMcpPresetChips() {
-      document.getElementById("mcp-preset-chips").innerHTML = `<button type="button" class="mcp-preset-chip ${state.selectedMcpPreset === "custom" ? "active" : ""}" data-action="select-mcp-preset" data-id="custom">自定义</button>${Object.values(MCP_PRESETS).map((preset) => `<button type="button" class="mcp-preset-chip ${state.selectedMcpPreset === preset.id ? "active" : ""}" data-action="select-mcp-preset" data-id="${preset.id}" title="${escapeHtml(preset.description)}">${escapeHtml(preset.id)}</button>`).join("")}`;
+      document.getElementById("mcp-preset-chips").innerHTML = `<button type="button" class="mcp-preset-chip ${state.selectedMcpPreset === "custom" ? "active" : ""}" data-action="select-mcp-preset" data-id="custom">${tr("自定义", "自定义")}</button>${Object.values(MCP_PRESETS).map((preset) => `<button type="button" class="mcp-preset-chip ${state.selectedMcpPreset === preset.id ? "active" : ""}" data-action="select-mcp-preset" data-id="${preset.id}" title="${escapeHtml(tr(preset.description, preset.description))}">${escapeHtml(preset.id)}</button>`).join("")}`;
     }
     function serverMcpSpec(server) {
       const spec = { ...(server?.extra || {}), type: server?.transport || "stdio" };
@@ -1775,11 +1836,11 @@
     }
     function setMcpMetadataVisible(visible) {
       document.getElementById("mcp-metadata").hidden = !visible; const button = document.querySelector('[data-action="toggle-mcp-metadata"]');
-      button.innerHTML = `<i data-lucide="chevron-${visible ? "up" : "down"}"></i><span>附加信息</span>`; refreshIcons();
+      button.innerHTML = `<i data-lucide="chevron-${visible ? "up" : "down"}"></i><span>${tr("附加信息", "附加信息")}</span>`; refreshIcons();
     }
     function openMcpForm(server = null) {
       state.editingMcpId = server?.id || null; state.selectedMcpPreset = server ? null : "custom"; const form = document.getElementById("mcp-form");
-      document.getElementById("mcp-editor").hidden = false; document.getElementById("mcp-form-title").textContent = server ? "编辑 MCP 服务器" : "新增 MCP 服务器"; document.getElementById("mcp-submit-label").textContent = server ? "保存" : "添加"; document.getElementById("mcp-preset-block").hidden = Boolean(server);
+      document.getElementById("mcp-editor").hidden = false; document.getElementById("mcp-form-title").textContent = server ? tr("编辑 MCP 服务器", "编辑 MCP 服务器") : tr("新增 MCP 服务器", "新增 MCP 服务器"); document.getElementById("mcp-submit-label").textContent = server ? tr("保存", "保存") : tr("添加", "添加"); document.getElementById("mcp-preset-block").hidden = Boolean(server);
       form.elements["mcp-id"].value = server?.id || ""; form.elements["mcp-id"].readOnly = Boolean(server); form.elements["mcp-name"].value = server?.name || ""; form.elements["mcp-description"].value = server?.description || ""; form.elements["mcp-homepage"].value = server?.homepage || ""; form.elements["mcp-docs"].value = server?.docs || ""; form.elements["mcp-tags"].value = server?.tags?.join(", ") || ""; form.elements["mcp-json"].value = server ? JSON.stringify(serverMcpSpec(server), null, 2) : ""; appCheckboxes("mcp-apps", server?.apps || ["codex", "claude-code", "antigravity", "grok"]);
       setMcpMetadataVisible(Boolean(server?.description || server?.homepage || server?.docs || server?.tags?.length)); showMcpJsonError(""); renderMcpPresetChips(); setTimeout(() => form.elements["mcp-id"].focus(), 70);
     }
@@ -1788,22 +1849,22 @@
     function applyMcpPreset(id) {
       state.selectedMcpPreset = id; renderMcpPresetChips(); const form = document.getElementById("mcp-form");
       if (id === "custom") { form.elements["mcp-id"].value = ""; form.elements["mcp-name"].value = ""; form.elements["mcp-description"].value = ""; form.elements["mcp-homepage"].value = ""; form.elements["mcp-docs"].value = ""; form.elements["mcp-tags"].value = ""; form.elements["mcp-json"].value = ""; setMcpMetadataVisible(false); showMcpJsonError(""); return; }
-      const preset = MCP_PRESETS[id]; if (!preset) return; form.elements["mcp-id"].value = uniqueMcpId(preset.id); form.elements["mcp-name"].value = preset.name; form.elements["mcp-description"].value = preset.description; form.elements["mcp-homepage"].value = preset.homepage; form.elements["mcp-docs"].value = preset.docs; form.elements["mcp-tags"].value = preset.tags.join(", "); form.elements["mcp-json"].value = JSON.stringify(preset.spec, null, 2); setMcpMetadataVisible(true); validateMcpJsonEditor();
+      const preset = MCP_PRESETS[id]; if (!preset) return; form.elements["mcp-id"].value = uniqueMcpId(preset.id); form.elements["mcp-name"].value = preset.name; form.elements["mcp-description"].value = tr(preset.description, preset.description); form.elements["mcp-homepage"].value = preset.homepage; form.elements["mcp-docs"].value = preset.docs; form.elements["mcp-tags"].value = preset.tags.join(", "); form.elements["mcp-json"].value = JSON.stringify(preset.spec, null, 2); setMcpMetadataVisible(true); validateMcpJsonEditor();
     }
-    function parseJsonObject(raw, label) { let value; try { value = JSON.parse(raw || "{}"); } catch (error) { throw new Error(`${label} 格式错误：${error.message}`); } if (!value || Array.isArray(value) || typeof value !== "object") throw new Error(`${label} 必须是 JSON 对象`); return value; }
+    function parseJsonObject(raw, label) { let value; try { value = JSON.parse(raw || "{}"); } catch (error) { throw new Error(trf("error.invalidFormat", "{label} 格式错误：{error}", { label, error: error.message })); } if (!value || Array.isArray(value) || typeof value !== "object") throw new Error(trf("error.mustBeObject", "{label} 必须是 JSON 对象", { label })); return value; }
     function parseMcpJson(raw) {
-      let value = parseJsonObject(raw, "JSON 配置"); let inferredId = "";
+      let value = parseJsonObject(raw, tr("JSON 配置", "JSON 配置")); let inferredId = "";
       for (const key of ["mcpServers", "mcp"]) { if (value[key] && typeof value[key] === "object" && !Array.isArray(value[key])) { const entry = Object.entries(value[key])[0]; if (entry) { inferredId = entry[0]; value = entry[1]; } break; } }
       if (!value.type && !value.command && !value.url) { const entries = Object.entries(value); if (entries.length === 1 && entries[0][1] && typeof entries[0][1] === "object" && !Array.isArray(entries[0][1])) { inferredId = inferredId || entries[0][0]; value = entries[0][1]; } }
       const rawType = value.type || (value.url ? "http" : "stdio"); const transport = rawType === "local" ? "stdio" : rawType === "remote" ? "sse" : rawType; const commandArray = Array.isArray(value.command) ? value.command : null;
       const command = transport === "stdio" ? (commandArray?.[0] || value.command || "") : (value.url || ""); const args = transport === "stdio" ? (commandArray ? commandArray.slice(1) : Array.isArray(value.args) ? value.args : []) : []; const env = value.env || value.environment || {}; const headers = value.headers || value.http_headers || {}; const known = new Set(["type", "command", "args", "env", "environment", "url", "headers", "http_headers", "cwd", "enabled"]); const extra = Object.fromEntries(Object.entries(value).filter(([key]) => !known.has(key)));
-      if (!["stdio", "http", "sse"].includes(transport)) throw new Error(`不支持的传输类型：${transport}`); if (transport === "stdio" && !String(command).trim()) throw new Error("stdio 配置必须包含 command"); if (transport !== "stdio" && !String(command).trim()) throw new Error(`${transport.toUpperCase()} 配置必须包含 url`); if (!env || Array.isArray(env) || typeof env !== "object") throw new Error("env 必须是 JSON 对象"); if (!headers || Array.isArray(headers) || typeof headers !== "object") throw new Error("headers 必须是 JSON 对象");
+      if (!["stdio", "http", "sse"].includes(transport)) throw new Error(trf("error.unsupportedTransport", "不支持的传输类型：{transport}", { transport })); if (transport === "stdio" && !String(command).trim()) throw new Error(tr("stdio 配置必须包含 command", "stdio 配置必须包含 command")); if (transport !== "stdio" && !String(command).trim()) throw new Error(trf("error.missingUrl", "{transport} 配置必须包含 url", { transport: transport.toUpperCase() })); if (!env || Array.isArray(env) || typeof env !== "object") throw new Error(tr("env 必须是 JSON 对象", "env 必须是 JSON 对象")); if (!headers || Array.isArray(headers) || typeof headers !== "object") throw new Error(tr("headers 必须是 JSON 对象", "headers 必须是 JSON 对象"));
       return { inferredId, transport, command: String(command), args: args.map(String), env, headers, cwd: String(value.cwd || ""), extra };
     }
     function showMcpJsonError(message) { const error = document.getElementById("mcp-json-error"); error.hidden = !message; error.querySelector("span").textContent = message; }
     function validateMcpJsonEditor(autoFill = true) { try { const parsed = parseMcpJson(document.querySelector('[name="mcp-json"]').value); const form = document.getElementById("mcp-form"); if (autoFill && parsed.inferredId && !form.elements["mcp-id"].value.trim() && !state.editingMcpId) { form.elements["mcp-id"].value = uniqueMcpId(parsed.inferredId); if (!form.elements["mcp-name"].value.trim()) form.elements["mcp-name"].value = parsed.inferredId; } showMcpJsonError(""); return parsed; } catch (error) { showMcpJsonError(errorText(error)); return null; } }
     function mcpInput() {
-      const form = document.getElementById("mcp-form"); if (!form.reportValidity()) throw new Error("请填写服务器标题"); const id = form.elements["mcp-id"].value.trim(); if (!state.editingMcpId && state.mcpServers.some((server) => server.id === id)) throw new Error(`服务器 ID“${id}”已经存在`); const parsed = parseMcpJson(form.elements["mcp-json"].value); showMcpJsonError("");
+      const form = document.getElementById("mcp-form"); if (!form.reportValidity()) throw new Error(tr("请填写服务器标题", "请填写服务器标题")); const id = form.elements["mcp-id"].value.trim(); if (!state.editingMcpId && state.mcpServers.some((server) => server.id === id)) throw new Error(trf("error.serverExists", "服务器 ID“{id}”已经存在", { id })); const parsed = parseMcpJson(form.elements["mcp-json"].value); showMcpJsonError("");
       return { id, name: form.elements["mcp-name"].value.trim() || id, description: form.elements["mcp-description"].value.trim(), homepage: form.elements["mcp-homepage"].value.trim(), docs: form.elements["mcp-docs"].value.trim(), tags: form.elements["mcp-tags"].value.split(/[,，]/).map((item) => item.trim()).filter(Boolean), transport: parsed.transport, command: parsed.command, args: parsed.args, env: parsed.env, headers: parsed.headers, cwd: parsed.cwd, extra: parsed.extra, apps: [...document.querySelectorAll("#mcp-apps input:checked")].map((input) => input.value), enabled: true };
     }
     function parsePairs(text, mode) { const result = {}; for (const line of text.split("\n").map((item) => item.trim()).filter(Boolean)) { const colon = line.indexOf(":"); const equal = line.indexOf("="); const index = mode === "headers" && colon > 0 && (equal < 0 || colon < equal) ? colon : equal; if (index > 0) result[line.slice(0, index).trim()] = line.slice(index + 1).trim(); } return result; }
@@ -1811,15 +1872,15 @@
     function updateMcpWizardPreview() { const type = document.querySelector('[name="mcp-wizard-type"]:checked').value; document.getElementById("mcp-wizard-stdio-fields").hidden = type !== "stdio"; document.getElementById("mcp-wizard-remote-fields").hidden = type === "stdio"; document.querySelector('[name="mcp-wizard-preview"]').value = JSON.stringify(wizardSpec(), null, 2); }
     function openMcpWizard() { const form = document.getElementById("mcp-form"); let parsed = null; try { parsed = parseMcpJson(form.elements["mcp-json"].value); } catch {} const type = parsed?.transport || "stdio"; document.querySelectorAll('[name="mcp-wizard-type"]').forEach((input) => { input.checked = input.value === type; }); document.querySelector('[name="mcp-wizard-id"]').value = form.elements["mcp-id"].value; document.querySelector('[name="mcp-wizard-command"]').value = parsed?.transport === "stdio" ? parsed.command : ""; document.querySelector('[name="mcp-wizard-args"]').value = parsed?.args?.join("\n") || ""; document.querySelector('[name="mcp-wizard-env"]').value = Object.entries(parsed?.env || {}).map(([key, value]) => `${key}=${value}`).join("\n"); document.querySelector('[name="mcp-wizard-url"]').value = parsed && parsed.transport !== "stdio" ? parsed.command : ""; document.querySelector('[name="mcp-wizard-headers"]').value = Object.entries(parsed?.headers || {}).map(([key, value]) => `${key}: ${value}`).join("\n"); document.getElementById("mcp-wizard-layer").hidden = false; updateMcpWizardPreview(); refreshIcons(); }
     function closeMcpWizard() { document.getElementById("mcp-wizard-layer").hidden = true; }
-    function applyMcpWizard() { const id = document.querySelector('[name="mcp-wizard-id"]').value.trim(); const spec = wizardSpec(); if (!id) throw new Error("请填写服务器标题"); if (spec.type === "stdio" && !spec.command) throw new Error("请填写 Command"); if (spec.type !== "stdio" && !spec.url) throw new Error("请填写 URL"); const form = document.getElementById("mcp-form"); form.elements["mcp-id"].value = state.editingMcpId ? state.editingMcpId : uniqueMcpId(id); if (!form.elements["mcp-name"].value.trim()) form.elements["mcp-name"].value = id; form.elements["mcp-json"].value = JSON.stringify(spec, null, 2); closeMcpWizard(); validateMcpJsonEditor(); }
+    function applyMcpWizard() { const id = document.querySelector('[name="mcp-wizard-id"]').value.trim(); const spec = wizardSpec(); if (!id) throw new Error(tr("请填写服务器标题", "请填写服务器标题")); if (spec.type === "stdio" && !spec.command) throw new Error(tr("请填写 Command", "请填写 Command")); if (spec.type !== "stdio" && !spec.url) throw new Error(tr("请填写 URL", "请填写 URL")); const form = document.getElementById("mcp-form"); form.elements["mcp-id"].value = state.editingMcpId ? state.editingMcpId : uniqueMcpId(id); if (!form.elements["mcp-name"].value.trim()) form.elements["mcp-name"].value = id; form.elements["mcp-json"].value = JSON.stringify(spec, null, 2); closeMcpWizard(); validateMcpJsonEditor(); }
 
     async function handleAction(action, button) {
       const id = button.dataset.id;
       if (action === "confirm-cancel") return closeConfirm(false);
       if (action === "confirm-accept") return closeConfirm(true);
       if (action === "context-action") return handleAction({ clients: "refresh-all", software: "refresh-catalog", skills: "sync-skills", mcp: "new-mcp", stats: "refresh-stats", logs: "run-diagnostics", settings: "refresh-settings" }[state.activeView], button);
-      if (action === "refresh-all") return withBusy(button, async () => { await loadAll(); notify("状态已刷新"); });
-      if (action === "refresh-settings") return withBusy(button, async () => { state.settings = await call("get_app_settings"); applyAppearance(); renderSettings(); renderClients(); renderSourceSidebar(); renderHeader(); refreshIcons(); notify("设置已重新读取"); });
+      if (action === "refresh-all") return withBusy(button, async () => { await loadAll(); notify(tr("action.statusRefreshed", "状态已刷新")); });
+      if (action === "refresh-settings") return withBusy(button, async () => { state.settings = await call("get_app_settings"); applyAppearance(); renderSettings(); renderClients(); renderSourceSidebar(); renderHeader(); refreshIcons(); notify(tr("action.settingsReloaded", "设置已重新读取")); });
       if (action === "set-setting-choice") return queueSettingsSave({ [button.dataset.field]: button.dataset.value });
       if (action === "move-setting-client") {
         const order = [...state.settings.clientOrder]; const from = order.indexOf(id); const to = button.dataset.direction === "up" ? from - 1 : from + 1;
@@ -1833,26 +1894,26 @@
       if (action === "set-diagnostic-filter") { state.diagnosticFilter = id; renderLogs(); renderSourceSidebar(); refreshIcons(); return; }
       if (action === "focus-software") { state.softwareFilter = "all"; renderSoftware(); renderSourceSidebar(); refreshIcons(); document.querySelector(`[data-software-id="${CSS.escape(id)}"]`)?.scrollIntoView({ behavior: "smooth", block: "center" }); return; }
       if (action === "focus-skill") { state.skillFilter = "all"; renderSkills(); renderSourceSidebar(); refreshIcons(); document.querySelector(`[data-skill-id="${CSS.escape(id)}"]`)?.scrollIntoView({ behavior: "smooth", block: "center" }); return; }
-      if (action === "refresh-catalog") return withBusy(button, async () => { state.softwareCatalog = await call("list_software_catalog"); renderHeader(); renderClients(); renderSoftware(); renderSourceSidebar(); refreshIcons(); notify("版本信息已更新"); });
-      if (action === "quick-setup") return withBusy(button, async () => { for (const clientId of ["codex", "claude-code"]) if (!state.status.clients.some((client) => client.id === clientId && client.installed)) { const result = await call("install_client", { clientId }); addLog("ok", result.message); } await loadAll({ quiet: true }); notify("推荐客户端已处理"); });
-      if (action === "install-client") return withBusy(button, async () => { const result = await call("install_client", { clientId: id }); addLog("ok", result.message); notify(result.message); await loadAll({ quiet: true }); }, `install-client:${id}`);
-      if (action === "launch-client") return withBusy(button, async () => { const result = await call("launch_client", { clientId: id }); addLog("ok", result.message); notify(result.message); });
+      if (action === "refresh-catalog") return withBusy(button, async () => { state.softwareCatalog = await call("list_software_catalog"); renderHeader(); renderClients(); renderSoftware(); renderSourceSidebar(); refreshIcons(); notify(tr("action.catalogRefreshed", "版本信息已更新")); });
+      if (action === "quick-setup") return withBusy(button, async () => { for (const clientId of ["codex", "claude-code"]) if (!state.status.clients.some((client) => client.id === clientId && client.installed)) { const result = await call("install_client", { clientId }); addLog("ok", result.message); } await loadAll({ quiet: true }); notify(tr("推荐客户端已处理", "推荐客户端已处理")); });
+      if (action === "install-client") return withBusy(button, async () => { const result = await call("install_client", { clientId: id }); addLog("ok", result.message); notify(trf("action.clientInstalled", "{name} 已安装或更新", { name: clientMeta(id).name })); await loadAll({ quiet: true }); }, `install-client:${id}`);
+      if (action === "launch-client") return withBusy(button, async () => { const result = await call("launch_client", { clientId: id }); addLog("ok", result.message); notify(trf("action.clientLaunched", "{name} 已启动", { name: clientMeta(id).name })); });
       if (action === "open-path") return withBusy(button, async () => { const result = await call("open_path", { path: button.dataset.path }); addLog("info", result.message); });
-      if (action === "uninstall-client") { if (!await confirmAction(`卸载 ${clientMeta(id).name}`, "只会删除 AgentDock 托管的客户端文件，供应商配置会保留。", "确认卸载")) return; notify(`正在卸载 ${clientMeta(id).name}`); return withBusy(button, async () => { const result = await call("uninstall_client", { clientId: id }); addLog("warn", result.message); notify(result.message); await loadAll({ quiet: true }); }); }
+      if (action === "uninstall-client") { const name = clientMeta(id).name; if (!await confirmAction(trf("confirm.uninstallClient", "卸载 {name}", { name }), tr("confirm.uninstallClientMessage", "只会删除 AgentDock 托管的客户端文件，供应商配置会保留。"), tr("confirm.uninstall", "确认卸载"))) return; notify(trf("action.uninstalling", "正在卸载 {name}", { name })); return withBusy(button, async () => { const result = await call("uninstall_client", { clientId: id }); addLog("warn", result.message); notify(trf("action.uninstalled", "{name} 已卸载", { name })); await loadAll({ quiet: true }); }); }
       if (action === "open-provider-editor") return openProviderEditor();
       if (action === "close-provider-editor") return closeProviderEditor();
       if (action === "select-provider-preset") { applyPreset(findPreset(id)); return withBusy(button, loadProviderModels); }
       if (action === "refresh-models") return withBusy(button, loadProviderModels);
       if (action === "toggle-api-key") { const input = document.querySelector('[name="provider-api-key"]'); input.type = input.type === "password" ? "text" : "password"; button.innerHTML = `<i data-lucide="${input.type === "password" ? "eye" : "eye-off"}"></i>`; refreshIcons(); return; }
-      if (action === "reset-provider-config") { regenerateProviderConfig(); notify("配置文件已从表单重新生成"); return; }
+      if (action === "reset-provider-config") { regenerateProviderConfig(); notify(tr("action.configRegenerated", "配置文件已从表单重新生成")); return; }
       if (action === "save-provider") return withBusy(button, saveProvider);
       if (action === "edit-provider") return openProviderEditor(state.providers.find((provider) => provider.id === id));
-      if (action === "activate-provider") return withBusy(button, async () => { const provider = await call("activate_provider", { providerId: id, appId: state.activeClient }); const result = await call("apply_provider_config", { providerId: id, appId: state.activeClient }); addLog("ok", `${provider.name} 已应用到 ${clientMeta(state.activeClient).name}`); notify(`正在使用 ${provider.name}`); await loadAll({ quiet: true }); });
-      if (action === "test-provider") return withBusy(button, async () => { const result = await call("test_provider", { providerId: id }); addLog(result.ok ? "ok" : "warn", `${result.message} (${result.latencyMs}ms)`); notify(result.message, result.ok ? "ok" : "error"); });
-      if (action === "delete-provider") { const provider = state.providers.find((item) => item.id === id); if (!await confirmAction("删除供应商", `确定删除“${provider?.name || id}”？已写入客户端的配置不会自动清空。`)) return; return withBusy(button, async () => { const result = await call("delete_provider", { providerId: id }); addLog("warn", result.message); notify(result.message); await loadAll({ quiet: true }); }); }
-      if (action === "install-skill") return withBusy(button, async () => { const current = state.skills.find((item) => item.id === id); const skill = await call("install_skill", { input: { id, name: current.name, description: current.description, source: current.source, apps: current.apps.length ? current.apps : ["codex"] } }); notify(`${skill.name} 已安装`); await loadAll({ quiet: true }); });
-      if (action === "uninstall-skill") { if (!await confirmAction("卸载 Skill", `确定卸载“${id}”？卸载前会自动备份。`, "确认卸载")) return; return withBusy(button, async () => { const skill = await call("uninstall_skill", { skillId: id }); notify(`${skill.name} 已卸载`); await loadAll({ quiet: true }); }); }
-      if (action === "sync-skills") return withBusy(button, async () => { const result = await call("sync_skills"); addLog("ok", result.message); notify(result.message); });
+      if (action === "activate-provider") return withBusy(button, async () => { const provider = await call("activate_provider", { providerId: id, appId: state.activeClient }); await call("apply_provider_config", { providerId: id, appId: state.activeClient }); addLog("ok", trf("action.applied", "{provider} 已应用到 {client}", { provider: provider.name, client: clientMeta(state.activeClient).name })); notify(trf("action.using", "正在使用 {name}", { name: provider.name })); await loadAll({ quiet: true }); });
+      if (action === "test-provider") return withBusy(button, async () => { const result = await call("test_provider", { providerId: id }); addLog(result.ok ? "ok" : "warn", `${result.message} (${result.latencyMs}ms)`); notify(tr(result.message, result.message), result.ok ? "ok" : "error"); });
+      if (action === "delete-provider") { const provider = state.providers.find((item) => item.id === id); const name = provider?.name || id; if (!await confirmAction(tr("confirm.deleteProvider", "删除供应商"), trf("confirm.deleteProviderMessage", "确定删除“{name}”？已写入客户端的配置不会自动清空。", { name }))) return; return withBusy(button, async () => { const result = await call("delete_provider", { providerId: id }); addLog("warn", result.message); notify(trf("action.providerDeleted", "{name} 已删除", { name })); await loadAll({ quiet: true }); }); }
+      if (action === "install-skill") return withBusy(button, async () => { const current = state.skills.find((item) => item.id === id); const skill = await call("install_skill", { input: { id, name: current.name, description: current.description, source: current.source, apps: current.apps.length ? current.apps : ["codex"] } }); notify(trf("action.installed", "{name} 已安装", { name: skill.name })); await loadAll({ quiet: true }); });
+      if (action === "uninstall-skill") { if (!await confirmAction(tr("confirm.uninstallSkill", "卸载 Skill"), trf("confirm.uninstallSkillMessage", "确定卸载“{name}”？卸载前会自动备份。", { name: id }), tr("confirm.uninstall", "确认卸载"))) return; return withBusy(button, async () => { const skill = await call("uninstall_skill", { skillId: id }); notify(trf("action.uninstalled", "{name} 已卸载", { name: skill.name })); await loadAll({ quiet: true }); }); }
+      if (action === "sync-skills") return withBusy(button, async () => { const result = await call("sync_skills"); addLog("ok", result.message); notify(tr("action.skillsSynced", "Skills 已同步")); });
       if (action === "new-mcp") return openMcpForm();
       if (action === "inspect-mcp") return openMcpTools(id);
       if (action === "close-mcp-tools") return closeMcpTools();
@@ -1866,19 +1927,19 @@
       if (action === "close-mcp-wizard") return closeMcpWizard();
       if (action === "apply-mcp-wizard") return applyMcpWizard();
       if (action === "open-external") return withBusy(button, async () => { await call("open_external", { url: button.dataset.url }); });
-      if (action === "save-mcp") return withBusy(button, async () => { const server = await call("upsert_mcp_server", { input: mcpInput() }); notify(`${server.name} 已保存`); closeMcpForm(); await loadAll({ quiet: true }); });
-      if (action === "delete-mcp") { const server = state.mcpServers.find((item) => item.id === id); if (!await confirmAction("删除 MCP 服务器", `确定删除“${server?.name || id}”？它会同时从已启用客户端的配置中移除。`)) return; return withBusy(button, async () => { const result = await call("delete_mcp_server", { serverId: id }); notify(result.message); await loadAll({ quiet: true }); }); }
-      if (action === "import-mcp") return withBusy(button, async () => { const result = await call("import_mcp_from_apps"); const changed = result.imported + result.linked; const message = changed ? `已导入 ${result.imported} 个服务器，关联 ${result.linked} 个客户端配置` : "没有发现新的 MCP 配置"; addLog(result.errors.length ? "warn" : "ok", `${message}${result.errors.length ? `，${result.errors.join("；")}` : ""}`); notify(message, result.errors.length && !changed ? "error" : "ok"); await loadAll({ quiet: true }); });
-      if (action === "sync-mcp") return withBusy(button, async () => { const result = await call("sync_mcp_servers"); addLog("ok", result.message); notify(result.message); });
+      if (action === "save-mcp") return withBusy(button, async () => { const server = await call("upsert_mcp_server", { input: mcpInput() }); notify(trf("action.saved", "{name} 已保存", { name: server.name })); closeMcpForm(); await loadAll({ quiet: true }); });
+      if (action === "delete-mcp") { const server = state.mcpServers.find((item) => item.id === id); const name = server?.name || id; if (!await confirmAction(tr("confirm.deleteMcp", "删除 MCP 服务器"), trf("confirm.deleteMcpMessage", "确定删除“{name}”？它会同时从已启用客户端的配置中移除。", { name }))) return; return withBusy(button, async () => { await call("delete_mcp_server", { serverId: id }); notify(trf("action.mcpDeleted", "{name} 已删除", { name })); await loadAll({ quiet: true }); }); }
+      if (action === "import-mcp") return withBusy(button, async () => { const result = await call("import_mcp_from_apps"); const changed = result.imported + result.linked; const message = changed ? trf("action.importMcp", "已导入 {imported} 个服务器，关联 {linked} 个客户端配置", { imported: result.imported, linked: result.linked }) : tr("action.noMcp", "没有发现新的 MCP 配置"); addLog(result.errors.length ? "warn" : "ok", `${message}${result.errors.length ? `, ${result.errors.join("; ")}` : ""}`); notify(message, result.errors.length && !changed ? "error" : "ok"); await loadAll({ quiet: true }); });
+      if (action === "sync-mcp") return withBusy(button, async () => { const result = await call("sync_mcp_servers"); addLog("ok", result.message); notify(tr("action.mcpSynced", "MCP 配置已同步")); });
       if (action === "set-stats-days") { state.usageDays = Number(id); renderSourceSidebar(); refreshIcons(); return withBusy(button, async () => { state.usageStats = await call("get_usage_stats", { days: state.usageDays }); renderStats(); renderSourceSidebar(); refreshIcons(); }); }
-      if (action === "refresh-stats") return withBusy(button, async () => { state.usageStats = await call("get_usage_stats", { days: state.usageDays }); renderStats(); renderSourceSidebar(); refreshIcons(); notify("统计已刷新"); });
+      if (action === "refresh-stats") return withBusy(button, async () => { state.usageStats = await call("get_usage_stats", { days: state.usageDays }); renderStats(); renderSourceSidebar(); refreshIcons(); notify(tr("action.statsRefreshed", "统计已刷新")); });
       if (action === "set-trend-metric") { state.trendMetric = id; renderStats(); return; }
       if (action === "set-breakdown") { state.breakdown = id; renderStats(); renderSourceSidebar(); refreshIcons(); return; }
-      if (action === "run-diagnostics") return withBusy(button, async () => { await refreshDiagnostics(); notify("诊断已完成"); });
-      if (action === "export-diagnostics") return withBusy(button, async () => { const result = await call("export_diagnostics"); addLog("ok", `诊断包已导出：${result.path}`); notify("诊断包已导出"); });
+      if (action === "run-diagnostics") return withBusy(button, async () => { await refreshDiagnostics(); notify(tr("action.diagnosticsComplete", "诊断已完成")); });
+      if (action === "export-diagnostics") return withBusy(button, async () => { const result = await call("export_diagnostics"); addLog("ok", trf("diagnostics.exportPath", "诊断包已导出：{path}", { path: result.path })); notify(tr("action.diagnosticsExported", "诊断包已导出")); });
       if (action === "open-data-dir") return withBusy(button, async () => { const result = await call("open_path", { path: state.status.dataDir }); addLog("info", result.message); });
-      if (action === "clear-logs") { state.logs = []; renderLogs(); renderSourceSidebar(); refreshIcons(); notify("日志已清空"); return; }
-      throw new Error(`按钮动作未实现：${action}`);
+      if (action === "clear-logs") { state.logs = []; renderLogs(); renderSourceSidebar(); refreshIcons(); notify(tr("action.logsCleared", "日志已清空")); return; }
+      throw new Error(trf("error.actionNotImplemented", "按钮动作未实现：{action}", { action }));
     }
 
     document.addEventListener("click", (event) => {
@@ -1940,7 +2001,7 @@
     async function boot() {
       refreshIcons(); addLog("info", state.desktop ? "正在连接 AgentDock 本机服务" : "已进入浏览器交互预览模式");
       try { await loadAll({ quiet: true }); addLog("ok", `AgentDock ${state.status.appVersion} 已启动`); }
-      catch (error) { const message = errorText(error); document.getElementById("backend-state").className = "badge danger"; document.getElementById("backend-state").innerHTML = `<i data-lucide="circle-x"></i>本机服务连接失败`; addLog("error", message); notify(message, "error"); refreshIcons(); }
+      catch (error) { const message = errorText(error); document.getElementById("backend-state").className = "badge danger"; document.getElementById("backend-state").innerHTML = `<i data-lucide="circle-x"></i>${tr("本机服务连接失败", "本机服务连接失败")}`; addLog("error", message); notify(message, "error"); refreshIcons(); }
     }
     boot();
   </script>

@@ -359,7 +359,21 @@ body { background: var(--canvas); }
 .settings-segmented { display: inline-flex; max-width: 100%; flex-wrap: wrap; gap: 3px; border: 1px solid var(--line); border-radius: 7px; background: var(--surface-raised); padding: 3px; }
 .settings-segmented button { display: inline-flex; min-width: 96px; min-height: 34px; align-items: center; justify-content: center; gap: 6px; border: 0; border-radius: 5px; background: transparent; color: var(--ink-soft); padding: 0 12px; font-size: 10px; font-weight: 620; }
 .settings-segmented button:hover { background: var(--surface-pressed); color: var(--ink); }
-.settings-segmented button.active { background: var(--surface); color: var(--ink); box-shadow: 0 1px 4px rgba(23, 35, 38, .1); }
+.settings-segmented button.active {
+  border: 1px solid var(--accent);
+  background: var(--accent);
+  color: #fff;
+  box-shadow: 0 2px 8px rgba(23, 119, 122, .22);
+}
+.settings-segmented button.active:hover { background: var(--accent-hover); color: #fff; }
+.settings-segmented button.active::after {
+  width: 5px;
+  height: 9px;
+  border: solid currentColor;
+  border-width: 0 2px 2px 0;
+  content: "";
+  transform: rotate(45deg) translateY(-1px);
+}
 .settings-segmented button svg { width: 14px; height: 14px; }
 .settings-toggle-list, .settings-client-list { overflow: hidden; border: 1px solid var(--line); border-radius: 7px; background: var(--surface); }
 .settings-toggle-row, .settings-client-row { display: grid; min-height: 62px; align-items: center; gap: 11px; border-bottom: 1px solid var(--line); padding: 9px 12px; }
@@ -397,6 +411,8 @@ html[data-theme="dark"] .source-item:hover, html[data-theme="dark"] .source-filt
 html[data-theme="dark"] .source-item.active, html[data-theme="dark"] .source-filter.active { background: #27403f; color: #eaf5f4; }
 html[data-theme="dark"] .provider-card.current { background: #1d2b2a; }
 html[data-theme="dark"] .settings-row-icon.blue { background: #253548; color: #8eb6e5; }
+html[data-theme="dark"] .settings-segmented button.active { background: #4a9f9b; color: #081717; box-shadow: 0 0 0 1px #78c7c3, 0 3px 10px rgba(0, 0, 0, .28); }
+html[data-theme="dark"] .settings-segmented button.active:hover { background: #65b7b3; color: #081717; }
 
 .provider-editor, .mcp-editor { grid-template-rows: 60px minmax(0, 1fr) 65px; background: #f7f9f9; }
 .editor-head { padding: 0 18px; }
