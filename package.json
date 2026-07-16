@@ -3,7 +3,7 @@
   "version": "0.1.8",
   "private": true,
   "type": "module",
-  "description": "AgentDock desktop app for installing AI coding clients and configuring providers.",
+  "description": "A beginner-friendly desktop hub for installing AI coding clients and managing providers, Skills, MCP, usage, and diagnostics.",
   "license": "MIT",
   "repository": {
     "type": "git",

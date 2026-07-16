@@ -1,88 +1,173 @@
+<div align="center">
+
+<img src="public/agentdock-logo.svg" width="104" height="104" alt="AgentDock logo">
+
 # AgentDock
 
-<p align="center">
-  <img src="public/agentdock-logo.svg" width="96" height="96" alt="AgentDock logo">
-</p>
+### The beginner-friendly desktop hub for AI coding clients
 
-AgentDock 是面向普通用户的 AI 编程客户端桌面管理工具。它把客户端安装、供应商配置、Skills、MCP、用量统计和本机诊断集中到一个原生桌面程序中，支持 Windows、macOS 和 Linux。
+[![Desktop Build](https://github.com/Cailiang/AgentDock/actions/workflows/desktop-build.yml/badge.svg)](https://github.com/Cailiang/AgentDock/actions/workflows/desktop-build.yml)
+[![Platform](https://img.shields.io/badge/platform-Windows%20%7C%20macOS%20%7C%20Linux-4f6f68)](https://github.com/Cailiang/AgentDock/actions)
+[![Built with Tauri](https://img.shields.io/badge/built%20with-Tauri%202-24c8db)](https://tauri.app/)
+[![License](https://img.shields.io/badge/license-MIT-2f5f55)](LICENSE)
 
-> 当前版本为 `0.1.8`，仍处于早期预览阶段。使用供应商切换和 MCP 同步前，建议保留重要客户端配置的备份。
+English | [简体中文](README_ZH.md) | [日本語](README_JA.md) | [Deutsch](README_DE.md)
 
-## 功能
+</div>
 
-- **客户端管理**：检测、安装、更新、启动和卸载 AgentDock 托管的客户端。
-- **国内网络适配**：优先尝试 npm/PyPI 国内镜像，失败后回退官方源；对提供完整性信息或官方摘要的安装包执行校验。
-- **供应商配置**：按客户端管理官方登录、预设供应商和自定义兼容接口，支持模型列表获取、连接测试、配置预览与编辑、切换和备份。
-- **Skills 管理**：安装、卸载并按客户端启用 Skill，再同步到真实客户端目录。
-- **MCP 管理**：新增、编辑、删除、启停、导入已有配置并同步到多个客户端；支持 `stdio`、HTTP 和 SSE；可以连接服务器查看工具、说明和参数 Schema。
-- **本地统计**：读取本机 Codex、Claude Code、OpenCode 和 Grok 会话记录，按 7/30/90 天展示 Token、请求、可计算成本和趋势，并按客户端、供应商或模型拆分。
-- **诊断中心**：主动检查目录权限、客户端版本与配置、供应商连接、MCP 配置和统计数据，可导出已脱敏的诊断包。
+AgentDock installs and manages AI coding clients, providers, Skills, and MCP servers from one native desktop app. It is designed for users who want to start with Codex, Claude Code, Grok, or other agents without manually installing runtimes or editing JSON, TOML, and environment files.
 
-## 支持的客户端
+> AgentDock `0.1.8` is an early preview. Keep a backup of important client configuration before using provider switching or MCP synchronization.
 
-| 客户端 | 检测 | 一键安装/更新 | 供应商配置 | MCP |
+## Why AgentDock?
+
+AI coding clients use different installers, configuration formats, model protocols, and MCP layouts. This is manageable for experienced developers, but it creates a steep first-run experience for everyone else.
+
+AgentDock puts the beginner workflow first:
+
+1. Detect what is already installed.
+2. Install or update a client with one click.
+3. Add an official login, a preset provider, or a custom compatible API.
+4. Test the connection, review the generated configuration, and launch the client.
+
+No separate Node.js, npm, Python, or manual configuration is required for end users. AgentDock provisions managed runtimes when a client needs them.
+
+## Core Features
+
+### Client Lifecycle
+
+- Detect system and AgentDock-managed installations.
+- Install, update, launch, and uninstall managed clients.
+- Prefer mainland-friendly npm/PyPI mirrors, then fall back to official sources.
+- Select the package for the current operating system and CPU architecture.
+- Verify package integrity when the source publishes a digest or npm integrity value.
+
+### Provider Management
+
+- Manage providers separately for each supported client.
+- Start from curated presets, official login, or a fully custom endpoint.
+- Fetch provider model lists and choose a default model from a dropdown.
+- Support OpenAI Responses, Chat Completions, Anthropic Messages, and Gemini-compatible protocols where applicable.
+- Test connectivity, preview and edit generated configuration, switch providers, and back up existing files before writing.
+
+### Skills and MCP
+
+- Install and uninstall Skills, enable them per client, and synchronize real client directories.
+- Add MCP servers from presets or raw configuration.
+- Import existing MCP configuration from supported clients.
+- Synchronize `stdio`, HTTP, and SSE servers across clients without replacing unrelated settings.
+- Connect to an MCP server to inspect its tools, descriptions, annotations, and input/output schemas.
+
+### Usage and Diagnostics
+
+- Read local Codex, Claude Code, OpenCode, and Grok sessions.
+- Show tokens, request counts, calculable cost, and 7/30/90-day trends.
+- Break usage down by client, provider, or model.
+- Diagnose directory permissions, installations, updates, provider connectivity, MCP configuration, and usage sources.
+- Export a sanitized diagnostic report that excludes configured secret values.
+
+## Supported Clients
+
+| Client | Detect | Install / Update | Providers | MCP |
 | --- | :---: | :---: | :---: | :---: |
-| Codex | 是 | 是 | 是 | 是 |
-| Claude Code | 是 | 是 | 是 | 是 |
-| Antigravity CLI (Agy) | 是 | 是 | 是 | 是 |
-| Grok | 是 | 是 | 是 | 是 |
-| OpenCode | 是 | 是 | 是 | 是 |
-| OpenClaw | 是 | 是 | 是 | 是 |
-| Hermes Agent | 是 | 是 | 是 | 是 |
-| Claude Desktop | 是 | 否 | 是 | 是 |
+| Codex | Yes | Yes | Yes | Yes |
+| Claude Code | Yes | Yes | Yes | Yes |
+| Antigravity CLI (Agy) | Yes | Yes | Yes | Yes |
+| Grok | Yes | Yes | Yes | Yes |
+| OpenCode | Yes | Yes | Yes | Yes |
+| OpenClaw | Yes | Yes | Yes | Yes |
+| Hermes Agent | Yes | Yes | Yes | Yes |
+| Claude Desktop | Yes | No | Yes | Yes |
 
-自动安装会选择与当前操作系统和 CPU 架构匹配的客户端包。Claude Desktop 目前只检测系统中已有的安装，不由 AgentDock 下载或卸载。
+Claude Desktop is detected and can receive provider or MCP configuration, but AgentDock does not download or uninstall the desktop application itself.
 
-## 获取安装包
+## Download and Installation
 
-稳定安装包将发布在仓库的 [Releases](https://github.com/Cailiang/AgentDock/releases) 页面。每次推送到 `main` 后，GitHub Actions 也会分别构建 Windows、macOS 和 Linux 安装包，可从对应的 `Desktop Build` 工作流运行记录中下载构建产物。
+Signed stable packages will be published on the [Releases](https://github.com/Cailiang/AgentDock/releases) page. Until then, preview packages for Windows, macOS, and Linux are available from successful [Desktop Build](https://github.com/Cailiang/AgentDock/actions/workflows/desktop-build.yml) workflow runs.
 
-未签名或未公证的预览包可能触发系统安全提示。正式分发时应配置平台签名证书，不建议要求最终用户关闭系统安全功能。
+Choose the package for your system:
 
-## 本地开发
+- **Windows:** `.msi` or `.exe`
+- **macOS:** `.dmg` or `.app`
+- **Linux:** `.deb`, `.rpm`, or `.AppImage`
 
-依赖：
+Preview builds may be unsigned or not notarized and can trigger an operating-system security warning. Production distribution should use platform signing certificates; users should not be asked to disable system security features.
 
-- Node.js 20 或更高版本
+## Data and Security
+
+- Provider API keys are stored in the local AgentDock configuration directory and are never committed to this repository.
+- Secret files receive restrictive permissions on Unix systems. The current preview does not yet use the operating-system keychain or credential vault.
+- Usage statistics are calculated from local client session data and are not uploaded by AgentDock.
+- Network access is used for software metadata and downloads, provider tests and model discovery, and user-configured MCP connections.
+- Diagnostic exports remove API keys, URL credentials, MCP environment values, and header values. They can still contain system versions and local paths, so review them before sharing.
+
+See [SECURITY.md](SECURITY.md) for vulnerability reporting.
+
+## Development
+
+Requirements:
+
+- Node.js 20.19 or later
 - Rust stable toolchain
-- 当前系统所需的 [Tauri 2 prerequisites](https://v2.tauri.app/start/prerequisites/)
+- [Tauri 2 prerequisites](https://v2.tauri.app/start/prerequisites/) for the current platform
 
 ```bash
 npm ci
 npm run dev
 ```
 
-只构建前端：
-
-```bash
-npm run build:ui
-```
-
-构建桌面安装包：
+Build the desktop packages:
 
 ```bash
 npm run build
 ```
 
-产物位于 `src-tauri/target/release/bundle/`。CI 配置见 [`.github/workflows/desktop-build.yml`](.github/workflows/desktop-build.yml)。
+Run the checks used during development:
 
-## 数据与安全
+```bash
+npm run build:ui
+cargo fmt --check --manifest-path src-tauri/Cargo.toml
+cargo test --manifest-path src-tauri/Cargo.toml
+```
 
-- AgentDock 不要求用户在项目源码或环境变量中填写 API Key。
-- 供应商 API Key 保存在操作系统的 AgentDock 本地配置目录，并在 Unix 系统上限制文件权限；当前版本尚未接入系统钥匙串或凭据保险库，请保护好本机账户和备份。
-- 用量统计直接读取本机客户端会话数据，不会由 AgentDock 上传到远端服务。
-- 网络请求仅用于客户端/软件版本查询与下载、供应商连接测试、模型列表读取，以及用户配置的 MCP 服务连接。
-- 诊断导出会移除 API Key、URL 凭据、MCP 环境变量值和请求头值，但可能包含操作系统、版本和本机文件路径。对外分享前仍应人工检查。
-- 仓库不包含本地配置、密钥、内部设计稿、测试截图、第三方客户端安装包或构建产物。
+Desktop bundles are written to `src-tauri/target/release/bundle/`.
 
-发现安全问题请阅读 [`SECURITY.md`](SECURITY.md)，不要在公开 Issue 中提交密钥或可直接利用的漏洞细节。
+## FAQ
 
-## 致谢
+<details>
+<summary><strong>Do users need to install Node.js, npm, Python, or Rust?</strong></summary>
 
-AgentDock 的供应商与 MCP 管理工作流参考了开源项目 [cc-switch](https://github.com/farion1231/cc-switch)。相关许可证声明见 [`THIRD_PARTY_NOTICES.md`](THIRD_PARTY_NOTICES.md)。
+No. They are development dependencies, not end-user requirements. AgentDock downloads native packages or provisions managed runtimes inside its own data directory when required by a client.
+
+</details>
+
+<details>
+<summary><strong>Why can AgentDock not uninstall a client it detected on my system?</strong></summary>
+
+AgentDock only removes clients installed inside its managed directory. Existing system installations are left untouched to avoid deleting software or files owned by another installer.
+
+</details>
+
+<details>
+<summary><strong>Where is AgentDock data stored?</strong></summary>
+
+Data is stored in the platform-specific AgentDock application data and configuration directories. Open **Diagnostics** and use **Open data directory** to locate the active directory on the current machine.
+
+</details>
+
+<details>
+<summary><strong>Does AgentDock upload API keys or usage history?</strong></summary>
+
+No telemetry or upload path is implemented for those values. A key is sent only to the provider endpoint selected by the user when testing or using that provider.
+
+</details>
+
+## Acknowledgements
+
+AgentDock's provider and MCP workflows were informed by [cc-switch](https://github.com/farion1231/cc-switch). See [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md) for its MIT notice.
 
 ## License
 
-AgentDock 自有源码与资产采用 [MIT](LICENSE) 许可证，Copyright (c) 2026 Cailiang。
+AgentDock-owned source code and assets are available under the [MIT License](LICENSE), Copyright (c) 2026 Cailiang.
 
-第三方客户端名称、Logo 和商标不包含在 AgentDock 的 MIT 授权中，仅用于说明兼容性，权利归各自所有者。详见 [`ASSET_NOTICES.md`](ASSET_NOTICES.md)。
+Third-party client names, logos, and trademarks are used only to identify compatibility and are not licensed under AgentDock's MIT License. See [ASSET_NOTICES.md](ASSET_NOTICES.md).

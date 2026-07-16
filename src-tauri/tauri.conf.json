@@ -37,7 +37,7 @@
       "icons/icon.icns",
       "icons/icon.ico"
     ],
-    "shortDescription": "AI coding client and provider manager",
-    "longDescription": "AgentDock installs and manages AI coding clients, providers, skills and MCP servers for non-technical users."
+    "shortDescription": "Beginner-friendly AI coding client manager",
+    "longDescription": "AgentDock installs and manages AI coding clients, providers, Skills, MCP servers, usage statistics, and diagnostics from one native desktop app."
   }
 }
