@@ -17,7 +17,7 @@ English | [简体中文](README_ZH.md) | [日本語](README_JA.md) | [Deutsch](R
 
 AgentDock installs and manages AI coding clients, providers, Skills, and MCP servers from one native desktop app. It is designed for users who want to start with Codex, Claude Code, Grok, or other agents without manually installing runtimes or editing JSON, TOML, and environment files.
 
-> AgentDock `0.1.10` is an early preview. Keep a backup of important client configuration before using provider switching or MCP synchronization.
+> AgentDock `0.1.11` is an early preview. Keep a backup of important client configuration before using provider switching or MCP synchronization.
 
 ## Why AgentDock?
 
@@ -57,6 +57,15 @@ No separate Node.js, npm, Python, or manual configuration is required for end us
 - Import existing MCP configuration from supported clients.
 - Synchronize `stdio`, HTTP, and SSE servers across clients without replacing unrelated settings.
 - Connect to an MCP server to inspect its tools, descriptions, annotations, and input/output schemas.
+
+### General Settings
+
+- Switch between Simplified Chinese, Traditional Chinese, English, Japanese, and German interface languages.
+- Use a light, dark, or system-matched appearance.
+- Configure launch at login, silent startup, and minimize-to-tray behavior.
+- Select the preferred terminal used to launch command-line clients.
+- Choose which clients appear in the client list and arrange their order.
+- Store Skills in AgentDock's data directory or `~/.agents/skills`, then synchronize with file copies or symbolic links.
 
 ### Usage and Diagnostics
 

@@ -1,3 +1,4 @@
+use auto_launch::{AutoLaunch, AutoLaunchBuilder};
 use base64::{engine::general_purpose::STANDARD as BASE64_STANDARD, Engine as _};
 use directories::ProjectDirs;
 use flate2::read::GzDecoder;
@@ -20,8 +21,16 @@ use std::{
     io::{BufRead, BufReader, Cursor, Read},
     path::{Path, PathBuf},
     process::{Command, Stdio},
+    sync::atomic::{AtomicBool, Ordering},
     time::Instant,
 };
+use tauri::{
+    menu::{Menu, MenuItem},
+    tray::{MouseButton, MouseButtonState, TrayIconBuilder, TrayIconEvent},
+    Manager,
+};
+
+static TRAY_AVAILABLE: AtomicBool = AtomicBool::new(false);
 use time::{format_description::well_known::Rfc3339, Duration, OffsetDateTime};
 
 #[derive(Debug, Serialize)]
@@ -33,6 +42,42 @@ pub struct DesktopStatus {
     config_dir: String,
     managed_runtime_ready: bool,
     clients: Vec<ClientStatus>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(default, rename_all = "camelCase")]
+pub struct AppSettings {
+    language: String,
+    theme: String,
+    launch_on_startup: bool,
+    silent_startup: bool,
+    minimize_to_tray_on_close: bool,
+    preferred_terminal: String,
+    visible_clients: Vec<String>,
+    client_order: Vec<String>,
+    skill_storage_location: String,
+    skill_sync_method: String,
+}
+
+impl Default for AppSettings {
+    fn default() -> Self {
+        let clients = supported_provider_apps()
+            .into_iter()
+            .map(str::to_string)
+            .collect::<Vec<_>>();
+        Self {
+            language: "zh-CN".to_string(),
+            theme: "system".to_string(),
+            launch_on_startup: false,
+            silent_startup: false,
+            minimize_to_tray_on_close: false,
+            preferred_terminal: default_terminal().to_string(),
+            visible_clients: clients.clone(),
+            client_order: clients,
+            skill_storage_location: "agentdock".to_string(),
+            skill_sync_method: "copy".to_string(),
+        }
+    }
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -436,6 +481,31 @@ fn get_desktop_status() -> Result<DesktopStatus, String> {
         managed_runtime_ready: dirs.runtime_dir.exists(),
         clients: detect_clients(),
     })
+}
+
+#[tauri::command]
+fn get_app_settings() -> Result<AppSettings, String> {
+    let dirs = agentdock_dirs()?;
+    ensure_dirs(&dirs)?;
+    read_app_settings(&dirs)
+}
+
+#[tauri::command]
+fn save_app_settings(settings: AppSettings) -> Result<AppSettings, String> {
+    let dirs = agentdock_dirs()?;
+    ensure_dirs(&dirs)?;
+    let previous = read_app_settings(&dirs)?;
+    let settings = normalize_app_settings(settings);
+
+    if previous.skill_storage_location != settings.skill_storage_location {
+        migrate_skill_storage(&dirs, &previous, &settings)?;
+    }
+    if previous.launch_on_startup != settings.launch_on_startup {
+        set_auto_launch_enabled(settings.launch_on_startup)?;
+    }
+
+    write_json(&app_settings_path(&dirs), &settings)?;
+    Ok(settings)
 }
 
 #[tauri::command]
@@ -2453,14 +2523,16 @@ fn launch_in_terminal(
     executable: &str,
     environment: &BTreeMap<String, String>,
 ) -> Result<(), String> {
+    let settings = read_app_settings(dirs)?;
     #[cfg(target_os = "macos")]
     {
         let launcher = write_unix_launcher(dirs, client_id, executable, environment)?;
-        Command::new("open")
-            .args(["-a", "Terminal"])
-            .arg(launcher)
-            .spawn()
-            .map_err(|err| format!("打开终端失败: {}", err))?;
+        let result = launch_macos_terminal(&settings.preferred_terminal, &launcher);
+        if result.is_err() && settings.preferred_terminal != "terminal" {
+            launch_macos_terminal("terminal", &launcher)?;
+        } else {
+            result?;
+        }
         return Ok(());
     }
 
@@ -2468,33 +2540,54 @@ fn launch_in_terminal(
     {
         use std::os::windows::process::CommandExt;
         let launcher = write_powershell_launcher(dirs, client_id, executable, environment)?;
-        Command::new("powershell.exe")
-            .creation_flags(0x00000010)
-            .args([
-                "-NoExit",
-                "-NoProfile",
-                "-ExecutionPolicy",
-                "Bypass",
-                "-File",
-            ])
-            .arg(launcher)
-            .spawn()
-            .map_err(|err| format!("打开终端失败: {}", err))?;
+        let powershell_args = [
+            "-NoExit",
+            "-NoProfile",
+            "-ExecutionPolicy",
+            "Bypass",
+            "-File",
+        ];
+        let spawn_result = match settings.preferred_terminal.as_str() {
+            "cmd" => Command::new("cmd.exe")
+                .creation_flags(0x00000010)
+                .args(["/K", "powershell.exe"])
+                .args(powershell_args)
+                .arg(&launcher)
+                .spawn(),
+            "wt" if find_executable("wt").is_some() => Command::new("wt.exe")
+                .args(["powershell.exe"])
+                .args(powershell_args)
+                .arg(&launcher)
+                .spawn(),
+            _ => Command::new("powershell.exe")
+                .creation_flags(0x00000010)
+                .args(powershell_args)
+                .arg(&launcher)
+                .spawn(),
+        };
+        spawn_result.map_err(|err| format!("打开终端失败: {}", err))?;
         return Ok(());
     }
 
     #[cfg(all(unix, not(target_os = "macos")))]
     {
         let launcher = write_unix_launcher(dirs, client_id, executable, environment)?;
-        let terminals: [(&str, &[&str]); 3] = [
-            ("x-terminal-emulator", &["-e"]),
-            ("gnome-terminal", &["--"]),
-            ("konsole", &["-e"]),
-        ];
-        for (terminal, args) in terminals {
+        let terminal_args = |terminal: &str| -> &'static [&'static str] {
+            match terminal {
+                "gnome-terminal" => &["--"],
+                _ => &["-e"],
+            }
+        };
+        let mut terminals = vec![settings.preferred_terminal.as_str()];
+        for fallback in terminal_options() {
+            if !terminals.contains(fallback) {
+                terminals.push(fallback);
+            }
+        }
+        for terminal in terminals {
             if find_executable(terminal).is_some() {
                 Command::new(terminal)
-                    .args(args)
+                    .args(terminal_args(terminal))
                     .arg(&launcher)
                     .spawn()
                     .map_err(|err| format!("打开终端失败: {}", err))?;
@@ -2502,6 +2595,117 @@ fn launch_in_terminal(
             }
         }
         Err("没有找到可用的终端程序".to_string())
+    }
+}
+
+#[cfg(target_os = "macos")]
+fn launch_macos_terminal(preferred: &str, launcher: &Path) -> Result<(), String> {
+    match preferred {
+        "iterm2" => run_macos_terminal_script(&macos_iterm_script(launcher), "iTerm2"),
+        "alacritty" => launch_macos_terminal_app("Alacritty", launcher, true),
+        "kitty" => launch_macos_terminal_app("kitty", launcher, false),
+        "ghostty" => launch_macos_terminal_app("Ghostty", launcher, true),
+        "wezterm" => launch_macos_terminal_app("WezTerm", launcher, true),
+        _ => run_macos_terminal_script(&macos_terminal_script(launcher), "Terminal.app"),
+    }
+}
+
+#[cfg(target_os = "macos")]
+fn applescript_string(value: &str) -> String {
+    format!("\"{}\"", value.replace('\\', "\\\\").replace('"', "\\\""))
+}
+
+#[cfg(target_os = "macos")]
+fn macos_launcher_command(launcher: &Path) -> String {
+    format!("exec sh {}", shell_quote(&launcher.to_string_lossy()))
+}
+
+#[cfg(target_os = "macos")]
+fn macos_terminal_script(launcher: &Path) -> String {
+    format!(
+        r#"set launcher_command to {}
+set was_running to application "Terminal" is running
+tell application "Terminal"
+    if was_running then
+        activate
+        do script launcher_command
+    else
+        launch
+        do script launcher_command
+        activate
+    end if
+end tell"#,
+        applescript_string(&macos_launcher_command(launcher))
+    )
+}
+
+#[cfg(target_os = "macos")]
+fn macos_iterm_script(launcher: &Path) -> String {
+    format!(
+        r#"set launcher_command to {}
+set was_running to application "iTerm" is running
+tell application "iTerm"
+    if was_running then
+        activate
+        if (count of windows) = 0 then
+            create window with default profile
+        else
+            tell current window to create tab with default profile
+        end if
+    else
+        activate
+        set waited to 0
+        repeat while (count of windows) = 0
+            delay 0.1
+            set waited to waited + 1
+            if waited >= 30 then exit repeat
+        end repeat
+        if (count of windows) = 0 then create window with default profile
+    end if
+    tell current session of current window to write text launcher_command
+end tell"#,
+        applescript_string(&macos_launcher_command(launcher))
+    )
+}
+
+#[cfg(target_os = "macos")]
+fn run_macos_terminal_script(script: &str, label: &str) -> Result<(), String> {
+    let output = Command::new("osascript")
+        .arg("-e")
+        .arg(script)
+        .output()
+        .map_err(|err| format!("启动 {} 失败: {}", label, err))?;
+    if output.status.success() {
+        Ok(())
+    } else {
+        Err(format!(
+            "启动 {} 失败: {}",
+            label,
+            String::from_utf8_lossy(&output.stderr).trim()
+        ))
+    }
+}
+
+#[cfg(target_os = "macos")]
+fn launch_macos_terminal_app(app: &str, launcher: &Path, use_e: bool) -> Result<(), String> {
+    let mut command = Command::new("open");
+    command.args(["-na", app, "--args"]);
+    if use_e {
+        command.arg("-e");
+    }
+    let output = command
+        .arg("sh")
+        .arg(launcher)
+        .output()
+        .map_err(|err| format!("启动 {} 失败: {}", app, err))?;
+    if output.status.success() {
+        Ok(())
+    } else {
+        Err(format!(
+            "启动 {} 失败: {}",
+            app,
+            String::from_utf8_lossy(&output.stderr).trim()
+        ))
     }
 }
 
@@ -2664,7 +2868,7 @@ fn install_skill(input: SkillInstallInput) -> Result<SkillRecord, String> {
     let mut skills = list_skills()?;
     let now = now_rfc3339();
     let id = slugify(&input.id);
-    let skill_dir = dirs.skills_dir.join(&id);
+    let skill_dir = active_skills_dir(&dirs)?.join(&id);
     fs::create_dir_all(&skill_dir).map_err(|err| format!("创建 Skill 目录失败: {}", err))?;
     fs::write(
         skill_dir.join("SKILL.md"),
@@ -2730,7 +2934,7 @@ fn uninstall_skill(skill_id: String) -> Result<SkillRecord, String> {
         .find(|skill| skill.id == skill_id)
         .ok_or_else(|| "未找到 Skill".to_string())?;
 
-    let skill_dir = dirs.skills_dir.join(&skill.id);
+    let skill_dir = active_skills_dir(&dirs)?.join(&skill.id);
     if skill_dir.exists() {
         let backup_dir = dirs.backups_dir.join(format!(
             "skill-{}-{}",
@@ -2751,11 +2955,13 @@ fn uninstall_skill(skill_id: String) -> Result<SkillRecord, String> {
 fn sync_skills() -> Result<SyncResult, String> {
     let dirs = agentdock_dirs()?;
     ensure_dirs(&dirs)?;
+    let settings = read_app_settings(&dirs)?;
+    let skills_dir = active_skills_dir(&dirs)?;
     let skills = list_skills()?;
     let mut written_files = Vec::new();
 
     for skill in skills.iter().filter(|skill| skill.installed) {
-        let source = dirs.skills_dir.join(&skill.id).join("SKILL.md");
+        let source = skills_dir.join(&skill.id).join("SKILL.md");
         if !source.exists() {
             continue;
         }
@@ -2770,7 +2976,7 @@ fn sync_skills() -> Result<SyncResult, String> {
                 fs::create_dir_all(parent)
                     .map_err(|err| format!("创建 Skill 同步目录失败: {}", err))?;
             }
-            fs::copy(&source, &target).map_err(|err| format!("同步 Skill 失败: {}", err))?;
+            sync_skill_file(&source, &target, &settings.skill_sync_method)?;
             written_files.push(target.display().to_string());
             if app == "grok" {
                 if let Some(home) = dirs_home() {
@@ -2779,8 +2985,7 @@ fn sync_skills() -> Result<SyncResult, String> {
                         fs::create_dir_all(parent)
                             .map_err(|err| format!("创建 Grok Skill 目录失败: {}", err))?;
                     }
-                    fs::copy(&source, &user_target)
-                        .map_err(|err| format!("同步 Grok Skill 失败: {}", err))?;
+                    sync_skill_file(&source, &user_target, &settings.skill_sync_method)?;
                     written_files.push(user_target.display().to_string());
                 }
             }
@@ -2791,6 +2996,38 @@ fn sync_skills() -> Result<SyncResult, String> {
         message: format!("已同步 {} 个 Skill 配置文件", written_files.len()),
         written_files,
     })
+}
+
+fn sync_skill_file(source: &Path, target: &Path, method: &str) -> Result<(), String> {
+    if let Some(parent) = target.parent() {
+        fs::create_dir_all(parent).map_err(|err| format!("创建 Skill 同步目录失败: {}", err))?;
+    }
+    if fs::symlink_metadata(target).is_ok() {
+        fs::remove_file(target).map_err(|err| format!("替换旧 Skill 同步文件失败: {}", err))?;
+    }
+    if method == "symlink" {
+        #[cfg(unix)]
+        {
+            std::os::unix::fs::symlink(source, target)
+                .map_err(|err| format!("创建 Skill 符号链接失败: {}", err))?;
+        }
+        #[cfg(windows)]
+        {
+            std::os::windows::fs::symlink_file(source, target).map_err(|err| {
+                format!(
+                    "创建 Skill 符号链接失败，请启用 Windows 开发者模式或改用复制文件: {}",
+                    err
+                )
+            })?;
+        }
+        #[cfg(not(any(unix, windows)))]
+        {
+            return Err("当前系统不支持 Skill 符号链接".to_string());
+        }
+    } else {
+        fs::copy(source, target).map_err(|err| format!("同步 Skill 失败: {}", err))?;
+    }
+    Ok(())
 }
 
 #[tauri::command]
@@ -4527,8 +4764,38 @@ fn round_cost(value: f64) -> f64 {
 
 pub fn run() {
     tauri::Builder::default()
+        .setup(|app| {
+            TRAY_AVAILABLE.store(setup_tray(app).is_ok(), Ordering::Relaxed);
+            let settings = agentdock_dirs()
+                .and_then(|dirs| read_app_settings(&dirs))
+                .unwrap_or_default();
+            let system_startup = env::args().any(|arg| arg == "--agentdock-autostart");
+            if !TRAY_AVAILABLE.load(Ordering::Relaxed)
+                || should_show_main_window(&settings, system_startup)
+            {
+                show_main_window(app.handle());
+            }
+            Ok(())
+        })
+        .on_window_event(|window, event| {
+            if let tauri::WindowEvent::CloseRequested { api, .. } = event {
+                let minimize = agentdock_dirs()
+                    .and_then(|dirs| read_app_settings(&dirs))
+                    .map(|settings| settings.minimize_to_tray_on_close)
+                    .unwrap_or(false);
+                if minimize && TRAY_AVAILABLE.load(Ordering::Relaxed) {
+                    api.prevent_close();
+                    let _ = window.hide();
+                } else {
+                    api.prevent_close();
+                    window.app_handle().exit(0);
+                }
+            }
+        })
         .invoke_handler(tauri::generate_handler![
             get_desktop_status,
+            get_app_settings,
+            save_app_settings,
             list_software_catalog,
             parse_provider_config,
             fetch_provider_models,
@@ -4566,6 +4833,50 @@ pub fn run() {
         ])
         .run(tauri::generate_context!())
         .expect("failed to run AgentDock");
+}
+
+fn show_main_window(app: &tauri::AppHandle) {
+    if let Some(window) = app.get_webview_window("main") {
+        let _ = window.unminimize();
+        let _ = window.show();
+        let _ = window.set_focus();
+    }
+}
+
+fn should_show_main_window(settings: &AppSettings, system_startup: bool) -> bool {
+    !settings.silent_startup || !system_startup
+}
+
+fn setup_tray(app: &tauri::App) -> tauri::Result<()> {
+    let show = MenuItem::with_id(app, "show", "打开 AgentDock", true, None::<&str>)?;
+    let quit = MenuItem::with_id(app, "quit", "退出 AgentDock", true, None::<&str>)?;
+    let menu = Menu::with_items(app, &[&show, &quit])?;
+    let mut builder = TrayIconBuilder::with_id("agentdock")
+        .tooltip("AgentDock")
+        .menu(&menu)
+        .show_menu_on_left_click(false)
+        .on_menu_event(|app, event| match event.id().as_ref() {
+            "show" => show_main_window(app),
+            "quit" => app.exit(0),
+            _ => {}
+        })
+        .on_tray_icon_event(|tray, event| {
+            if matches!(
+                event,
+                TrayIconEvent::Click {
+                    button: MouseButton::Left,
+                    button_state: MouseButtonState::Up,
+                    ..
+                }
+            ) {
+                show_main_window(tray.app_handle());
+            }
+        });
+    if let Some(icon) = app.default_window_icon() {
+        builder = builder.icon(icon.clone());
+    }
+    builder.build(app)?;
+    Ok(())
 }
 
 struct AgentDockDirs {
@@ -4626,6 +4937,195 @@ fn managed_clients_path(dirs: &AgentDockDirs) -> PathBuf {
 
 fn skills_path(dirs: &AgentDockDirs) -> PathBuf {
     dirs.config_dir.join("skills.json")
+}
+
+fn app_settings_path(dirs: &AgentDockDirs) -> PathBuf {
+    dirs.config_dir.join("settings.json")
+}
+
+fn read_app_settings(dirs: &AgentDockDirs) -> Result<AppSettings, String> {
+    let settings: AppSettings =
+        read_json_or_seed(&app_settings_path(dirs), AppSettings::default())?;
+    Ok(normalize_app_settings(settings))
+}
+
+fn normalize_app_settings(mut settings: AppSettings) -> AppSettings {
+    const LANGUAGES: &[&str] = &["zh-CN", "zh-TW", "en-US", "ja-JP", "de-DE"];
+    const THEMES: &[&str] = &["light", "dark", "system"];
+    const STORAGE_LOCATIONS: &[&str] = &["agentdock", "unified"];
+    const SYNC_METHODS: &[&str] = &["copy", "symlink"];
+
+    if !LANGUAGES.contains(&settings.language.as_str()) {
+        settings.language = "zh-CN".to_string();
+    }
+    if !THEMES.contains(&settings.theme.as_str()) {
+        settings.theme = "system".to_string();
+    }
+    if !STORAGE_LOCATIONS.contains(&settings.skill_storage_location.as_str()) {
+        settings.skill_storage_location = "agentdock".to_string();
+    }
+    if !SYNC_METHODS.contains(&settings.skill_sync_method.as_str()) {
+        settings.skill_sync_method = "copy".to_string();
+    }
+    if !terminal_options().contains(&settings.preferred_terminal.as_str()) {
+        settings.preferred_terminal = default_terminal().to_string();
+    }
+    if !settings.launch_on_startup {
+        settings.silent_startup = false;
+    }
+
+    let supported = supported_provider_apps();
+    let supported_set = supported.into_iter().collect::<HashSet<_>>();
+    let mut seen = HashSet::new();
+    settings
+        .client_order
+        .retain(|client| supported_set.contains(client.as_str()) && seen.insert(client.clone()));
+    for client in supported {
+        if seen.insert(client.to_string()) {
+            settings.client_order.push(client.to_string());
+        }
+    }
+
+    let visible = settings
+        .visible_clients
+        .into_iter()
+        .filter(|client| supported_set.contains(client.as_str()))
+        .collect::<HashSet<_>>();
+    settings.visible_clients = settings
+        .client_order
+        .iter()
+        .filter(|client| visible.contains(*client))
+        .cloned()
+        .collect();
+    if settings.visible_clients.is_empty() {
+        if let Some(client) = settings.client_order.first() {
+            settings.visible_clients.push(client.clone());
+        }
+    }
+    settings
+}
+
+fn terminal_options() -> &'static [&'static str] {
+    #[cfg(target_os = "macos")]
+    {
+        return &[
+            "terminal",
+            "iterm2",
+            "alacritty",
+            "kitty",
+            "ghostty",
+            "wezterm",
+        ];
+    }
+    #[cfg(windows)]
+    {
+        return &["powershell", "cmd", "wt"];
+    }
+    #[cfg(all(unix, not(target_os = "macos")))]
+    {
+        return &[
+            "x-terminal-emulator",
+            "gnome-terminal",
+            "konsole",
+            "xfce4-terminal",
+            "alacritty",
+            "kitty",
+            "ghostty",
+        ];
+    }
+    #[allow(unreachable_code)]
+    &["system"]
+}
+
+fn default_terminal() -> &'static str {
+    #[cfg(target_os = "macos")]
+    {
+        return "terminal";
+    }
+    #[cfg(windows)]
+    {
+        return "powershell";
+    }
+    #[cfg(all(unix, not(target_os = "macos")))]
+    {
+        return "x-terminal-emulator";
+    }
+    #[allow(unreachable_code)]
+    "system"
+}
+
+fn skills_storage_dir(dirs: &AgentDockDirs, settings: &AppSettings) -> Result<PathBuf, String> {
+    if settings.skill_storage_location == "unified" {
+        return dirs_home()
+            .map(|home| home.join(".agents").join("skills"))
+            .ok_or_else(|| "无法确定统一 Skills 目录".to_string());
+    }
+    Ok(dirs.skills_dir.clone())
+}
+
+fn active_skills_dir(dirs: &AgentDockDirs) -> Result<PathBuf, String> {
+    let settings = read_app_settings(dirs)?;
+    let path = skills_storage_dir(dirs, &settings)?;
+    fs::create_dir_all(&path).map_err(|err| format!("创建 Skills 存储目录失败: {}", err))?;
+    Ok(path)
+}
+
+fn migrate_skill_storage(
+    dirs: &AgentDockDirs,
+    previous: &AppSettings,
+    next: &AppSettings,
+) -> Result<(), String> {
+    let source_root = skills_storage_dir(dirs, previous)?;
+    let target_root = skills_storage_dir(dirs, next)?;
+    if source_root == target_root || !source_root.exists() {
+        return Ok(());
+    }
+    fs::create_dir_all(&target_root)
+        .map_err(|err| format!("创建新的 Skills 存储目录失败: {}", err))?;
+    let skills: Vec<SkillRecord> = read_json_or_seed(&skills_path(dirs), default_skills())?;
+    migrate_installed_skill_dirs(&source_root, &target_root, &skills)
+}
+
+fn migrate_installed_skill_dirs(
+    source_root: &Path,
+    target_root: &Path,
+    skills: &[SkillRecord],
+) -> Result<(), String> {
+    for skill in skills.iter().filter(|skill| skill.installed) {
+        let source = source_root.join(&skill.id);
+        if source.is_dir() {
+            copy_dir_all(&source, &target_root.join(&skill.id))?;
+        }
+    }
+    Ok(())
+}
+
+fn auto_launch_app_path() -> Result<PathBuf, String> {
+    env::current_exe().map_err(|err| format!("无法获取应用路径: {}", err))
+}
+
+fn auto_launch_manager() -> Result<AutoLaunch, String> {
+    let app_path = auto_launch_app_path()?;
+    AutoLaunchBuilder::new()
+        .set_app_name("AgentDock")
+        .set_app_path(&app_path.to_string_lossy())
+        .set_use_launch_agent(cfg!(target_os = "macos"))
+        .set_args(&["--agentdock-autostart"])
+        .build()
+        .map_err(|err| format!("创建开机启动配置失败: {}", err))
+}
+
+fn set_auto_launch_enabled(enabled: bool) -> Result<(), String> {
+    let manager = auto_launch_manager()?;
+    if enabled {
+        manager
+            .enable()
+            .map_err(|err| format!("启用开机启动失败: {}", err))
+    } else {
+        manager
+            .disable()
+            .map_err(|err| format!("关闭开机启动失败: {}", err))
+    }
 }
 
 fn mcp_servers_path(dirs: &AgentDockDirs) -> PathBuf {
@@ -6624,6 +7124,144 @@ fn now_rfc3339() -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn normalizes_general_settings_and_keeps_a_visible_client() {
+        let mut settings = AppSettings::default();
+        settings.language = "invalid".to_string();
+        settings.theme = "neon".to_string();
+        settings.launch_on_startup = false;
+        settings.silent_startup = true;
+        settings.preferred_terminal = "missing-terminal".to_string();
+        settings.client_order = vec![
+            "codex".to_string(),
+            "codex".to_string(),
+            "unknown".to_string(),
+        ];
+        settings.visible_clients = vec!["unknown".to_string()];
+        settings.skill_storage_location = "elsewhere".to_string();
+        settings.skill_sync_method = "mirror".to_string();
+
+        let settings = normalize_app_settings(settings);
+        assert_eq!(settings.language, "zh-CN");
+        assert_eq!(settings.theme, "system");
+        assert!(!settings.silent_startup);
+        assert_eq!(settings.preferred_terminal, default_terminal());
+        assert_eq!(settings.client_order.len(), supported_provider_apps().len());
+        assert_eq!(
+            settings.client_order.first().map(String::as_str),
+            Some("codex")
+        );
+        assert_eq!(settings.visible_clients, vec!["codex"]);
+        assert_eq!(settings.skill_storage_location, "agentdock");
+        assert_eq!(settings.skill_sync_method, "copy");
+    }
+
+    #[test]
+    fn silent_startup_only_hides_system_launches() {
+        let mut settings = AppSettings::default();
+        settings.launch_on_startup = true;
+        settings.silent_startup = true;
+        assert!(!should_show_main_window(&settings, true));
+        assert!(should_show_main_window(&settings, false));
+        settings.silent_startup = false;
+        assert!(should_show_main_window(&settings, true));
+    }
+
+    #[test]
+    fn migrates_only_installed_skill_directories() {
+        let root = env::temp_dir().join(format!(
+            "agentdock-skill-migration-test-{}",
+            std::process::id()
+        ));
+        let source = root.join("source");
+        let target = root.join("target");
+        fs::create_dir_all(source.join("installed")).unwrap();
+        fs::create_dir_all(source.join("available")).unwrap();
+        fs::write(source.join("installed/SKILL.md"), "installed").unwrap();
+        fs::write(source.join("available/SKILL.md"), "available").unwrap();
+        let skills = vec![
+            SkillRecord {
+                id: "installed".to_string(),
+                name: "installed".to_string(),
+                description: String::new(),
+                source: "local".to_string(),
+                installed: true,
+                apps: vec!["codex".to_string()],
+                updated_at: now_rfc3339(),
+            },
+            SkillRecord {
+                id: "available".to_string(),
+                name: "available".to_string(),
+                description: String::new(),
+                source: "local".to_string(),
+                installed: false,
+                apps: vec!["codex".to_string()],
+                updated_at: now_rfc3339(),
+            },
+        ];
+
+        migrate_installed_skill_dirs(&source, &target, &skills).unwrap();
+        assert_eq!(
+            fs::read_to_string(target.join("installed/SKILL.md")).unwrap(),
+            "installed"
+        );
+        assert!(!target.join("available").exists());
+        assert!(source.join("installed/SKILL.md").exists());
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn macos_terminal_scripts_execute_the_private_launcher() {
+        let launcher = Path::new("/tmp/AgentDock user's launcher.command");
+        let terminal = macos_terminal_script(launcher);
+        let iterm = macos_iterm_script(launcher);
+        for script in [terminal, iterm] {
+            assert!(script.contains("exec sh"));
+            assert!(script.contains("AgentDock user"));
+            assert!(script.contains("launcher.command"));
+        }
+    }
+
+    #[test]
+    fn syncs_skill_files_by_copy() {
+        let root =
+            env::temp_dir().join(format!("agentdock-skill-copy-test-{}", std::process::id()));
+        fs::create_dir_all(&root).unwrap();
+        let source = root.join("source.md");
+        let target = root.join("target/SKILL.md");
+        fs::write(&source, "skill-content").unwrap();
+
+        sync_skill_file(&source, &target, "copy").unwrap();
+        assert_eq!(fs::read_to_string(&target).unwrap(), "skill-content");
+        assert!(!fs::symlink_metadata(&target)
+            .unwrap()
+            .file_type()
+            .is_symlink());
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn syncs_skill_files_by_symlink() {
+        let root = env::temp_dir().join(format!(
+            "agentdock-skill-symlink-test-{}",
+            std::process::id()
+        ));
+        fs::create_dir_all(&root).unwrap();
+        let source = root.join("source.md");
+        let target = root.join("target/SKILL.md");
+        fs::write(&source, "skill-content").unwrap();
+
+        sync_skill_file(&source, &target, "symlink").unwrap();
+        assert!(fs::symlink_metadata(&target)
+            .unwrap()
+            .file_type()
+            .is_symlink());
+        assert_eq!(fs::read_to_string(&target).unwrap(), "skill-content");
+        fs::remove_dir_all(root).unwrap();
+    }
 
     #[test]
     fn imports_grok_toml_provider_fields() {

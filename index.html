@@ -467,7 +467,7 @@
         <button data-view-button="stats" title="统计"><i data-lucide="chart-no-axes-combined"></i><span class="label">统计</span><span class="nav-count"></span></button>
         <button data-view-button="logs" title="诊断"><i data-lucide="scan-heart"></i><span class="label">诊断</span><span class="nav-count"></span></button>
       </nav>
-      <div class="rail-bottom"><span class="rail-user" title="本机用户"><i data-lucide="user-round"></i></span></div>
+      <div class="rail-bottom"><button class="rail-settings" data-view-button="settings" title="设置" aria-label="打开设置"><i data-lucide="settings"></i></button></div>
     </aside>
 
     <aside class="source-sidebar" aria-label="当前功能列表">
@@ -575,6 +575,70 @@
             <div class="operation-log-head"><span>仅保留本次运行期间的操作</span><button class="btn text" data-action="clear-logs"><i data-lucide="trash-2"></i>清空</button></div>
             <pre class="log-output" id="log-output" aria-live="polite"></pre>
           </details>
+        </section>
+
+        <section class="view settings-view" data-view="settings">
+          <div class="page-head settings-page-head">
+            <div><h2>设置</h2><p>调整 AgentDock 的界面、窗口、客户端和 Skills 行为</p></div>
+            <span class="badge ok" id="settings-save-state"><i data-lucide="cloud-check"></i>设置自动保存</span>
+          </div>
+          <div class="settings-tabs" role="tablist" aria-label="设置分类">
+            <button class="active" type="button" role="tab" aria-selected="true"><i data-lucide="sliders-horizontal"></i>通用</button>
+          </div>
+          <div class="settings-content">
+            <section class="settings-section" aria-labelledby="settings-language-title">
+              <header><h3 id="settings-language-title">界面语言</h3><p>选择 AgentDock 显示界面使用的语言</p></header>
+              <div class="settings-segmented" id="settings-language-options" aria-label="界面语言"></div>
+            </section>
+
+            <section class="settings-section" aria-labelledby="settings-theme-title">
+              <header><h3 id="settings-theme-title">外观主题</h3><p>浅色、深色或跟随当前系统外观</p></header>
+              <div class="settings-segmented" id="settings-theme-options" aria-label="外观主题"></div>
+            </section>
+
+            <section class="settings-section" aria-labelledby="settings-window-title">
+              <header><h3 id="settings-window-title">窗口行为</h3><p>控制 AgentDock 如何随系统启动以及关闭窗口后的行为</p></header>
+              <div class="settings-toggle-list">
+                <label class="settings-toggle-row">
+                  <span class="settings-row-icon amber"><i data-lucide="power"></i></span>
+                  <span class="settings-row-copy"><strong>开机时启动 AgentDock</strong><small>登录系统后自动启动桌面程序</small></span>
+                  <span class="switch"><input type="checkbox" data-change="setting-boolean" data-field="launchOnStartup" /><span></span></span>
+                </label>
+                <label class="settings-toggle-row" id="silent-startup-row">
+                  <span class="settings-row-icon green"><i data-lucide="eye-off"></i></span>
+                  <span class="settings-row-copy"><strong>静默启动</strong><small>开机启动时保持窗口隐藏，可从系统托盘打开</small></span>
+                  <span class="switch"><input type="checkbox" data-change="setting-boolean" data-field="silentStartup" /><span></span></span>
+                </label>
+                <label class="settings-toggle-row">
+                  <span class="settings-row-icon blue"><i data-lucide="panel-top-close"></i></span>
+                  <span class="settings-row-copy"><strong>关闭窗口时最小化到托盘</strong><small>保留后台进程和正在进行的安装或同步任务</small></span>
+                  <span class="switch"><input type="checkbox" data-change="setting-boolean" data-field="minimizeToTrayOnClose" /><span></span></span>
+                </label>
+              </div>
+            </section>
+
+            <section class="settings-section" aria-labelledby="settings-terminal-title">
+              <header><h3 id="settings-terminal-title">首选终端</h3><p>从 AgentDock 启动命令行客户端时优先使用此终端，不可用时自动回退到系统终端</p></header>
+              <label class="settings-select"><select id="settings-terminal" data-change="setting-choice" data-field="preferredTerminal" aria-label="首选终端"></select></label>
+            </section>
+
+            <section class="settings-section" aria-labelledby="settings-clients-title">
+              <header><h3 id="settings-clients-title">客户端列表</h3><p>选择客户端页面显示的项目，并调整它们的排列顺序</p></header>
+              <div class="settings-client-list" id="settings-client-list"></div>
+            </section>
+
+            <section class="settings-section" aria-labelledby="settings-skills-storage-title">
+              <header><h3 id="settings-skills-storage-title">Skills 存储位置</h3><p>切换位置时会迁移已安装的 Skills，原目录保留作为安全副本</p></header>
+              <div class="settings-segmented" id="settings-skills-storage-options" aria-label="Skills 存储位置"></div>
+              <p class="settings-path-hint" id="settings-skills-path"></p>
+            </section>
+
+            <section class="settings-section" aria-labelledby="settings-skills-sync-title">
+              <header><h3 id="settings-skills-sync-title">Skills 同步方式</h3><p>决定 AgentDock 如何把 Skills 写入已启用的客户端</p></header>
+              <div class="settings-segmented" id="settings-skills-sync-options" aria-label="Skills 同步方式"></div>
+              <p class="settings-path-hint" id="settings-sync-hint"></p>
+            </section>
+          </div>
         </section>
       </main>
 
@@ -710,7 +774,54 @@
       skills: ["Skills", "安装和按客户端启用"],
       mcp: ["MCP", "服务器和客户端配置"],
       stats: ["统计", "Token、请求和成本趋势"],
-      logs: ["诊断", "主动检查客户端、供应商和本机配置"]
+      logs: ["诊断", "主动检查客户端、供应商和本机配置"],
+      settings: ["设置", "界面、窗口、客户端和 Skills 偏好"]
+    };
+    const UI_COPY = {
+      "zh-TW": {
+        "nav.clients": "客戶端", "nav.software": "推薦軟體", "nav.stats": "統計", "nav.logs": "診斷", "nav.settings": "設定",
+        "view.clients.subtitle": "安裝並設定 AI 程式設計客戶端", "view.software.subtitle": "安裝和更新 AgentDock 推薦工具", "view.skills.subtitle": "安裝並按客戶端啟用", "view.mcp.subtitle": "伺服器與客戶端設定", "view.stats.subtitle": "Token、請求和成本趨勢", "view.logs.subtitle": "主動檢查客戶端、供應商和本機設定", "view.settings.subtitle": "介面、視窗、客戶端和 Skills 偏好",
+        "page.software.title": "推薦軟體", "page.software.desc": "由 AgentDock 維護的軟體目錄，安裝時自動選擇可用下載來源並驗證檔案。", "page.skills.desc": "按客戶端啟用已安裝的 Skills", "page.mcp.title": "MCP 伺服器", "page.mcp.desc": "統一管理伺服器，並同步至各客戶端的實際設定檔", "page.stats.title": "用量統計", "page.stats.desc": "彙總本機客戶端工作階段中的 Token、請求和可計算成本", "page.logs.title": "診斷中心", "page.logs.desc": "檢查本機目錄、客戶端、供應商連線、MCP 和統計資料，不讀取或顯示金鑰",
+        "settings.title": "設定", "settings.subtitle": "調整 AgentDock 的介面、視窗、客戶端和 Skills 行為", "settings.general": "通用", "settings.autoSave": "設定自動儲存", "settings.saving": "正在儲存", "settings.saved": "設定已儲存", "settings.error": "儲存失敗",
+        "settings.language": "介面語言", "settings.languageDesc": "選擇 AgentDock 顯示介面使用的語言", "settings.theme": "外觀主題", "settings.themeDesc": "淺色、深色或跟隨目前系統外觀", "theme.light": "淺色", "theme.dark": "深色", "theme.system": "跟隨系統",
+        "settings.window": "視窗行為", "settings.windowDesc": "控制 AgentDock 如何隨系統啟動以及關閉視窗後的行為", "window.launch": "開機時啟動 AgentDock", "window.launchDesc": "登入系統後自動啟動桌面程式", "window.silent": "靜默啟動", "window.silentDesc": "開機啟動時保持視窗隱藏，可從系統匣開啟", "window.tray": "關閉視窗時最小化到系統匣", "window.trayDesc": "保留背景程序和正在進行的安裝或同步工作",
+        "settings.terminal": "偏好終端機", "settings.terminalDesc": "從 AgentDock 啟動命令列客戶端時優先使用此終端機，不可用時自動回退", "settings.clients": "客戶端清單", "settings.clientsDesc": "選擇客戶端頁面顯示的項目，並調整排列順序", "client.visible": "顯示於客戶端清單", "client.hidden": "已從客戶端清單隱藏", "client.moveUp": "上移", "client.moveDown": "下移", "client.keepOne": "至少保留一個客戶端",
+        "settings.storage": "Skills 儲存位置", "settings.storageDesc": "切換位置時會遷移已安裝的 Skills，原目錄保留為安全副本", "storage.agentdock": "AgentDock 目錄", "storage.unified": "統一目錄", "settings.sync": "Skills 同步方式", "settings.syncDesc": "決定 AgentDock 如何將 Skills 寫入已啟用的客戶端", "sync.symlink": "符號連結", "sync.copy": "複製檔案", "sync.symlinkHint": "修改儲存目錄中的 Skill 後，客戶端會立即讀取最新內容。Windows 需要允許建立符號連結。", "sync.copyHint": "相容所有系統；修改 Skill 後需要再次同步至客戶端。",
+        "source.settingsCategory": "設定分類", "source.settingsHint": "通用設定會自動儲存到本機", "source.general": "通用", "status.connected": "本機服務已連線", "status.deviceConnected": "已連線", "terminal.system": "系統預設終端機", "search.filter": "篩選目前清單", "search.logs": "搜尋診斷項目", "search.mcp": "搜尋伺服器"
+      },
+      "en-US": {
+        "nav.clients": "Clients", "nav.software": "Software", "nav.stats": "Usage", "nav.logs": "Diagnostics", "nav.settings": "Settings",
+        "view.clients.subtitle": "Install and configure AI coding clients", "view.software.subtitle": "Install and update recommended tools", "view.skills.subtitle": "Install and enable by client", "view.mcp.subtitle": "Servers and client configuration", "view.stats.subtitle": "Token, request, and cost trends", "view.logs.subtitle": "Check clients, providers, and local configuration", "view.settings.subtitle": "Interface, window, client, and Skills preferences",
+        "page.software.title": "Recommended software", "page.software.desc": "A catalog maintained by AgentDock with automatic mirror selection and package verification.", "page.skills.desc": "Enable installed Skills for each client", "page.mcp.title": "MCP servers", "page.mcp.desc": "Manage servers once and synchronize them to real client configuration files", "page.stats.title": "Usage statistics", "page.stats.desc": "Aggregate tokens, requests, and calculable costs from local client sessions", "page.logs.title": "Diagnostics", "page.logs.desc": "Check directories, clients, providers, MCP, and usage data without reading or displaying secrets",
+        "settings.title": "Settings", "settings.subtitle": "Configure AgentDock interface, windows, clients, and Skills", "settings.general": "General", "settings.autoSave": "Settings save automatically", "settings.saving": "Saving", "settings.saved": "Settings saved", "settings.error": "Save failed",
+        "settings.language": "Interface language", "settings.languageDesc": "Choose the language used by the AgentDock interface", "settings.theme": "Appearance", "settings.themeDesc": "Use light, dark, or the current system appearance", "theme.light": "Light", "theme.dark": "Dark", "theme.system": "System",
+        "settings.window": "Window behavior", "settings.windowDesc": "Control startup and what happens when the main window closes", "window.launch": "Launch AgentDock at login", "window.launchDesc": "Start the desktop app automatically after signing in", "window.silent": "Silent startup", "window.silentDesc": "Keep the window hidden at startup and open it from the system tray", "window.tray": "Minimize to tray on close", "window.trayDesc": "Keep background installs and synchronization running",
+        "settings.terminal": "Preferred terminal", "settings.terminalDesc": "Use this terminal when launching CLI clients, with automatic fallback to the system terminal", "settings.clients": "Client list", "settings.clientsDesc": "Choose which clients appear and arrange their order", "client.visible": "Shown in the client list", "client.hidden": "Hidden from the client list", "client.moveUp": "Move up", "client.moveDown": "Move down", "client.keepOne": "Keep at least one client visible",
+        "settings.storage": "Skills storage", "settings.storageDesc": "Installed Skills are migrated when the location changes; the old directory is kept as a backup", "storage.agentdock": "AgentDock directory", "storage.unified": "Unified directory", "settings.sync": "Skills sync method", "settings.syncDesc": "Choose how AgentDock writes Skills to enabled clients", "sync.symlink": "Symbolic links", "sync.copy": "Copy files", "sync.symlinkHint": "Clients immediately read edits from the storage directory. Windows must allow symbolic links.", "sync.copyHint": "Works on every system; synchronize again after editing a Skill.",
+        "source.settingsCategory": "Settings", "source.settingsHint": "General settings are saved locally and automatically", "source.general": "General", "status.connected": "Local service connected", "status.deviceConnected": "Connected", "terminal.system": "System default terminal", "search.filter": "Filter current list", "search.logs": "Search diagnostics", "search.mcp": "Search servers"
+      },
+      "ja-JP": {
+        "nav.clients": "クライアント", "nav.software": "おすすめ", "nav.stats": "統計", "nav.logs": "診断", "nav.settings": "設定",
+        "view.clients.subtitle": "AI コーディングクライアントの導入と設定", "view.software.subtitle": "推奨ツールのインストールと更新", "view.skills.subtitle": "クライアントごとにインストールして有効化", "view.mcp.subtitle": "サーバーとクライアント設定", "view.stats.subtitle": "Token・リクエスト・コストの推移", "view.logs.subtitle": "クライアント、プロバイダー、ローカル設定を確認", "view.settings.subtitle": "表示、ウィンドウ、クライアント、Skills の設定",
+        "page.software.title": "おすすめソフトウェア", "page.software.desc": "AgentDock が管理するカタログです。利用可能なダウンロード元を自動選択し、ファイルを検証します。", "page.skills.desc": "インストール済み Skills をクライアントごとに有効化", "page.mcp.title": "MCP サーバー", "page.mcp.desc": "サーバーを一元管理し、各クライアントの実際の設定ファイルへ同期", "page.stats.title": "使用量統計", "page.stats.desc": "ローカルセッションから Token、リクエスト、算出可能なコストを集計", "page.logs.title": "診断センター", "page.logs.desc": "秘密情報を読み取らずにディレクトリ、クライアント、プロバイダー、MCP、統計を確認",
+        "settings.title": "設定", "settings.subtitle": "AgentDock の表示、ウィンドウ、クライアント、Skills を調整", "settings.general": "一般", "settings.autoSave": "設定は自動保存されます", "settings.saving": "保存中", "settings.saved": "保存しました", "settings.error": "保存に失敗しました",
+        "settings.language": "表示言語", "settings.languageDesc": "AgentDock の表示に使用する言語を選択", "settings.theme": "外観テーマ", "settings.themeDesc": "ライト、ダーク、またはシステム設定に合わせる", "theme.light": "ライト", "theme.dark": "ダーク", "theme.system": "システム",
+        "settings.window": "ウィンドウの動作", "settings.windowDesc": "システム起動時とウィンドウを閉じた後の動作を設定", "window.launch": "ログイン時に AgentDock を起動", "window.launchDesc": "サインイン後にデスクトップアプリを自動起動", "window.silent": "サイレント起動", "window.silentDesc": "起動時は非表示にし、システムトレイから開く", "window.tray": "閉じるとトレイへ最小化", "window.trayDesc": "バックグラウンドのインストールと同期を継続",
+        "settings.terminal": "優先ターミナル", "settings.terminalDesc": "CLI クライアントの起動に使用し、利用不可の場合はシステム既定へ切り替え", "settings.clients": "クライアント一覧", "settings.clientsDesc": "表示するクライアントと並び順を設定", "client.visible": "クライアント一覧に表示", "client.hidden": "クライアント一覧で非表示", "client.moveUp": "上へ", "client.moveDown": "下へ", "client.keepOne": "少なくとも 1 つ表示してください",
+        "settings.storage": "Skills の保存場所", "settings.storageDesc": "場所を変更するとインストール済み Skills を移行し、元のフォルダーはバックアップとして保持", "storage.agentdock": "AgentDock フォルダー", "storage.unified": "共通フォルダー", "settings.sync": "Skills の同期方法", "settings.syncDesc": "有効なクライアントへ Skills を書き込む方法", "sync.symlink": "シンボリックリンク", "sync.copy": "ファイルをコピー", "sync.symlinkHint": "保存場所での変更をクライアントがすぐ読み取ります。Windows ではシンボリックリンクの許可が必要です。", "sync.copyHint": "すべてのシステムに対応。Skill の編集後は再同期してください。",
+        "source.settingsCategory": "設定カテゴリ", "source.settingsHint": "一般設定はローカルへ自動保存されます", "source.general": "一般", "status.connected": "ローカルサービス接続済み", "status.deviceConnected": "接続済み", "terminal.system": "システム既定のターミナル", "search.filter": "現在の一覧を絞り込む", "search.logs": "診断項目を検索", "search.mcp": "サーバーを検索"
+      },
+      "de-DE": {
+        "nav.clients": "Clients", "nav.software": "Software", "nav.stats": "Statistik", "nav.logs": "Diagnose", "nav.settings": "Einstellungen",
+        "view.clients.subtitle": "KI-Coding-Clients installieren und konfigurieren", "view.software.subtitle": "Empfohlene Tools installieren und aktualisieren", "view.skills.subtitle": "Nach Client installieren und aktivieren", "view.mcp.subtitle": "Server- und Client-Konfiguration", "view.stats.subtitle": "Token-, Anfrage- und Kostentrends", "view.logs.subtitle": "Clients, Anbieter und lokale Konfiguration prüfen", "view.settings.subtitle": "Oberfläche, Fenster, Clients und Skills",
+        "page.software.title": "Empfohlene Software", "page.software.desc": "Ein von AgentDock gepflegter Katalog mit automatischer Spiegelwahl und Paketprüfung.", "page.skills.desc": "Installierte Skills pro Client aktivieren", "page.mcp.title": "MCP-Server", "page.mcp.desc": "Server zentral verwalten und in echte Client-Konfigurationen synchronisieren", "page.stats.title": "Nutzungsstatistik", "page.stats.desc": "Tokens, Anfragen und berechenbare Kosten lokaler Sitzungen zusammenfassen", "page.logs.title": "Diagnosezentrum", "page.logs.desc": "Verzeichnisse, Clients, Anbieter, MCP und Statistiken prüfen, ohne Schlüssel anzuzeigen",
+        "settings.title": "Einstellungen", "settings.subtitle": "Oberfläche, Fenster, Clients und Skills von AgentDock konfigurieren", "settings.general": "Allgemein", "settings.autoSave": "Einstellungen werden automatisch gespeichert", "settings.saving": "Speichern", "settings.saved": "Gespeichert", "settings.error": "Speichern fehlgeschlagen",
+        "settings.language": "Oberflächensprache", "settings.languageDesc": "Sprache der AgentDock-Oberfläche auswählen", "settings.theme": "Darstellung", "settings.themeDesc": "Helles, dunkles oder systemweites Erscheinungsbild", "theme.light": "Hell", "theme.dark": "Dunkel", "theme.system": "System",
+        "settings.window": "Fensterverhalten", "settings.windowDesc": "Startverhalten und Schließen des Hauptfensters steuern", "window.launch": "AgentDock bei Anmeldung starten", "window.launchDesc": "Desktop-App nach der Anmeldung automatisch starten", "window.silent": "Stiller Start", "window.silentDesc": "Fenster beim Start ausblenden und über die Taskleiste öffnen", "window.tray": "Beim Schließen in Taskleiste minimieren", "window.trayDesc": "Installationen und Synchronisierung im Hintergrund fortsetzen",
+        "settings.terminal": "Bevorzugtes Terminal", "settings.terminalDesc": "Dieses Terminal für CLI-Clients verwenden; bei Bedarf auf das Systemterminal zurückfallen", "settings.clients": "Client-Liste", "settings.clientsDesc": "Sichtbare Clients und ihre Reihenfolge festlegen", "client.visible": "In der Client-Liste sichtbar", "client.hidden": "In der Client-Liste ausgeblendet", "client.moveUp": "Nach oben", "client.moveDown": "Nach unten", "client.keepOne": "Mindestens einen Client sichtbar lassen",
+        "settings.storage": "Skills-Speicherort", "settings.storageDesc": "Installierte Skills werden beim Wechsel migriert; das alte Verzeichnis bleibt als Sicherung", "storage.agentdock": "AgentDock-Verzeichnis", "storage.unified": "Gemeinsames Verzeichnis", "settings.sync": "Skills-Synchronisierung", "settings.syncDesc": "Festlegen, wie AgentDock Skills in aktivierte Clients schreibt", "sync.symlink": "Symbolische Links", "sync.copy": "Dateien kopieren", "sync.symlinkHint": "Clients lesen Änderungen sofort. Unter Windows müssen symbolische Links erlaubt sein.", "sync.copyHint": "Auf allen Systemen kompatibel; nach Änderungen erneut synchronisieren.",
+        "source.settingsCategory": "Kategorien", "source.settingsHint": "Allgemeine Einstellungen werden lokal automatisch gespeichert", "source.general": "Allgemein", "status.connected": "Lokaler Dienst verbunden", "status.deviceConnected": "Verbunden", "terminal.system": "Systemterminal", "search.filter": "Aktuelle Liste filtern", "search.logs": "Diagnose durchsuchen", "search.mcp": "Server durchsuchen"
+      }
     };
 
     const COMMON_PRESETS = [
@@ -827,17 +938,23 @@
     };
 
     const state = {
-      desktop: Boolean(window.__TAURI_INTERNALS__), status: null, ready: null, providers: [], skills: [], mcpServers: [], softwareCatalog: [],
+      desktop: Boolean(window.__TAURI_INTERNALS__), status: null, settings: null, ready: null, providers: [], skills: [], mcpServers: [], softwareCatalog: [],
       usageStats: null, usageDays: 7, trendMetric: "totalTokens", breakdown: "client",
       activeView: "clients", activeClient: "codex", contextQuery: "", softwareFilter: "all", skillFilter: "all", diagnosticFilter: "all",
-      busy: false, logs: [], diagnostics: null, diagnosticRunning: false, editingProviderId: null, selectedPresetId: "custom", editingMcpId: null, selectedMcpPreset: "custom", inspectingMcpId: null, mcpToolsResult: null, mcpToolsError: "", activeMcpToolName: "", mcpToolsRequest: 0, configManuallyEdited: false, configImportRequest: 0, confirmResolve: null
+      inFlightOperations: new Set(), settingsRevision: 0, settingsSaveChain: Promise.resolve(), logs: [], diagnostics: null, diagnosticRunning: false, editingProviderId: null, selectedPresetId: "custom", editingMcpId: null, selectedMcpPreset: "custom", inspectingMcpId: null, mcpToolsResult: null, mcpToolsError: "", activeMcpToolName: "", mcpToolsRequest: 0, configManuallyEdited: false, configImportRequest: 0, confirmResolve: null
     };
+    try {
+      const cachedTheme = localStorage.getItem("agentdock-theme") || "system";
+      document.documentElement.dataset.theme = cachedTheme === "system" ? matchMedia("(prefers-color-scheme: dark)").matches ? "dark" : "light" : cachedTheme;
+      document.documentElement.lang = localStorage.getItem("agentdock-language") || "zh-CN";
+    } catch {}
 
     const mock = {
       status: {
-        appVersion: "0.1.10", platform: "browser-preview", dataDir: "/AgentDock/data", configDir: "/AgentDock/config", managedRuntimeReady: true,
-        clients: APP_ORDER.map((id) => ({ id, name: APP_META[id].name, installed: id === "claude-desktop", version: id === "claude-desktop" ? "detected" : null, executable: id === "claude-desktop" ? "/Applications/Claude.app" : null, configPath: id === "claude-desktop" ? "/Claude/config.json" : null, managedByAgentdock: false }))
+        appVersion: "0.1.11", platform: "browser-preview", dataDir: "/AgentDock/data", configDir: "/AgentDock/config", managedRuntimeReady: true,
+        clients: APP_ORDER.map((id) => { const installed = ["codex", "claude-desktop"].includes(id); return { id, name: APP_META[id].name, installed, version: installed ? id === "codex" ? "0.91.0" : "detected" : null, executable: installed ? `/Applications/${id}` : null, configPath: installed ? `/AgentDock/${id}/config` : null, managedByAgentdock: id === "codex" }; })
       },
+      settings: { language: "zh-CN", theme: "system", launchOnStartup: false, silentStartup: false, minimizeToTrayOnClose: false, preferredTerminal: "terminal", visibleClients: [...APP_ORDER], clientOrder: [...APP_ORDER], skillStorageLocation: "agentdock", skillSyncMethod: "copy" },
       providers: [{ id: "packycode-preview", name: "PackyCode", notes: "主力线路", websiteUrl: "https://www.packyapi.com", presetId: "packycode", providerType: "openai", baseUrl: "https://www.packyapi.com/v1", apiFormat: "responses", enabledApps: ["codex"], activeApps: ["codex"], codexModel: "gpt-5.6-sol", geminiModel: "gemini-3.5-pro", claudeSonnetModel: "claude-sonnet-5", claudeHaikuModel: "claude-haiku-4-5", claudeOpusModel: "claude-opus-4-8", active: true, apiKeyConfigured: true, createdAt: new Date().toISOString(), updatedAt: new Date().toISOString() }],
       skills: [
         { id: "review", name: "review", description: "代码变更风险审查", source: "built-in", installed: true, apps: ["codex", "claude-code"], updatedAt: new Date().toISOString() },
@@ -845,7 +962,7 @@
         { id: "design-review", name: "design-review", description: "界面视觉检查", source: "built-in", installed: false, apps: ["codex"], updatedAt: new Date().toISOString() }
       ],
       mcpServers: [{ id: "filesystem", name: "Filesystem", description: "访问指定的本地目录", homepage: "https://github.com/modelcontextprotocol/servers", docs: "", tags: ["文件", "官方"], transport: "stdio", command: "npx", args: ["-y", "@modelcontextprotocol/server-filesystem", "."], env: {}, headers: {}, cwd: "", apps: ["codex", "claude-code"], enabled: true }],
-      softwareCatalog: APP_ORDER.map((id, index) => ({ id, clientId: id, name: APP_META[id].name, description: `安装和管理 ${APP_META[id].name} 客户端`, publisher: index % 2 ? "Community" : "Official", websiteUrl: "", category: "AI 编程客户端", recommended: ["codex", "claude-code"].includes(id), installed: id === "claude-desktop", currentVersion: id === "claude-desktop" ? "1.0.2" : null, latestVersion: "1.1.0", updateAvailable: id === "claude-desktop", installSupported: APP_META[id].autoInstall, managedByAgentdock: false }))
+      softwareCatalog: APP_ORDER.map((id, index) => { const installed = ["codex", "claude-desktop"].includes(id); return { id, clientId: id, name: APP_META[id].name, description: `安装和管理 ${APP_META[id].name} 客户端`, publisher: index % 2 ? "Community" : "Official", websiteUrl: "", category: "AI 编程客户端", recommended: ["codex", "claude-code"].includes(id), installed, currentVersion: installed ? id === "codex" ? "0.91.0" : "1.0.2" : null, latestVersion: id === "codex" ? "0.92.0" : "1.1.0", updateAvailable: id === "codex", installSupported: APP_META[id].autoInstall, managedByAgentdock: id === "codex" }; })
     };
     if (!state.desktop) document.body.classList.add("preview-mode");
 
@@ -914,6 +1031,8 @@
     async function mockInvoke(command, args = {}) {
       await new Promise((resolve) => setTimeout(resolve, 70));
       if (command === "get_desktop_status") return structuredClone(mock.status);
+      if (command === "get_app_settings") return structuredClone(mock.settings);
+      if (command === "save_app_settings") { mock.settings = structuredClone(args.settings); if (!mock.settings.launchOnStartup) mock.settings.silentStartup = false; return structuredClone(mock.settings); }
       if (command === "list_software_catalog") return structuredClone(mock.softwareCatalog);
       if (command === "parse_provider_config") return mockParseProviderConfig(args.appId, args.content);
       if (command === "fetch_provider_models") {
@@ -931,7 +1050,7 @@
       if (command === "run_diagnostics") return {
         generatedAt: new Date().toISOString(), score: 90, passed: 6, warnings: 2, failed: 0,
         checks: [
-          { id: "system-platform", category: "系统", status: "pass", title: "桌面运行环境", detail: "AgentDock 0.1.10 · macOS arm64", action: "" },
+          { id: "system-platform", category: "系统", status: "pass", title: "桌面运行环境", detail: "AgentDock 0.1.11 · macOS arm64", action: "" },
           { id: "system-data-dir", category: "系统", status: "pass", title: "数据目录可写", detail: "/AgentDock/data", action: "" },
           { id: "client-claude", category: "客户端", status: "pass", title: "Claude Desktop 可正常启动", detail: "1.0.2 · 系统安装", action: "" },
           { id: "client-codex", category: "客户端", status: "warning", title: "Codex 尚未安装", detail: "这是推荐客户端，可由 AgentDock 自动安装", action: "前往客户端页面点击一键安装" },
@@ -954,7 +1073,7 @@
       if (command === "delete_provider") { mock.providers = mock.providers.filter((item) => item.id !== args.providerId); return { ok: true, message: "供应商已删除" }; }
       if (command === "test_provider") return { ok: true, latencyMs: 86, message: "连接测试通过" };
       if (command === "apply_provider_config" || command === "apply_active_provider_configs") return { providerId: args.providerId || "active", backupDir: "/backup", writtenFiles: ["provider.json", "provider.env"] };
-      if (command === "install_client") { const client = mock.status.clients.find((item) => item.id === args.clientId); if (!client) throw new Error("未找到客户端"); client.installed = true; client.version = "managed-preview"; client.managedByAgentdock = true; client.executable = `/AgentDock/${client.id}`; client.configPath = `/AgentDock/${client.id}/config`; return { client, message: `${client.name} 已安装` }; }
+      if (command === "install_client") { await new Promise((resolve) => setTimeout(resolve, 1500)); const client = mock.status.clients.find((item) => item.id === args.clientId); if (!client) throw new Error("未找到客户端"); const catalog = mock.softwareCatalog.find((item) => item.clientId === args.clientId); client.installed = true; client.version = catalog?.latestVersion || "managed-preview"; client.managedByAgentdock = true; client.executable = `/AgentDock/${client.id}`; client.configPath = `/AgentDock/${client.id}/config`; if (catalog) { catalog.installed = true; catalog.currentVersion = client.version; catalog.updateAvailable = false; catalog.managedByAgentdock = true; } return { client, message: `${client.name} 已安装或更新` }; }
       if (command === "uninstall_client") { const client = mock.status.clients.find((item) => item.id === args.clientId); client.installed = false; client.version = null; client.managedByAgentdock = false; client.executable = null; client.configPath = null; return { ok: true, message: `${client.name} 已卸载` }; }
       if (command === "launch_client") return { launched: true, message: "客户端已启动" };
       if (command === "open_path") return { ok: true, message: `已打开 ${args.path}` };
@@ -988,20 +1107,119 @@
     }
     const call = (command, args) => state.desktop ? invoke(command, args) : mockInvoke(command, args);
 
-    async function withBusy(button, task) {
-      if (state.busy) return;
-      state.busy = true; const original = button?.innerHTML;
+    function tr(key, fallback) {
+      return UI_COPY[state.settings?.language]?.[key] || fallback;
+    }
+
+    function localizedViewMeta(name) {
+      const [title, subtitle] = VIEW_META[name];
+      return [tr(`nav.${name}`, title), tr(`view.${name}.subtitle`, subtitle)];
+    }
+
+    function setText(selector, value) {
+      const element = document.querySelector(selector); if (element) element.textContent = value;
+    }
+
+    function localizeUi() {
+      const navFallback = { clients: "客户端", software: "推荐软件", skills: "Skills", mcp: "MCP", stats: "统计", logs: "诊断" };
+      for (const [view, fallback] of Object.entries(navFallback)) {
+        const label = tr(`nav.${view}`, fallback); const button = document.querySelector(`[data-view-button="${view}"]`);
+        setText(`[data-view-button="${view}"] .label`, label); if (button) button.title = label;
+      }
+      const settingsButton = document.querySelector('[data-view-button="settings"]'); if (settingsButton) { const label = tr("nav.settings", "设置"); settingsButton.title = label; settingsButton.setAttribute("aria-label", label); }
+      const [topTitle, topSubtitle] = localizedViewMeta(state.activeView); setText("#top-title", topTitle); setText("#top-subtitle", topSubtitle);
+
+      const pageCopy = {
+        software: [tr("page.software.title", "推荐软件"), tr("page.software.desc", "由 AgentDock 维护的软件目录，安装过程自动选择可用下载源并校验文件。")],
+        skills: ["Skills", tr("page.skills.desc", "按客户端启用已安装技能")],
+        mcp: [tr("page.mcp.title", "MCP 服务器"), tr("page.mcp.desc", "统一管理服务器，并同步到各客户端的真实配置文件")],
+        stats: [tr("page.stats.title", "用量统计"), tr("page.stats.desc", "汇总本机客户端会话中的 Token、请求和可计算成本")],
+        logs: [tr("page.logs.title", "诊断中心"), tr("page.logs.desc", "检查本机目录、客户端、供应商连接、MCP 和统计数据，不读取或展示密钥")],
+        settings: [tr("settings.title", "设置"), tr("settings.subtitle", "调整 AgentDock 的界面、窗口、客户端和 Skills 行为")]
+      };
+      for (const [view, [title, description]] of Object.entries(pageCopy)) { setText(`.view[data-view="${view}"] .page-head h2`, title); setText(`.view[data-view="${view}"] .page-head p`, description); }
+      setText(".settings-tabs button", tr("settings.general", "通用"));
+      const settingsSections = [
+        ["settings-language-title", "settings.language", "界面语言", "settings.languageDesc", "选择 AgentDock 显示界面使用的语言"],
+        ["settings-theme-title", "settings.theme", "外观主题", "settings.themeDesc", "浅色、深色或跟随当前系统外观"],
+        ["settings-window-title", "settings.window", "窗口行为", "settings.windowDesc", "控制 AgentDock 如何随系统启动以及关闭窗口后的行为"],
+        ["settings-terminal-title", "settings.terminal", "首选终端", "settings.terminalDesc", "从 AgentDock 启动命令行客户端时优先使用此终端，不可用时自动回退到系统终端"],
+        ["settings-clients-title", "settings.clients", "客户端列表", "settings.clientsDesc", "选择客户端页面显示的项目，并调整它们的排列顺序"],
+        ["settings-skills-storage-title", "settings.storage", "Skills 存储位置", "settings.storageDesc", "切换位置时会迁移已安装的 Skills，原目录保留作为安全副本"],
+        ["settings-skills-sync-title", "settings.sync", "Skills 同步方式", "settings.syncDesc", "决定 AgentDock 如何把 Skills 写入已启用的客户端"]
+      ];
+      for (const [id, titleKey, title, descriptionKey, description] of settingsSections) { setText(`#${id}`, tr(titleKey, title)); setText(`#${id} + p`, tr(descriptionKey, description)); }
+      const windowRows = [
+        ["launchOnStartup", "window.launch", "开机时启动 AgentDock", "window.launchDesc", "登录系统后自动启动桌面程序"],
+        ["silentStartup", "window.silent", "静默启动", "window.silentDesc", "开机启动时保持窗口隐藏，可从系统托盘打开"],
+        ["minimizeToTrayOnClose", "window.tray", "关闭窗口时最小化到托盘", "window.trayDesc", "保留后台进程和正在进行的安装或同步任务"]
+      ];
+      for (const [field, titleKey, title, descriptionKey, description] of windowRows) { const row = document.querySelector(`[data-field="${field}"]`)?.closest("label"); if (row) { row.querySelector("strong").textContent = tr(titleKey, title); row.querySelector("small").textContent = tr(descriptionKey, description); } }
+      const currentStatus = document.getElementById("settings-save-state")?.dataset.status || "auto"; setSettingsSaveState(currentStatus);
+    }
+
+    async function withBusy(button, task, operationKey = null) {
+      const key = operationKey || (button ? `${button.dataset.action || "action"}:${button.dataset.id || button.dataset.field || "global"}` : Symbol("operation"));
+      if (state.inFlightOperations.has(key)) { notify("该操作正在进行中"); return; }
+      state.inFlightOperations.add(key); const original = button?.innerHTML;
       if (button) { button.disabled = true; button.innerHTML = `<i data-lucide="loader-circle"></i><span>处理中</span>`; refreshIcons(); }
       try { await task(); }
       catch (error) { const message = errorText(error); addLog("error", message); notify(message, "error"); showProviderError(message); }
-      finally { state.busy = false; if (button && document.body.contains(button)) { button.disabled = false; button.innerHTML = original; refreshIcons(); } }
+      finally { state.inFlightOperations.delete(key); if (button && document.body.contains(button)) { button.disabled = false; button.innerHTML = original; refreshIcons(); } }
     }
 
     async function loadAll({ quiet = false } = {}) {
-      const [status, ready, providers, skills, mcpServers, softwareCatalog, usageStats] = await Promise.all([call("get_desktop_status"), call("run_ready_check"), call("list_providers"), call("list_skills"), call("list_mcp_servers"), call("list_software_catalog"), call("get_usage_stats", { days: state.usageDays })]);
-      Object.assign(state, { status, ready, providers, skills, mcpServers, softwareCatalog, usageStats });
-      if (!status.clients.some((client) => client.id === state.activeClient)) state.activeClient = "codex";
+      const [status, settings, ready, providers, skills, mcpServers, softwareCatalog, usageStats] = await Promise.all([call("get_desktop_status"), call("get_app_settings"), call("run_ready_check"), call("list_providers"), call("list_skills"), call("list_mcp_servers"), call("list_software_catalog"), call("get_usage_stats", { days: state.usageDays })]);
+      Object.assign(state, { status, settings, ready, providers, skills, mcpServers, softwareCatalog, usageStats });
+      applyAppearance();
+      const visible = visibleClientIds();
+      if (!visible.includes(state.activeClient)) state.activeClient = visible[0] || "codex";
       renderAll(); if (!quiet) addLog("ok", `状态已刷新：${ready.clientsReady} 个客户端，${ready.providersReady} 个供应商`);
+    }
+
+    function visibleClientIds() {
+      const order = state.settings?.clientOrder?.length ? state.settings.clientOrder : APP_ORDER;
+      const visible = new Set(state.settings?.visibleClients?.length ? state.settings.visibleClients : APP_ORDER);
+      const result = order.filter((id) => APP_META[id] && visible.has(id));
+      return result.length ? result : [APP_ORDER[0]];
+    }
+
+    function resolvedTheme(theme = state.settings?.theme || "system") {
+      return theme === "system" ? matchMedia("(prefers-color-scheme: dark)").matches ? "dark" : "light" : theme;
+    }
+
+    function applyAppearance() {
+      const settings = state.settings || mock.settings;
+      document.documentElement.dataset.theme = resolvedTheme(settings.theme);
+      document.documentElement.lang = settings.language || "zh-CN";
+      try { localStorage.setItem("agentdock-theme", settings.theme); localStorage.setItem("agentdock-language", settings.language); } catch {}
+      localizeUi();
+    }
+
+    function normalizeFrontendSettings(settings) {
+      const order = [...new Set((settings.clientOrder || []).filter((id) => APP_META[id]))];
+      for (const id of APP_ORDER) if (!order.includes(id)) order.push(id);
+      const visibleSet = new Set((settings.visibleClients || []).filter((id) => APP_META[id]));
+      const visibleClients = order.filter((id) => visibleSet.has(id));
+      if (!visibleClients.length) visibleClients.push(order[0]);
+      return { ...settings, clientOrder: order, visibleClients, silentStartup: settings.launchOnStartup ? Boolean(settings.silentStartup) : false };
+    }
+
+    function queueSettingsSave(updates) {
+      const snapshot = normalizeFrontendSettings({ ...state.settings, ...updates }); const revision = ++state.settingsRevision;
+      state.settings = snapshot; applyAppearance(); renderSettings(); renderClients(); renderSourceSidebar(); renderHeader(); refreshIcons();
+      state.settingsSaveChain = state.settingsSaveChain.catch(() => {}).then(async () => {
+        setSettingsSaveState("saving");
+        try {
+          const saved = await call("save_app_settings", { settings: snapshot });
+          if (revision === state.settingsRevision) { state.settings = normalizeFrontendSettings(saved); applyAppearance(); renderSettings(); renderClients(); renderSourceSidebar(); renderHeader(); refreshIcons(); }
+          setSettingsSaveState("saved");
+        } catch (error) {
+          if (revision === state.settingsRevision) state.settings = await call("get_app_settings");
+          setSettingsSaveState("error"); notify(errorText(error), "error"); renderSettings(); renderClients(); renderSourceSidebar(); renderHeader(); refreshIcons();
+        }
+      });
+      return state.settingsSaveChain;
     }
 
     const contextMatches = (...values) => {
@@ -1021,12 +1239,13 @@
         skills: ["Skills", `${state.skills.filter((skill) => skill.installed).length} 个已安装`, "refresh-cw", "同步 Skills"],
         mcp: ["MCP 服务器", `${state.mcpServers.filter((server) => server.enabled).length} 个已启用`, "plus", "添加 MCP 服务器"],
         stats: ["统计视图", `近 ${state.usageDays} 天`, "refresh-cw", "刷新统计"],
-        logs: ["诊断", state.diagnostics ? `${state.diagnostics.checks.length} 项检查` : "尚未检测", "scan-heart", "重新运行诊断"]
+        logs: ["诊断", state.diagnostics ? `${state.diagnostics.checks.length} 项检查` : "尚未检测", "scan-heart", "重新运行诊断"],
+        settings: [tr("nav.settings", "设置"), tr("source.general", "通用"), "refresh-cw", tr("source.settingsCategory", "重新读取设置")]
       }[state.activeView];
       title.textContent = sourceAction[0]; summary.textContent = sourceAction[1]; action.title = sourceAction[3]; action.setAttribute("aria-label", sourceAction[3]); action.innerHTML = `<i data-lucide="${sourceAction[2]}"></i>`;
-      const searchEnabled = state.activeView !== "stats"; search.disabled = !searchEnabled; searchShell.classList.toggle("disabled", !searchEnabled); search.placeholder = state.activeView === "logs" ? "搜索诊断项" : state.activeView === "mcp" ? "搜索服务器" : "筛选当前列表";
+      const searchEnabled = !["stats", "settings"].includes(state.activeView); search.disabled = !searchEnabled; searchShell.classList.toggle("disabled", !searchEnabled); search.placeholder = state.activeView === "logs" ? tr("search.logs", "搜索诊断项") : state.activeView === "mcp" ? tr("search.mcp", "搜索服务器") : tr("search.filter", "筛选当前列表"); search.setAttribute("aria-label", search.placeholder);
       if (state.activeView === "clients") {
-        const clients = APP_ORDER.map((id) => ({ id, meta: clientMeta(id), client: state.status?.clients.find((item) => item.id === id), catalog: state.softwareCatalog.find((item) => item.clientId === id) })).filter(({ id, meta }) => contextMatches(id, meta.name));
+        const clients = visibleClientIds().map((id) => ({ id, meta: clientMeta(id), client: state.status?.clients.find((item) => item.id === id), catalog: state.softwareCatalog.find((item) => item.clientId === id) })).filter(({ id, meta }) => contextMatches(id, meta.name));
         const rows = clients.map(({ id, meta, client, catalog }) => {
           const installed = Boolean(client?.installed); const update = Boolean(catalog?.updateAvailable); const status = installed ? `${escapeHtml(client.version || "已安装")}${update ? " · 可更新" : ""}` : meta.autoInstall ? "可一键安装" : "未检测到";
           return `<button class="source-item ${state.activeClient === id ? "active" : ""}" data-action="select-client" data-id="${id}" aria-pressed="${state.activeClient === id}">${clientLogo(id)}<span class="source-copy"><strong>${escapeHtml(meta.name)}</strong><small>${status}</small></span><i class="source-state ${update ? "warn" : installed ? "ok" : ""}"></i></button>`;
@@ -1044,19 +1263,22 @@
         list.innerHTML = `<div class="source-group-label"><span>已添加</span><b>${servers.length}</b></div>${rows || `<div class="source-empty"><i data-lucide="blocks"></i>还没有 MCP 服务器</div>`}`;
       } else if (state.activeView === "stats") {
         list.innerHTML = `<div class="source-group-label">时间范围</div>${[7, 30, 90].map((days) => sourceFilterButton(String(days), `近 ${days} 天`, days === 7 ? "calendar-days" : days === 30 ? "calendar-range" : "calendar", undefined, state.usageDays === days, "set-stats-days")).join("")}<div class="source-rule"></div><div class="source-group-label">分组方式</div>${sourceFilterButton("client", "按客户端", "monitor", undefined, state.breakdown === "client", "set-breakdown")}${sourceFilterButton("provider", "按供应商", "network", undefined, state.breakdown === "provider", "set-breakdown")}${sourceFilterButton("model", "按模型", "box", undefined, state.breakdown === "model", "set-breakdown")}`;
+      } else if (state.activeView === "settings") {
+        list.innerHTML = `<div class="source-group-label">${tr("source.settingsCategory", "设置分类")}</div><button class="source-filter active" aria-current="page"><i data-lucide="sliders-horizontal"></i><span>${tr("source.general", "通用")}</span></button><div class="source-rule"></div><div class="source-empty"><i data-lucide="cloud-check"></i>${tr("source.settingsHint", "通用设置会自动保存到本机")}</div>`;
       } else {
         const checks = state.diagnostics?.checks || []; const counts = Object.fromEntries(["pass", "warning", "error"].map((status) => [status, checks.filter((item) => item.status === status).length]));
         list.innerHTML = `<div class="source-group-label">检查状态</div>${sourceFilterButton("all", "全部项目", "list-checks", checks.length, state.diagnosticFilter === "all", "set-diagnostic-filter")}${sourceFilterButton("pass", "通过", "circle-check", counts.pass, state.diagnosticFilter === "pass", "set-diagnostic-filter")}${sourceFilterButton("warning", "警告", "triangle-alert", counts.warning, state.diagnosticFilter === "warning", "set-diagnostic-filter")}${sourceFilterButton("error", "错误", "circle-x", counts.error, state.diagnosticFilter === "error", "set-diagnostic-filter")}<div class="source-rule"></div><div class="source-empty"><i data-lucide="shield-check"></i>诊断报告不包含 API Key、MCP 环境变量值或请求头内容</div>`;
       }
     }
 
-    function renderAll() { renderHeader(); renderClients(); renderSoftware(); renderSkills(); renderMcp(); renderStats(); renderLogs(); renderSourceSidebar(); refreshIcons(); }
+    function renderAll() { renderHeader(); renderClients(); renderSoftware(); renderSkills(); renderMcp(); renderStats(); renderLogs(); renderSettings(); renderSourceSidebar(); refreshIcons(); }
     function renderHeader() {
-      const installed = state.status?.clients?.filter((client) => client.installed).length || 0;
-      const total = state.status?.clients?.length || APP_ORDER.length;
+      const visible = visibleClientIds();
+      const installed = state.status?.clients?.filter((client) => visible.includes(client.id) && client.installed).length || 0;
+      const total = visible.length;
       document.getElementById("backend-state").className = "badge ok";
-      document.getElementById("backend-state").innerHTML = `<i data-lucide="circle-check"></i>本机服务已连接`;
-      document.getElementById("platform-label").textContent = `${state.status?.platform || "本机"} · 已连接`;
+      document.getElementById("backend-state").innerHTML = `<i data-lucide="circle-check"></i>${tr("status.connected", "本机服务已连接")}`;
+      document.getElementById("platform-label").textContent = `${state.status?.platform || "本机"} · ${tr("status.deviceConnected", "已连接")}`;
       document.getElementById("version-label").textContent = `AgentDock ${state.status?.appVersion || ""}`;
       document.getElementById("nav-client-count").textContent = `${installed}/${total}`;
       document.getElementById("nav-software-count").textContent = state.softwareCatalog.filter((item) => item.installed).length;
@@ -1069,7 +1291,9 @@
 
     function renderClients() {
       const switcher = document.getElementById("client-switcher");
-      switcher.innerHTML = APP_ORDER.map((id) => {
+      const visible = visibleClientIds();
+      if (!visible.includes(state.activeClient)) state.activeClient = visible[0];
+      switcher.innerHTML = visible.map((id) => {
         const meta = clientMeta(id); const client = state.status?.clients.find((item) => item.id === id); const installed = Boolean(client?.installed);
         return `<button class="client-tab ${state.activeClient === id ? "active" : ""}" data-action="select-client" data-id="${id}" aria-pressed="${state.activeClient === id}">
           ${clientLogo(id)}<span class="client-dot ${installed ? "on" : ""}"></span><strong>${meta.name}</strong><small>${installed ? "已安装" : meta.autoInstall ? "可一键安装" : "未检测到"}</small>
@@ -1083,15 +1307,16 @@
       if (!client) { stage.innerHTML = `<div class="client-empty">正在检测客户端</div>`; return; }
       const providers = state.providers.filter((provider) => provider.enabledApps?.includes(state.activeClient));
       const catalog = state.softwareCatalog.find((item) => item.clientId === client.id);
+      const installing = state.inFlightOperations.has(`install-client:${client.id}`);
       const currentProvider = providers.find((provider) => provider.activeApps?.includes(state.activeClient));
       const enabledMcp = state.mcpServers.filter((server) => server.enabled && server.apps?.includes(state.activeClient)).length;
       const currentModel = currentProvider ? providerDefaultModel(currentProvider) || "跟随客户端" : "尚未配置";
       const clientActions = client.installed ? `
         ${client.configPath ? `<button class="icon-btn" data-action="open-path" data-path="${escapeHtml(client.configPath)}" title="打开配置位置" aria-label="打开配置位置"><i data-lucide="folder-open"></i></button>` : ""}
-        ${catalog?.updateAvailable && catalog.installSupported ? `<button class="btn" data-action="install-client" data-id="${client.id}"><i data-lucide="arrow-up-circle"></i>更新到 ${escapeHtml(catalog.latestVersion || "最新版")}</button>` : ""}
+        ${catalog?.updateAvailable && catalog.installSupported ? `<button class="btn" data-action="install-client" data-id="${client.id}" ${installing ? "disabled" : ""}><i data-lucide="${installing ? "loader-circle" : "arrow-up-circle"}"></i>${installing ? "正在升级" : `更新到 ${escapeHtml(catalog.latestVersion || "最新版")}`}</button>` : ""}
         <button class="icon-btn" data-action="refresh-catalog" title="检查 ${meta.name} 更新" aria-label="检查 ${meta.name} 更新"><i data-lucide="refresh-cw"></i></button>
         ${client.managedByAgentdock ? `<button class="icon-btn" data-action="uninstall-client" data-id="${client.id}" title="卸载" aria-label="卸载 ${meta.name}"><i data-lucide="trash-2"></i></button>` : ""}
-        <button class="btn primary" data-action="launch-client" data-id="${client.id}"><i data-lucide="play"></i>启动 ${meta.name}</button>` : meta.autoInstall ? `<button class="btn primary" data-action="install-client" data-id="${client.id}"><i data-lucide="download"></i>一键安装 ${meta.name}</button>` : `<span class="badge">当前仅支持本机检测</span>`;
+        <button class="btn primary" data-action="launch-client" data-id="${client.id}"><i data-lucide="play"></i>启动 ${meta.name}</button>` : meta.autoInstall ? `<button class="btn primary" data-action="install-client" data-id="${client.id}" ${installing ? "disabled" : ""}><i data-lucide="${installing ? "loader-circle" : "download"}"></i>${installing ? "正在安装" : `一键安装 ${meta.name}`}</button>` : `<span class="badge">当前仅支持本机检测</span>`;
       stage.innerHTML = `
         <div class="client-stage-head"><div class="client-identity">${clientLogo(client.id)}<div><h3>${meta.name}</h3><p>${client.installed ? `${escapeHtml(client.version || "已安装")}${client.managedByAgentdock ? " · AgentDock 托管" : " · 本机安装"}` : "未检测到可执行程序"}</p></div></div><div class="client-stage-actions">${clientActions}</div></div>
         <section class="client-readiness" aria-label="客户端就绪状态">
@@ -1111,7 +1336,7 @@
       document.getElementById("software-summary").textContent = `${state.softwareCatalog.length} 个工具，已安装 ${installed} 个${updates ? `，${updates} 个可更新` : ""}${items.length !== state.softwareCatalog.length ? ` · 当前显示 ${items.length} 个` : ""}`;
       list.innerHTML = items.length ? items.map((item) => {
         const status = item.updateAvailable ? `<span class="badge warn">可更新</span>` : item.installed ? `<span class="badge ok">已安装</span>` : item.recommended ? `<span class="badge">推荐</span>` : "";
-        const action = item.updateAvailable && item.installSupported ? `<button class="btn primary" data-action="install-client" data-id="${item.clientId}"><i data-lucide="arrow-up-circle"></i>更新</button>` : item.installed ? `<button class="btn" data-action="select-software-client" data-id="${item.clientId}">管理</button>` : item.installSupported ? `<button class="btn primary" data-action="install-client" data-id="${item.clientId}"><i data-lucide="download"></i>安装</button>` : `<span class="badge">仅检测</span>`;
+        const installing = state.inFlightOperations.has(`install-client:${item.clientId}`); const action = item.updateAvailable && item.installSupported ? `<button class="btn primary" data-action="install-client" data-id="${item.clientId}" ${installing ? "disabled" : ""}><i data-lucide="${installing ? "loader-circle" : "arrow-up-circle"}"></i>${installing ? "升级中" : "更新"}</button>` : item.installed ? `<button class="btn" data-action="select-software-client" data-id="${item.clientId}">管理</button>` : item.installSupported ? `<button class="btn primary" data-action="install-client" data-id="${item.clientId}" ${installing ? "disabled" : ""}><i data-lucide="${installing ? "loader-circle" : "download"}"></i>${installing ? "安装中" : "安装"}</button>` : `<span class="badge">仅检测</span>`;
         return `<article class="software-item" data-software-id="${escapeHtml(item.id)}"><div class="software-item-head"><div class="software-identity">${clientLogo(item.clientId)}<div><h3>${escapeHtml(item.name)}</h3><p>${escapeHtml(item.publisher)} · ${escapeHtml(item.category)}</p></div></div>${status}</div><p class="software-description">${escapeHtml(item.description)}</p><div class="software-foot"><span class="version-pair">${escapeHtml(item.currentVersion || "未安装")} → ${escapeHtml(item.latestVersion || "等待检查")}</span>${action}</div></article>`;
       }).join("") : `<div class="empty">当前筛选条件下没有软件</div>`;
     }
@@ -1206,6 +1431,51 @@
       finally { state.diagnosticRunning = false; renderLogs(); renderSourceSidebar(); refreshIcons(); }
     }
 
+    const LANGUAGE_OPTIONS = [
+      ["zh-CN", "简体中文"], ["zh-TW", "繁體中文"], ["en-US", "English"], ["ja-JP", "日本語"], ["de-DE", "Deutsch"]
+    ];
+    const THEME_OPTIONS = [["light", "sun", "浅色"], ["dark", "moon", "深色"], ["system", "monitor", "跟随系统"]];
+    const TERMINAL_OPTIONS = {
+      macos: [["terminal", "Terminal"], ["iterm2", "iTerm2"], ["alacritty", "Alacritty"], ["kitty", "kitty"], ["ghostty", "Ghostty"], ["wezterm", "WezTerm"]],
+      windows: [["powershell", "PowerShell"], ["cmd", "命令提示符"], ["wt", "Windows Terminal"]],
+      linux: [["x-terminal-emulator", "系统默认终端"], ["gnome-terminal", "GNOME Terminal"], ["konsole", "Konsole"], ["xfce4-terminal", "Xfce Terminal"], ["alacritty", "Alacritty"], ["kitty", "kitty"], ["ghostty", "Ghostty"]]
+    };
+
+    function settingsChoiceButton(field, value, label, icon = "") {
+      const active = state.settings?.[field] === value;
+      return `<button type="button" class="${active ? "active" : ""}" data-action="set-setting-choice" data-field="${field}" data-value="${value}" aria-pressed="${active}">${icon ? `<i data-lucide="${icon}"></i>` : ""}${label}</button>`;
+    }
+
+    function setSettingsSaveState(status) {
+      const badge = document.getElementById("settings-save-state"); if (!badge) return;
+      const content = status === "saving" ? ["badge", "loader-circle", tr("settings.saving", "正在保存")] : status === "error" ? ["badge danger", "circle-alert", tr("settings.error", "保存失败")] : status === "saved" ? ["badge ok", "cloud-check", tr("settings.saved", "设置已保存")] : ["badge ok", "cloud-check", tr("settings.autoSave", "设置自动保存")];
+      badge.dataset.status = status; badge.className = content[0]; badge.innerHTML = `<i data-lucide="${content[1]}"></i>${content[2]}`; refreshIcons();
+    }
+
+    function renderSettings() {
+      if (!state.settings) return;
+      document.getElementById("settings-language-options").innerHTML = LANGUAGE_OPTIONS.map(([value, label]) => settingsChoiceButton("language", value, label)).join("");
+      document.getElementById("settings-theme-options").innerHTML = THEME_OPTIONS.map(([value, icon, label]) => settingsChoiceButton("theme", value, tr(`theme.${value}`, label), icon)).join("");
+      document.querySelectorAll('[data-change="setting-boolean"]').forEach((input) => { input.checked = Boolean(state.settings[input.dataset.field]); });
+      document.getElementById("silent-startup-row").hidden = !state.settings.launchOnStartup;
+
+      const platform = state.status?.platform || "macos"; const terminals = TERMINAL_OPTIONS[platform] || TERMINAL_OPTIONS.linux; const terminal = document.getElementById("settings-terminal");
+      terminal.innerHTML = terminals.map(([value, label]) => `<option value="${value}">${value === "x-terminal-emulator" ? tr("terminal.system", label) : label}</option>`).join("");
+      terminal.value = terminals.some(([value]) => value === state.settings.preferredTerminal) ? state.settings.preferredTerminal : terminals[0][0];
+
+      const visible = new Set(state.settings.visibleClients); const visibleCount = visible.size;
+      document.getElementById("settings-client-list").innerHTML = state.settings.clientOrder.map((id, index, order) => {
+        const meta = clientMeta(id); const checked = visible.has(id); const onlyVisible = checked && visibleCount === 1;
+        const moveUp = tr("client.moveUp", "上移"); const moveDown = tr("client.moveDown", "下移");
+        return `<div class="settings-client-row">${clientLogo(id)}<span class="settings-row-copy"><strong>${escapeHtml(meta.name)}</strong><small>${checked ? tr("client.visible", "显示在客户端列表") : tr("client.hidden", "已从客户端列表隐藏")}</small></span><label class="switch"><input type="checkbox" data-change="setting-client-visibility" data-id="${id}" ${checked ? "checked" : ""} ${onlyVisible ? "disabled" : ""} aria-label="${escapeHtml(meta.name)}" /><span></span></label><span class="settings-client-actions"><button class="icon-btn" type="button" data-action="move-setting-client" data-id="${id}" data-direction="up" title="${moveUp}" aria-label="${moveUp} ${escapeHtml(meta.name)}" ${index === 0 ? "disabled" : ""}><i data-lucide="arrow-up"></i></button><button class="icon-btn" type="button" data-action="move-setting-client" data-id="${id}" data-direction="down" title="${moveDown}" aria-label="${moveDown} ${escapeHtml(meta.name)}" ${index === order.length - 1 ? "disabled" : ""}><i data-lucide="arrow-down"></i></button></span></div>`;
+      }).join("");
+
+      document.getElementById("settings-skills-storage-options").innerHTML = settingsChoiceButton("skillStorageLocation", "agentdock", tr("storage.agentdock", "AgentDock 目录"), "archive") + settingsChoiceButton("skillStorageLocation", "unified", tr("storage.unified", "统一目录"), "folder-sync");
+      document.getElementById("settings-skills-path").textContent = state.settings.skillStorageLocation === "unified" ? "~/.agents/skills" : `${state.status?.dataDir || "AgentDock"}/skills`;
+      document.getElementById("settings-skills-sync-options").innerHTML = settingsChoiceButton("skillSyncMethod", "symlink", tr("sync.symlink", "符号链接"), "link-2") + settingsChoiceButton("skillSyncMethod", "copy", tr("sync.copy", "复制文件"), "copy");
+      document.getElementById("settings-sync-hint").textContent = state.settings.skillSyncMethod === "symlink" ? tr("sync.symlinkHint", "修改存储目录中的 Skill 后，客户端会立即读取最新内容。Windows 需要允许创建符号链接。") : tr("sync.copyHint", "兼容所有系统；修改 Skill 后需要再次点击同步到客户端。");
+    }
+
     function showView(name) {
       closeProviderEditor();
       closeMcpForm();
@@ -1213,13 +1483,14 @@
       state.activeView = name; state.contextQuery = ""; document.getElementById("command-search").value = "";
       document.querySelectorAll("[data-view-button]").forEach((button) => button.classList.toggle("active", button.dataset.viewButton === name));
       document.querySelectorAll("[data-view]").forEach((view) => view.classList.toggle("active", view.dataset.view === name));
-      const [title, subtitle] = VIEW_META[name]; document.getElementById("top-title").textContent = title; document.getElementById("top-subtitle").textContent = subtitle;
+      const [title, subtitle] = localizedViewMeta(name); document.getElementById("top-title").textContent = title; document.getElementById("top-subtitle").textContent = subtitle;
       if (name === "clients") renderClients();
       if (name === "software") renderSoftware();
       if (name === "skills") renderSkills();
       if (name === "mcp") renderMcp();
       if (name === "stats") renderStats();
       if (name === "logs") renderLogs();
+      if (name === "settings") renderSettings();
       renderSourceSidebar(); refreshIcons();
       if (name === "logs" && !state.diagnostics && !state.diagnosticRunning) refreshDiagnostics().catch((error) => { addLog("error", errorText(error)); notify(errorText(error), "error"); });
     }
@@ -1546,8 +1817,15 @@
       const id = button.dataset.id;
       if (action === "confirm-cancel") return closeConfirm(false);
       if (action === "confirm-accept") return closeConfirm(true);
-      if (action === "context-action") return handleAction({ clients: "refresh-all", software: "refresh-catalog", skills: "sync-skills", mcp: "new-mcp", stats: "refresh-stats", logs: "run-diagnostics" }[state.activeView], button);
+      if (action === "context-action") return handleAction({ clients: "refresh-all", software: "refresh-catalog", skills: "sync-skills", mcp: "new-mcp", stats: "refresh-stats", logs: "run-diagnostics", settings: "refresh-settings" }[state.activeView], button);
       if (action === "refresh-all") return withBusy(button, async () => { await loadAll(); notify("状态已刷新"); });
+      if (action === "refresh-settings") return withBusy(button, async () => { state.settings = await call("get_app_settings"); applyAppearance(); renderSettings(); renderClients(); renderSourceSidebar(); renderHeader(); refreshIcons(); notify("设置已重新读取"); });
+      if (action === "set-setting-choice") return queueSettingsSave({ [button.dataset.field]: button.dataset.value });
+      if (action === "move-setting-client") {
+        const order = [...state.settings.clientOrder]; const from = order.indexOf(id); const to = button.dataset.direction === "up" ? from - 1 : from + 1;
+        if (from < 0 || to < 0 || to >= order.length) return;
+        [order[from], order[to]] = [order[to], order[from]]; return queueSettingsSave({ clientOrder: order });
+      }
       if (action === "select-client") { state.activeClient = id; renderClients(); renderSourceSidebar(); refreshIcons(); return; }
       if (action === "select-software-client") { state.activeClient = id; showView("clients"); renderClients(); refreshIcons(); return; }
       if (action === "set-software-filter") { state.softwareFilter = id; renderSoftware(); renderSourceSidebar(); refreshIcons(); return; }
@@ -1557,7 +1835,7 @@
       if (action === "focus-skill") { state.skillFilter = "all"; renderSkills(); renderSourceSidebar(); refreshIcons(); document.querySelector(`[data-skill-id="${CSS.escape(id)}"]`)?.scrollIntoView({ behavior: "smooth", block: "center" }); return; }
       if (action === "refresh-catalog") return withBusy(button, async () => { state.softwareCatalog = await call("list_software_catalog"); renderHeader(); renderClients(); renderSoftware(); renderSourceSidebar(); refreshIcons(); notify("版本信息已更新"); });
       if (action === "quick-setup") return withBusy(button, async () => { for (const clientId of ["codex", "claude-code"]) if (!state.status.clients.some((client) => client.id === clientId && client.installed)) { const result = await call("install_client", { clientId }); addLog("ok", result.message); } await loadAll({ quiet: true }); notify("推荐客户端已处理"); });
-      if (action === "install-client") return withBusy(button, async () => { const result = await call("install_client", { clientId: id }); addLog("ok", result.message); notify(result.message); await loadAll({ quiet: true }); });
+      if (action === "install-client") return withBusy(button, async () => { const result = await call("install_client", { clientId: id }); addLog("ok", result.message); notify(result.message); await loadAll({ quiet: true }); }, `install-client:${id}`);
       if (action === "launch-client") return withBusy(button, async () => { const result = await call("launch_client", { clientId: id }); addLog("ok", result.message); notify(result.message); });
       if (action === "open-path") return withBusy(button, async () => { const result = await call("open_path", { path: button.dataset.path }); addLog("info", result.message); });
       if (action === "uninstall-client") { if (!await confirmAction(`卸载 ${clientMeta(id).name}`, "只会删除 AgentDock 托管的客户端文件，供应商配置会保留。", "确认卸载")) return; notify(`正在卸载 ${clientMeta(id).name}`); return withBusy(button, async () => { const result = await call("uninstall_client", { clientId: id }); addLog("warn", result.message); notify(result.message); await loadAll({ quiet: true }); }); }
@@ -1609,8 +1887,16 @@
       handleAction(button.dataset.action, button).catch((error) => { const message = errorText(error); addLog("error", message); notify(message, "error"); showProviderError(message); });
     });
     document.addEventListener("change", (event) => {
-      const input = event.target.closest("input[data-change]"); if (!input) return;
-      withBusy(null, async () => { if (input.dataset.change === "skill-app") await call("toggle_skill_app", { skillId: input.dataset.id, app: input.dataset.app, enabled: input.checked }); if (input.dataset.change === "mcp-enabled") await call("toggle_mcp_server", { serverId: input.dataset.id, enabled: input.checked }); if (input.dataset.change === "mcp-app") await call("toggle_mcp_app", { serverId: input.dataset.id, app: input.dataset.app, enabled: input.checked }); await loadAll({ quiet: true }); });
+      const input = event.target.closest("[data-change]"); if (!input) return;
+      if (input.dataset.change === "setting-boolean") return queueSettingsSave({ [input.dataset.field]: input.checked });
+      if (input.dataset.change === "setting-choice") return queueSettingsSave({ [input.dataset.field]: input.value });
+      if (input.dataset.change === "setting-client-visibility") {
+        const visible = new Set(state.settings.visibleClients); input.checked ? visible.add(input.dataset.id) : visible.delete(input.dataset.id);
+        if (!visible.size) { input.checked = true; notify(tr("client.keepOne", "至少保留一个客户端")); return; }
+        return queueSettingsSave({ visibleClients: state.settings.clientOrder.filter((id) => visible.has(id)) });
+      }
+      const key = `${input.dataset.change}:${input.dataset.id || "item"}:${input.dataset.app || "global"}`;
+      withBusy(null, async () => { if (input.dataset.change === "skill-app") await call("toggle_skill_app", { skillId: input.dataset.id, app: input.dataset.app, enabled: input.checked }); if (input.dataset.change === "mcp-enabled") await call("toggle_mcp_server", { serverId: input.dataset.id, enabled: input.checked }); if (input.dataset.change === "mcp-app") await call("toggle_mcp_app", { serverId: input.dataset.id, app: input.dataset.app, enabled: input.checked }); await loadAll({ quiet: true }); }, key);
     });
     document.getElementById("command-search").addEventListener("input", (event) => {
       state.contextQuery = event.target.value;
@@ -1640,6 +1926,7 @@
     mcpForm.elements["mcp-json"].addEventListener("input", () => validateMcpJsonEditor());
     document.getElementById("mcp-wizard-layer").addEventListener("input", (event) => { if (event.target.matches("input, textarea")) updateMcpWizardPreview(); });
     document.getElementById("mcp-wizard-layer").addEventListener("change", (event) => { if (event.target.matches("input, textarea")) updateMcpWizardPreview(); });
+    matchMedia("(prefers-color-scheme: dark)").addEventListener("change", () => { if (state.settings?.theme === "system") applyAppearance(); });
     document.addEventListener("keydown", (event) => {
       if ((event.metaKey || event.ctrlKey) && event.key.toLowerCase() === "k") { event.preventDefault(); const search = document.getElementById("command-search"); if (!search.disabled) { search.focus(); search.select(); } return; }
       if (event.key !== "Escape") return;
