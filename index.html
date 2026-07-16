@@ -608,7 +608,7 @@
                   <label class="field full"><span>Claude Opus</span><input name="advanced-claude-opus" /></label>
                 </div></details>
                 <section class="config-content" aria-labelledby="config-content-title">
-                  <div class="config-content-head"><div><h4 id="config-content-title">配置文件内容</h4><p>保存后将按此内容生成客户端配置，密钥占位符会在本机安全替换</p></div><div class="config-content-actions"><span class="badge" id="config-edit-state">自动生成</span><button class="btn text" type="button" data-action="reset-provider-config"><i data-lucide="rotate-ccw"></i>从表单重新生成</button></div></div>
+                  <div class="config-content-head"><div><h4 id="config-content-title">配置文件内容</h4><p>保存后将按此内容生成客户端配置，粘贴现有配置会自动识别地址和密钥</p></div><div class="config-content-actions"><span class="badge config-import-status" id="config-import-status" hidden></span><span class="badge" id="config-edit-state">自动生成</span><button class="btn text" type="button" data-action="reset-provider-config"><i data-lucide="rotate-ccw"></i>从表单重新生成</button></div></div>
                   <div class="config-files" id="config-files">
                     <label class="config-file auth" id="provider-auth-config-field"><span><b>认证配置</b><code id="provider-auth-filename">auth.json</code></span><textarea name="provider-auth-config" spellcheck="false" aria-label="认证配置内容"></textarea></label>
                     <label class="config-file"><span><b>客户端配置</b><code id="provider-main-filename">config.toml</code></span><textarea name="provider-main-config" spellcheck="false" aria-label="客户端配置内容"></textarea></label>
@@ -788,16 +788,54 @@
       ...PRESETS.codex.filter((preset) => !["custom", "openai-official"].includes(preset.id))
     ];
 
+    const PROVIDER_LOGOS = {
+      "claude-official": "/provider-logos/anthropic.svg",
+      "openai-official": "/provider-logos/openai.svg",
+      "google-official": "/provider-logos/google.svg",
+      "xai-official": "/provider-logos/xai.svg",
+      deepseek: "/provider-logos/deepseek.svg",
+      "zhipu-glm": "/provider-logos/zhipu.svg",
+      "zai-glm": "/provider-logos/zhipu.svg",
+      "qwen-coder": "/provider-logos/qwen.svg",
+      bailian: "/provider-logos/bailian.svg",
+      "bailian-coding": "/provider-logos/bailian.svg",
+      "kimi-k2": "/provider-logos/kimi.svg",
+      "kimi-coding": "/provider-logos/kimi.svg",
+      stepfun: "/provider-logos/stepfun.svg",
+      modelscope: "/provider-logos/modelscope.svg",
+      longcat: "/provider-logos/longcat.svg",
+      minimax: "/provider-logos/minimax.svg",
+      "minimax-en": "/provider-logos/minimax.svg",
+      doubao: "/provider-logos/doubao.svg",
+      bailing: "/provider-logos/bailing.svg",
+      aihubmix: "/provider-logos/aihubmix.svg",
+      dmxapi: "/provider-logos/dmxapi.svg",
+      packycode: "/provider-logos/packycode.svg",
+      shengsuanyun: "/provider-logos/shengsuanyun.svg",
+      unity2: "/provider-logos/unity2.png",
+      subrouter: "/provider-logos/subrouter.svg",
+      qiniu: "/provider-logos/qiniu.png",
+      code0: "/provider-logos/code0.png",
+      "apikey-fun": "/provider-logos/apikeyfun.png",
+      apinebula: "/provider-logos/apinebula.png",
+      cubence: "/provider-logos/cubence.svg",
+      aigocode: "/provider-logos/aigocode.svg",
+      aicodemirror: "/provider-logos/aicodemirror.svg",
+      openrouter: "/provider-logos/openrouter.svg",
+      "xiaomi-mimo": "/provider-logos/xiaomimimo.svg",
+      siliconflow: "/provider-logos/siliconflow.svg"
+    };
+
     const state = {
       desktop: Boolean(window.__TAURI_INTERNALS__), status: null, ready: null, providers: [], skills: [], mcpServers: [], softwareCatalog: [],
       usageStats: null, usageDays: 7, trendMetric: "totalTokens", breakdown: "client",
       activeView: "clients", activeClient: "codex", contextQuery: "", softwareFilter: "all", skillFilter: "all", diagnosticFilter: "all",
-      busy: false, logs: [], diagnostics: null, diagnosticRunning: false, editingProviderId: null, selectedPresetId: "custom", editingMcpId: null, selectedMcpPreset: "custom", inspectingMcpId: null, mcpToolsResult: null, mcpToolsError: "", activeMcpToolName: "", mcpToolsRequest: 0, configManuallyEdited: false, confirmResolve: null
+      busy: false, logs: [], diagnostics: null, diagnosticRunning: false, editingProviderId: null, selectedPresetId: "custom", editingMcpId: null, selectedMcpPreset: "custom", inspectingMcpId: null, mcpToolsResult: null, mcpToolsError: "", activeMcpToolName: "", mcpToolsRequest: 0, configManuallyEdited: false, configImportRequest: 0, confirmResolve: null
     };
 
     const mock = {
       status: {
-        appVersion: "0.1.8", platform: "browser-preview", dataDir: "/AgentDock/data", configDir: "/AgentDock/config", managedRuntimeReady: true,
+        appVersion: "0.1.9", platform: "browser-preview", dataDir: "/AgentDock/data", configDir: "/AgentDock/config", managedRuntimeReady: true,
         clients: APP_ORDER.map((id) => ({ id, name: APP_META[id].name, installed: id === "claude-desktop", version: id === "claude-desktop" ? "detected" : null, executable: id === "claude-desktop" ? "/Applications/Claude.app" : null, configPath: id === "claude-desktop" ? "/Claude/config.json" : null, managedByAgentdock: false }))
       },
       providers: [{ id: "packycode-preview", name: "PackyCode", notes: "主力线路", websiteUrl: "https://www.packyapi.com", presetId: "packycode", providerType: "openai", baseUrl: "https://www.packyapi.com/v1", apiFormat: "responses", enabledApps: ["codex"], activeApps: ["codex"], codexModel: "gpt-5.6-sol", geminiModel: "gemini-3.5-pro", claudeSonnetModel: "claude-sonnet-5", claudeHaikuModel: "claude-haiku-4-5", claudeOpusModel: "claude-opus-4-8", active: true, apiKeyConfigured: true, createdAt: new Date().toISOString(), updatedAt: new Date().toISOString() }],
@@ -841,10 +879,43 @@
       const resolve = state.confirmResolve; state.confirmResolve = null; resolve?.(result);
     }
 
+    function mockParseProviderConfig(appId, content) {
+      const result = { baseUrl: null, apiKey: null, model: null, apiFormat: null, sourceFormat: "" };
+      const apply = (key, value) => {
+        if (typeof value !== "string" || !value.trim()) return;
+        const normalized = key.toLowerCase().replace(/[^a-z0-9]/g, ""); const clean = value.trim().replace(/^["'`]|["'`,]$/g, "");
+        if (!result.baseUrl && ["baseurl", "apibase", "apiurl", "endpoint"].includes(normalized) && /^https?:\/\//i.test(clean)) result.baseUrl = clean;
+        if (!result.apiKey && ["apikey", "openaiapikey", "anthropicauthtoken", "anthropicapikey", "geminiapikey", "googleapikey", "xaiapikey", "authtoken", "accesstoken"].includes(normalized) && !clean.includes("${")) result.apiKey = clean;
+        if (!result.model && ["model", "defaultmodel"].includes(normalized)) result.model = clean;
+        if (!result.apiFormat && ["apibackend", "wireapi", "apiformat", "apimode", "api"].includes(normalized)) {
+          const format = clean.toLowerCase().replace(/[^a-z0-9]/g, "");
+          if (["responses", "openairesponses"].includes(format)) result.apiFormat = "responses";
+          if (["chatcompletions", "openaicompletions", "openai"].includes(format)) result.apiFormat = "chat-completions";
+          if (["messages", "anthropic", "anthropicmessages"].includes(format)) result.apiFormat = "anthropic";
+          if (["gemini", "googlegemini", "gemininative"].includes(format)) result.apiFormat = "gemini";
+        }
+      };
+      try {
+        const parsed = JSON.parse(content); result.sourceFormat = "JSON";
+        const walk = (value) => { if (Array.isArray(value)) return value.forEach(walk); if (!value || typeof value !== "object") return; Object.entries(value).forEach(([key, item]) => { apply(key, item); walk(item); }); };
+        walk(parsed);
+        if (appId === "opencode" && typeof parsed.model === "string") result.model = parsed.model.split("/").at(-1);
+      } catch {
+        result.sourceFormat = content.includes("[") ? "TOML" : "环境变量";
+      }
+      for (const line of content.split(/\r?\n/)) {
+        const match = line.trim().replace(/^export\s+/, "").match(/^["']?([A-Za-z0-9_.-]+)["']?\s*[:=]\s*["']?([^"',}\s]+|[^"']+)["']?[,]?$/);
+        if (match) apply(match[1], match[2]);
+      }
+      if (!result.baseUrl && !result.apiKey && !result.model && !result.apiFormat) throw new Error("没有识别到请求地址、API Key、模型或 API 协议");
+      return result;
+    }
+
     async function mockInvoke(command, args = {}) {
       await new Promise((resolve) => setTimeout(resolve, 70));
       if (command === "get_desktop_status") return structuredClone(mock.status);
       if (command === "list_software_catalog") return structuredClone(mock.softwareCatalog);
+      if (command === "parse_provider_config") return mockParseProviderConfig(args.appId, args.content);
       if (command === "fetch_provider_models") {
         const models = args.appId === "codex" ? ["gpt-5.6-sol", "gpt-5.5", "glm-5.2"] : args.appId === "grok" ? ["grok-build", "grok-code-fast-1", "grok-4.1-fast"] : args.appId.startsWith("claude") ? ["claude-sonnet-5", "claude-opus-4-8", "glm-5.2"] : args.appId === "antigravity" ? ["gemini-3.5-pro", "gemini-3.5-flash"] : ["gpt-5.6-sol", "deepseek-chat", "glm-5.2"];
         return { models, source: args.baseUrl ? "供应商模型接口" : "客户端推荐" };
@@ -860,7 +931,7 @@
       if (command === "run_diagnostics") return {
         generatedAt: new Date().toISOString(), score: 90, passed: 6, warnings: 2, failed: 0,
         checks: [
-          { id: "system-platform", category: "系统", status: "pass", title: "桌面运行环境", detail: "AgentDock 0.1.8 · macOS arm64", action: "" },
+          { id: "system-platform", category: "系统", status: "pass", title: "桌面运行环境", detail: "AgentDock 0.1.9 · macOS arm64", action: "" },
           { id: "system-data-dir", category: "系统", status: "pass", title: "数据目录可写", detail: "/AgentDock/data", action: "" },
           { id: "client-claude", category: "客户端", status: "pass", title: "Claude Desktop 可正常启动", detail: "1.0.2 · 系统安装", action: "" },
           { id: "client-codex", category: "客户端", status: "warning", title: "Codex 尚未安装", detail: "这是推荐客户端，可由 AgentDock 自动安装", action: "前往客户端页面点击一键安装" },
@@ -1045,11 +1116,21 @@
       }).join("") : `<div class="empty">当前筛选条件下没有软件</div>`;
     }
 
+    function providerLogoContent(preset) {
+      const logo = PROVIDER_LOGOS[preset?.id];
+      if (!logo) return escapeHtml(preset?.short || preset?.name?.slice(0, 2).toUpperCase() || "CU");
+      return `<img src="${logo}" alt="${escapeHtml(preset.name)} Logo" />`;
+    }
+    function providerLogoMarkup(preset, className = "provider-logo") {
+      return `<span class="${className} ${PROVIDER_LOGOS[preset?.id] ? "has-image" : ""}">${providerLogoContent(preset)}</span>`;
+    }
+
     function providerCards(providers) {
       if (!providers.length) return `<div class="empty"><div>还没有为 ${clientMeta(state.activeClient).name} 配置供应商</div><button class="btn primary" data-action="open-provider-editor"><i data-lucide="plus"></i>添加供应商</button></div>`;
       return providers.map((provider) => {
         const current = provider.activeApps?.includes(state.activeClient); const preset = findPreset(provider.presetId); const short = preset?.short || provider.name.slice(0, 2).toUpperCase(); const model = providerDefaultModel(provider) || "跟随客户端";
-        return `<article class="provider-card ${current ? "current" : ""}"><div class="provider-main"><span class="provider-logo">${escapeHtml(short)}</span><div class="provider-copy"><div class="provider-name-line"><strong>${escapeHtml(provider.name)}</strong>${current ? `<span class="badge ok">当前使用</span>` : ""}<span class="badge ${provider.providerType === "official" || provider.apiKeyConfigured ? "" : "warn"}">${provider.providerType === "official" ? "客户端登录" : provider.apiKeyConfigured ? "密钥已保存" : "缺少密钥"}</span></div><p>${escapeHtml(provider.notes || provider.baseUrl || "官方直连")}</p></div></div><div class="provider-model"><small>默认模型</small><code title="${escapeHtml(model)}">${escapeHtml(model)}</code></div><div class="row-actions">${current ? `<button class="btn text" data-action="activate-provider" data-id="${provider.id}"><i data-lucide="refresh-cw"></i>重新应用</button>` : `<button class="btn primary" data-action="activate-provider" data-id="${provider.id}">使用</button>`}<button class="icon-btn" data-action="test-provider" data-id="${provider.id}" title="测试连接" aria-label="测试 ${escapeHtml(provider.name)}"><i data-lucide="activity"></i></button><button class="icon-btn" data-action="edit-provider" data-id="${provider.id}" title="编辑" aria-label="编辑 ${escapeHtml(provider.name)}"><i data-lucide="pencil"></i></button><button class="icon-btn" data-action="delete-provider" data-id="${provider.id}" title="删除" aria-label="删除 ${escapeHtml(provider.name)}"><i data-lucide="trash-2"></i></button></div></article>`;
+        const logoPreset = preset || { name: provider.name, short };
+        return `<article class="provider-card ${current ? "current" : ""}"><div class="provider-main">${providerLogoMarkup(logoPreset)}<div class="provider-copy"><div class="provider-name-line"><strong>${escapeHtml(provider.name)}</strong>${current ? `<span class="badge ok">当前使用</span>` : ""}<span class="badge ${provider.providerType === "official" || provider.apiKeyConfigured ? "" : "warn"}">${provider.providerType === "official" ? "客户端登录" : provider.apiKeyConfigured ? "密钥已保存" : "缺少密钥"}</span></div><p>${escapeHtml(provider.notes || provider.baseUrl || "官方直连")}</p></div></div><div class="provider-model"><small>默认模型</small><code title="${escapeHtml(model)}">${escapeHtml(model)}</code></div><div class="row-actions">${current ? `<button class="btn text" data-action="activate-provider" data-id="${provider.id}"><i data-lucide="refresh-cw"></i>重新应用</button>` : `<button class="btn primary" data-action="activate-provider" data-id="${provider.id}">使用</button>`}<button class="icon-btn" data-action="test-provider" data-id="${provider.id}" title="测试连接" aria-label="测试 ${escapeHtml(provider.name)}"><i data-lucide="activity"></i></button><button class="icon-btn" data-action="edit-provider" data-id="${provider.id}" title="编辑" aria-label="编辑 ${escapeHtml(provider.name)}"><i data-lucide="pencil"></i></button><button class="icon-btn" data-action="delete-provider" data-id="${provider.id}" title="删除" aria-label="删除 ${escapeHtml(provider.name)}"><i data-lucide="trash-2"></i></button></div></article>`;
       }).join("");
     }
 
@@ -1144,7 +1225,7 @@
     }
     function findPreset(id) { return (PRESETS[state.activeClient] || COMMON_PRESETS).find((preset) => preset.id === id); }
     function visiblePresets() { const query = document.getElementById("preset-search")?.value.trim().toLowerCase() || ""; return (PRESETS[state.activeClient] || COMMON_PRESETS).filter((preset) => !query || preset.name.toLowerCase().includes(query)); }
-    function renderPresetGrid() { document.getElementById("preset-grid").innerHTML = visiblePresets().map((preset) => `<button type="button" class="preset-option ${state.selectedPresetId === preset.id ? "active" : ""}" data-action="select-provider-preset" data-id="${preset.id}"><span class="mini-logo">${preset.short}</span><span>${escapeHtml(preset.name)}</span></button>`).join(""); refreshIcons(); }
+    function renderPresetGrid() { document.getElementById("preset-grid").innerHTML = visiblePresets().map((preset) => `<button type="button" class="preset-option ${state.selectedPresetId === preset.id ? "active" : ""}" data-action="select-provider-preset" data-id="${preset.id}">${providerLogoMarkup(preset, "mini-logo")}<span>${escapeHtml(preset.name)}</span></button>`).join(""); refreshIcons(); }
 
     const CONFIG_FILENAMES = {
       codex: ["auth.json", "config.toml"], "claude-code": ["", "settings.json"], "claude-desktop": ["", "settings.json"],
@@ -1182,9 +1263,13 @@
       state.configManuallyEdited = manual; const badge = document.getElementById("config-edit-state");
       badge.className = `badge ${manual ? "warn" : "ok"}`; badge.textContent = manual ? "已手动修改" : "自动生成";
     }
+    function setConfigImportStatus(message = "", success = true) {
+      const status = document.getElementById("config-import-status");
+      status.hidden = !message; status.className = `badge config-import-status ${success ? "ok" : "warn"}`; status.textContent = message;
+    }
     function regenerateProviderConfig() {
       const form = document.getElementById("provider-form"); const generated = generatedProviderConfig(); updateConfigEditorLayout();
-      form.elements["provider-auth-config"].value = generated.auth; form.elements["provider-main-config"].value = generated.main; setConfigEditState(false);
+      form.elements["provider-auth-config"].value = generated.auth; form.elements["provider-main-config"].value = generated.main; setConfigEditState(false); setConfigImportStatus();
     }
     function loadProviderConfig(provider) {
       const form = document.getElementById("provider-form"); updateConfigEditorLayout();
@@ -1196,6 +1281,43 @@
         else { form.elements["provider-auth-config"].value = ""; form.elements["provider-main-config"].value = JSON.stringify(stored, null, 2); }
         setConfigEditState(true);
       } catch { form.elements["provider-main-config"].value = provider.settingsConfig; setConfigEditState(true); }
+    }
+    function normalizedProviderUrl(value) { return String(value || "").trim().replace(/\/+$/, "").toLowerCase(); }
+    function importedProviderName(baseUrl) {
+      try { return new URL(baseUrl).hostname.replace(/^api\./, ""); } catch { return "自定义供应商"; }
+    }
+    function applyParsedProviderConfig(parsed) {
+      const form = document.getElementById("provider-form"); const fields = [];
+      const importedFormat = parsed.apiFormat || (state.activeClient.startsWith("claude") ? "anthropic" : state.activeClient === "antigravity" ? "gemini" : null);
+      if (parsed.baseUrl) {
+        form.elements["provider-base-url"].value = parsed.baseUrl; fields.push("请求地址");
+        const matched = (PRESETS[state.activeClient] || COMMON_PRESETS).find((preset) => preset.baseUrl && normalizedProviderUrl(preset.baseUrl) === normalizedProviderUrl(parsed.baseUrl));
+        const preset = matched || findPreset("custom"); state.selectedPresetId = preset.id;
+        form.elements["provider-preset-id"].value = preset.id; form.elements["provider-type"].value = matched?.type || (importedFormat === "anthropic" ? "anthropic" : importedFormat === "gemini" ? "gemini" : "openai");
+        if (!form.elements["provider-name"].value.trim()) form.elements["provider-name"].value = matched?.name || importedProviderName(parsed.baseUrl);
+        updateProviderFormPresentation(preset); renderPresetGrid();
+      }
+      if (parsed.apiKey) { form.elements["provider-api-key"].value = parsed.apiKey; fields.push("API Key"); }
+      if (parsed.model) {
+        const options = [...form.elements["provider-model"].options].map((option) => option.value).filter(Boolean);
+        setModelOptions([...new Set([parsed.model, ...options])], parsed.model, `${parsed.sourceFormat} 配置导入`); fields.push("默认模型");
+        if (["codex", "grok", "opencode", "openclaw", "hermes"].includes(state.activeClient)) form.elements["advanced-codex-model"].value = parsed.model;
+        if (state.activeClient.startsWith("claude")) form.elements["advanced-claude-sonnet"].value = parsed.model;
+      }
+      if (importedFormat && [...form.elements["provider-api-format"].options].some((option) => option.value === importedFormat)) {
+        form.elements["provider-api-format"].value = importedFormat; fields.push("API 协议");
+      }
+      setConfigEditState(true); setConfigImportStatus(`已识别 ${fields.join("、")}`, true); updateProviderFormPresentation(findPreset(state.selectedPresetId));
+    }
+    async function importProviderConfig(content) {
+      const request = ++state.configImportRequest;
+      try {
+        const parsed = await call("parse_provider_config", { appId: state.activeClient, content });
+        if (request !== state.configImportRequest || document.getElementById("provider-editor").hidden) return;
+        applyParsedProviderConfig(parsed);
+      } catch (error) {
+        if (request === state.configImportRequest) setConfigImportStatus(errorText(error), false);
+      }
     }
     function collectProviderSettingsConfig() {
       const form = document.getElementById("provider-form"); const main = form.elements["provider-main-config"].value.trim();
@@ -1215,7 +1337,7 @@
     }
 
     function openProviderEditor(provider = null) {
-      state.editingProviderId = provider?.id || null; state.selectedPresetId = provider?.presetId || "custom";
+      state.configImportRequest += 1; state.editingProviderId = provider?.id || null; state.selectedPresetId = provider?.presetId || "custom";
       const form = document.getElementById("provider-form"); const meta = clientMeta(state.activeClient);
       document.getElementById("provider-editor").hidden = false;
       document.getElementById("provider-editor-title").textContent = `${provider ? "编辑" : "添加"} ${meta.name} 供应商`;
@@ -1240,7 +1362,7 @@
       loadProviderModels().catch((error) => { document.getElementById("model-source").textContent = errorText(error); });
       setTimeout(() => form.elements["provider-name"].focus(), 120);
     }
-    function closeProviderEditor() { state.editingProviderId = null; const editor = document.getElementById("provider-editor"); if (editor) editor.hidden = true; hideProviderError(); }
+    function closeProviderEditor() { state.configImportRequest += 1; state.editingProviderId = null; const editor = document.getElementById("provider-editor"); if (editor) editor.hidden = true; hideProviderError(); setConfigImportStatus(); }
     function applyPreset(preset) {
       if (!preset) return; state.selectedPresetId = preset.id; const form = document.getElementById("provider-form");
       form.elements["provider-preset-id"].value = preset.id; form.elements["provider-type"].value = preset.type;
@@ -1266,7 +1388,8 @@
     function updateProviderFormPresentation(preset) {
       const form = document.getElementById("provider-form"); const official = (preset?.type || form.elements["provider-type"].value) === "official";
       const short = preset?.short || form.elements["provider-name"].value.slice(0, 2).toUpperCase() || "CU";
-      document.getElementById("provider-form-logo").textContent = short; document.getElementById("provider-form-heading").textContent = preset?.name || form.elements["provider-name"].value || "自定义配置";
+      const logo = document.getElementById("provider-form-logo"); const logoPreset = preset || { name: form.elements["provider-name"].value, short };
+      logo.classList.toggle("has-image", Boolean(PROVIDER_LOGOS[logoPreset.id])); logo.innerHTML = providerLogoContent(logoPreset); document.getElementById("provider-form-heading").textContent = preset?.name || form.elements["provider-name"].value || "自定义配置";
       document.getElementById("base-url-field").hidden = official; document.getElementById("api-key-field").hidden = official;
       form.elements["provider-base-url"].required = !official; form.elements["provider-api-key"].required = !official && !state.editingProviderId;
       const hints = { official: "官方供应商使用客户端登录，无需填写 API Key", cn_official: "请求地址已预设，只需填写 API Key", aggregator: "请求地址已预设，只需填写 API Key", third_party: "确认请求地址后填写 API Key", custom: "填写供应商提供的请求地址和 API Key" };
@@ -1506,6 +1629,12 @@
       if (generatedConfigFields.has(event.target.name) && !state.configManuallyEdited) regenerateProviderConfig();
     });
     providerForm.addEventListener("change", (event) => { if (generatedConfigFields.has(event.target.name) && !state.configManuallyEdited) regenerateProviderConfig(); });
+    for (const name of ["provider-auth-config", "provider-main-config"]) {
+      providerForm.elements[name].addEventListener("paste", (event) => {
+        const pasted = event.clipboardData?.getData("text/plain") || "";
+        setTimeout(() => importProviderConfig(pasted || event.target.value), 0);
+      });
+    }
     const mcpForm = document.getElementById("mcp-form");
     mcpForm.addEventListener("submit", (event) => event.preventDefault());
     mcpForm.elements["mcp-json"].addEventListener("input", () => validateMcpJsonEditor());

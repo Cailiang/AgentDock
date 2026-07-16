@@ -1,0 +1,7 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64" role="img" aria-labelledby="title">
+  <title id="title">AIGoCode</title>
+  <rect width="64" height="64" rx="14" fill="#4b7ff2"/>
+  <path d="M11 43l9-24h7l9 24h-7l-2-6H19l-2 6h-6zm10-12h4l-2-7-2 7z" fill="#fff"/>
+  <path d="M52 26c-2-2-4-3-7-3-5 0-8 3-8 9s3 9 8 9c1.5 0 2.8-.2 4-.7V36h-5v-6h12v14c-3 2-6.8 3-11 3-9 0-15-5.8-15-15s6-15 15-15c4.7 0 8.6 1.4 11.5 4.2L52 26z" fill="#fff"/>
+  <path d="M51 10v7M47.5 13.5h7" fill="none" stroke="#fff" stroke-width="3" stroke-linecap="round"/>
+</svg>

@@ -95,6 +95,16 @@ pub struct ProviderModelsResult {
     source: String,
 }
 
+#[derive(Debug, Clone, Default, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ParsedProviderConfig {
+    base_url: Option<String>,
+    api_key: Option<String>,
+    model: Option<String>,
+    api_format: Option<String>,
+    source_format: String,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct ProviderProfile {
@@ -481,6 +491,477 @@ async fn list_software_catalog() -> Result<Vec<SoftwareCatalogItem>, String> {
     });
 
     Ok(join_all(checks).await)
+}
+
+fn strip_config_code_fence(content: &str) -> String {
+    let trimmed = content.trim();
+    if !trimmed.starts_with("```") {
+        return trimmed.to_string();
+    }
+    let Some(first_newline) = trimmed.find('\n') else {
+        return trimmed.to_string();
+    };
+    let body = &trimmed[first_newline + 1..];
+    body.strip_suffix("```").unwrap_or(body).trim().to_string()
+}
+
+fn clean_imported_value(value: &str) -> Option<String> {
+    let value = value
+        .trim()
+        .trim_end_matches(',')
+        .trim()
+        .trim_matches(|character| matches!(character, '"' | '\'' | '`'))
+        .trim();
+    (!value.is_empty()).then(|| value.to_string())
+}
+
+fn clean_imported_api_key(value: &str) -> Option<String> {
+    let value = clean_imported_value(value)?;
+    let lowered = value.to_ascii_lowercase();
+    if value.contains("${")
+        || value.starts_with('$')
+        || lowered.contains("your_api_key")
+        || lowered.contains("replace_me")
+        || lowered == "api-key"
+    {
+        return None;
+    }
+    Some(value)
+}
+
+fn normalized_config_key(key: &str) -> String {
+    key.chars()
+        .filter(|character| character.is_ascii_alphanumeric())
+        .flat_map(char::to_lowercase)
+        .collect()
+}
+
+fn normalized_imported_api_format(value: &str) -> Option<String> {
+    let normalized = normalized_config_key(value);
+    let format = match normalized.as_str() {
+        "responses" | "openairesponses" => "responses",
+        "chatcompletions" | "openaicompletions" | "openai" => "chat-completions",
+        "messages" | "anthropic" | "anthropicmessages" => "anthropic",
+        "gemini" | "googlegemini" | "gemininative" => "gemini",
+        _ => return None,
+    };
+    Some(format.to_string())
+}
+
+fn apply_imported_entry(result: &mut ParsedProviderConfig, key: &str, value: &str) {
+    let key = normalized_config_key(key);
+    match key.as_str() {
+        "baseurl"
+        | "apibase"
+        | "apiurl"
+        | "endpoint"
+        | "anthropicbaseurl"
+        | "openaibaseurl"
+        | "xaibaseurl"
+        | "geminibaseurl"
+        | "googlegeminibaseurl" => {
+            if result.base_url.is_none() {
+                let value = clean_imported_value(value);
+                if value.as_deref().is_some_and(|value| {
+                    value.starts_with("http://") || value.starts_with("https://")
+                }) {
+                    result.base_url = value;
+                }
+            }
+        }
+        "apikey" | "openaikey" | "openaiapikey" | "anthropicauthtoken" | "anthropicapikey"
+        | "geminiapikey" | "googleapikey" | "xaiapikey" | "authtoken" | "accesstoken" => {
+            if result.api_key.is_none() {
+                result.api_key = clean_imported_api_key(value);
+            }
+        }
+        "model" | "defaultmodel" | "anthropicmodel" | "geminimodel" | "grokdefaultmodel" => {
+            if result.model.is_none() {
+                result.model = clean_imported_value(value);
+            }
+        }
+        "apibackend" | "wireapi" | "apiformat" | "apimode" | "api" => {
+            if result.api_format.is_none() {
+                result.api_format = normalized_imported_api_format(value);
+            }
+        }
+        _ => {}
+    }
+}
+
+fn json_string_at<'a>(value: &'a serde_json::Value, path: &[&str]) -> Option<&'a str> {
+    let mut current = value;
+    for segment in path {
+        current = current.get(*segment)?;
+    }
+    current.as_str()
+}
+
+fn apply_json_paths(
+    result: &mut ParsedProviderConfig,
+    value: &serde_json::Value,
+    paths: &[(&str, &[&str])],
+) {
+    for (key, path) in paths {
+        if let Some(value) = json_string_at(value, path) {
+            apply_imported_entry(result, key, value);
+        }
+    }
+}
+
+fn walk_json_config(value: &serde_json::Value, result: &mut ParsedProviderConfig) {
+    match value {
+        serde_json::Value::Object(map) => {
+            for (key, value) in map {
+                if let Some(value) = value.as_str() {
+                    apply_imported_entry(result, key, value);
+                }
+                walk_json_config(value, result);
+            }
+        }
+        serde_json::Value::Array(values) => {
+            for value in values {
+                walk_json_config(value, result);
+            }
+        }
+        _ => {}
+    }
+}
+
+fn merge_parsed_config(result: &mut ParsedProviderConfig, parsed: ParsedProviderConfig) {
+    if result.base_url.is_none() {
+        result.base_url = parsed.base_url;
+    }
+    if result.api_key.is_none() {
+        result.api_key = parsed.api_key;
+    }
+    if result.model.is_none() {
+        result.model = parsed.model;
+    }
+    if result.api_format.is_none()
+        && (result.base_url.is_some() || result.api_key.is_some() || result.model.is_some())
+    {
+        result.api_format = parsed.api_format;
+    }
+}
+
+fn parse_json_provider_config(
+    app_id: &str,
+    value: &serde_json::Value,
+    result: &mut ParsedProviderConfig,
+) {
+    match app_id {
+        "claude-code" | "claude-desktop" => apply_json_paths(
+            result,
+            value,
+            &[
+                ("base_url", &["env", "ANTHROPIC_BASE_URL"]),
+                ("api_key", &["env", "ANTHROPIC_AUTH_TOKEN"]),
+                ("api_key", &["env", "ANTHROPIC_API_KEY"]),
+                ("model", &["env", "ANTHROPIC_MODEL"]),
+            ],
+        ),
+        "antigravity" => apply_json_paths(
+            result,
+            value,
+            &[
+                ("base_url", &["env", "GOOGLE_GEMINI_BASE_URL"]),
+                ("api_key", &["env", "GEMINI_API_KEY"]),
+                ("api_key", &["env", "GOOGLE_API_KEY"]),
+                ("model", &["env", "GEMINI_MODEL"]),
+            ],
+        ),
+        "codex" => {
+            apply_json_paths(
+                result,
+                value,
+                &[
+                    ("api_key", &["OPENAI_API_KEY"]),
+                    ("api_key", &["auth", "OPENAI_API_KEY"]),
+                ],
+            );
+            if let Some(config) = json_string_at(value, &["config"]) {
+                let mut nested = ParsedProviderConfig::default();
+                if parse_toml_provider_config(app_id, config, &mut nested) {
+                    merge_parsed_config(result, nested);
+                }
+            }
+        }
+        "grok" => {
+            apply_json_paths(
+                result,
+                value,
+                &[
+                    ("api_key", &["env", "XAI_API_KEY"]),
+                    ("api_key", &["XAI_API_KEY"]),
+                ],
+            );
+            if let Some(config) = json_string_at(value, &["config"]) {
+                let mut nested = ParsedProviderConfig::default();
+                if parse_toml_provider_config(app_id, config, &mut nested) {
+                    merge_parsed_config(result, nested);
+                }
+            }
+        }
+        "opencode" => {
+            if let Some(model) = json_string_at(value, &["model"]) {
+                result.model = clean_imported_value(model.rsplit('/').next().unwrap_or(model));
+            }
+            if let Some(providers) = value.get("provider").and_then(serde_json::Value::as_object) {
+                let selected_id = json_string_at(value, &["model"])
+                    .and_then(|model| model.split('/').next())
+                    .filter(|provider| providers.contains_key(*provider));
+                let selected = selected_id
+                    .and_then(|provider| providers.get(provider))
+                    .or_else(|| providers.values().next());
+                if let Some(selected) = selected {
+                    apply_json_paths(
+                        result,
+                        selected,
+                        &[
+                            ("base_url", &["options", "baseURL"]),
+                            ("base_url", &["options", "baseUrl"]),
+                            ("api_key", &["options", "apiKey"]),
+                        ],
+                    );
+                    if result.model.is_none() {
+                        result.model = selected
+                            .get("models")
+                            .and_then(serde_json::Value::as_object)
+                            .and_then(|models| models.keys().next().cloned());
+                    }
+                }
+            }
+        }
+        "openclaw" => {
+            apply_json_paths(
+                result,
+                value,
+                &[
+                    ("base_url", &["baseUrl"]),
+                    ("api_key", &["apiKey"]),
+                    ("api", &["api"]),
+                ],
+            );
+            if let Some(model) = value
+                .get("models")
+                .and_then(serde_json::Value::as_array)
+                .and_then(|models| models.first())
+                .and_then(|model| model.get("id"))
+                .and_then(serde_json::Value::as_str)
+            {
+                result.model = clean_imported_value(model);
+            }
+            if let Some(providers) = value
+                .pointer("/models/providers")
+                .and_then(serde_json::Value::as_object)
+            {
+                let primary = value
+                    .pointer("/agents/defaults/model/primary")
+                    .and_then(serde_json::Value::as_str);
+                let provider_id = primary
+                    .and_then(|model| model.split('/').next())
+                    .filter(|provider| providers.contains_key(*provider));
+                let selected = provider_id
+                    .and_then(|provider| providers.get(provider))
+                    .or_else(|| providers.values().next());
+                if let Some(selected) = selected {
+                    apply_json_paths(
+                        result,
+                        selected,
+                        &[
+                            ("base_url", &["baseUrl"]),
+                            ("api_key", &["apiKey"]),
+                            ("api", &["api"]),
+                        ],
+                    );
+                    if let Some(model) =
+                        primary.and_then(|model| model.split_once('/').map(|(_, model)| model))
+                    {
+                        result.model = clean_imported_value(model);
+                    }
+                }
+            }
+        }
+        "hermes" => apply_json_paths(
+            result,
+            value,
+            &[
+                ("base_url", &["base_url"]),
+                ("api_key", &["api_key"]),
+                ("model", &["model"]),
+                ("api_mode", &["api_mode"]),
+            ],
+        ),
+        _ => {}
+    }
+    walk_json_config(value, result);
+}
+
+fn walk_toml_config(value: &toml::Value, result: &mut ParsedProviderConfig) {
+    match value {
+        toml::Value::Table(table) => {
+            for (key, value) in table {
+                if let Some(value) = value.as_str() {
+                    apply_imported_entry(result, key, value);
+                }
+                walk_toml_config(value, result);
+            }
+        }
+        toml::Value::Array(values) => {
+            for value in values {
+                walk_toml_config(value, result);
+            }
+        }
+        _ => {}
+    }
+}
+
+fn parse_toml_provider_config(
+    app_id: &str,
+    content: &str,
+    result: &mut ParsedProviderConfig,
+) -> bool {
+    let Ok(root) = content.parse::<toml::Table>() else {
+        return false;
+    };
+    if root.is_empty() {
+        return false;
+    }
+
+    if app_id == "grok" {
+        let alias = root
+            .get("models")
+            .and_then(toml::Value::as_table)
+            .and_then(|models| models.get("default"))
+            .and_then(toml::Value::as_str);
+        if let Some(profile) = alias
+            .and_then(|alias| {
+                root.get("model")
+                    .and_then(toml::Value::as_table)
+                    .and_then(|models| models.get(alias))
+            })
+            .and_then(toml::Value::as_table)
+        {
+            for key in ["base_url", "api_key", "model", "api_backend"] {
+                if let Some(value) = profile.get(key).and_then(toml::Value::as_str) {
+                    apply_imported_entry(result, key, value);
+                }
+            }
+        }
+    }
+
+    if app_id == "codex" {
+        if let Some(model) = root.get("model").and_then(toml::Value::as_str) {
+            apply_imported_entry(result, "model", model);
+        }
+        let provider_id = root.get("model_provider").and_then(toml::Value::as_str);
+        if let Some(provider) = provider_id
+            .and_then(|provider| {
+                root.get("model_providers")
+                    .and_then(toml::Value::as_table)
+                    .and_then(|providers| providers.get(provider))
+            })
+            .and_then(toml::Value::as_table)
+        {
+            for key in ["base_url", "api_key", "wire_api"] {
+                if let Some(value) = provider.get(key).and_then(toml::Value::as_str) {
+                    apply_imported_entry(result, key, value);
+                }
+            }
+        }
+    }
+
+    walk_toml_config(&toml::Value::Table(root), result);
+    true
+}
+
+fn parse_assignment_config(content: &str, result: &mut ParsedProviderConfig) -> bool {
+    let mut recognized = false;
+    for line in content.lines() {
+        let line = line.trim().trim_start_matches("export ").trim();
+        if line.is_empty() || line.starts_with('#') || line.starts_with('[') {
+            continue;
+        }
+        let pair = line.split_once('=').or_else(|| line.split_once(':'));
+        let Some((key, value)) = pair else {
+            continue;
+        };
+        let before = (
+            result.base_url.is_some(),
+            result.api_key.is_some(),
+            result.model.is_some(),
+            result.api_format.is_some(),
+        );
+        apply_imported_entry(result, key, value);
+        let after = (
+            result.base_url.is_some(),
+            result.api_key.is_some(),
+            result.model.is_some(),
+            result.api_format.is_some(),
+        );
+        recognized |= before != after;
+    }
+    recognized
+}
+
+fn parse_provider_config_text(app_id: &str, content: &str) -> Result<ParsedProviderConfig, String> {
+    if !supported_provider_apps().contains(&app_id) {
+        return Err("不支持这个客户端的供应商配置".to_string());
+    }
+    if content.len() > 1_000_000 {
+        return Err("配置内容过大，请粘贴单个客户端配置文件".to_string());
+    }
+    let content = strip_config_code_fence(content);
+    if content.is_empty() {
+        return Err("配置内容不能为空".to_string());
+    }
+
+    let mut result = ParsedProviderConfig::default();
+    if let Ok(value) = serde_json::from_str::<serde_json::Value>(&content) {
+        if value.is_object() {
+            parse_json_provider_config(app_id, &value, &mut result);
+            result.source_format = "JSON".to_string();
+        }
+    }
+    if result.source_format.is_empty() && parse_toml_provider_config(app_id, &content, &mut result)
+    {
+        result.source_format = "TOML".to_string();
+    }
+    if result.source_format.is_empty() {
+        if let Ok(value) = serde_yaml::from_str::<serde_yaml::Value>(&content) {
+            if let Ok(value) = serde_json::to_value(value) {
+                if value.is_object() {
+                    parse_json_provider_config(app_id, &value, &mut result);
+                    result.source_format = "YAML".to_string();
+                }
+            }
+        }
+    }
+    let assignment_recognized = parse_assignment_config(&content, &mut result);
+    if result.source_format.is_empty() && assignment_recognized {
+        result.source_format = "环境变量".to_string();
+    }
+    if result.api_format.is_none() {
+        result.api_format = match app_id {
+            "claude-code" | "claude-desktop" => Some("anthropic".to_string()),
+            "antigravity" => Some("gemini".to_string()),
+            _ => None,
+        };
+    }
+    if result.base_url.is_none()
+        && result.api_key.is_none()
+        && result.model.is_none()
+        && result.api_format.is_none()
+    {
+        return Err("没有识别到请求地址、API Key、模型或 API 协议".to_string());
+    }
+    Ok(result)
+}
+
+#[tauri::command]
+fn parse_provider_config(app_id: String, content: String) -> Result<ParsedProviderConfig, String> {
+    parse_provider_config_text(&app_id, &content)
 }
 
 #[tauri::command]
@@ -4012,6 +4493,7 @@ pub fn run() {
         .invoke_handler(tauri::generate_handler![
             get_desktop_status,
             list_software_catalog,
+            parse_provider_config,
             fetch_provider_models,
             run_ready_check,
             list_providers,
@@ -6000,6 +6482,161 @@ fn now_rfc3339() -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn imports_grok_toml_provider_fields() {
+        let parsed = parse_provider_config_text(
+            "grok",
+            r#"[models]
+default = "grok"
+web_search = "grok"
+
+[model."grok"]
+model = "grok-4.5"
+base_url = "https://xxx.cn/v1"
+name = "Grok 4.5"
+api_key = "sk-xx"
+api_backend = "responses"
+context_window = 1000000
+supports_backend_search = true"#,
+        )
+        .expect("Grok config should parse");
+        assert_eq!(parsed.base_url.as_deref(), Some("https://xxx.cn/v1"));
+        assert_eq!(parsed.api_key.as_deref(), Some("sk-xx"));
+        assert_eq!(parsed.model.as_deref(), Some("grok-4.5"));
+        assert_eq!(parsed.api_format.as_deref(), Some("responses"));
+        assert_eq!(parsed.source_format, "TOML");
+    }
+
+    #[test]
+    fn imports_codex_toml_and_auth_json() {
+        let config = parse_provider_config_text(
+            "codex",
+            r#"model_provider = "relay"
+model = "gpt-5.6-sol"
+
+[model_providers.relay]
+base_url = "https://relay.example.com/v1"
+wire_api = "responses"
+env_key = "OPENAI_API_KEY""#,
+        )
+        .expect("Codex config should parse");
+        assert_eq!(
+            config.base_url.as_deref(),
+            Some("https://relay.example.com/v1")
+        );
+        assert_eq!(config.model.as_deref(), Some("gpt-5.6-sol"));
+        assert_eq!(config.api_format.as_deref(), Some("responses"));
+
+        let auth = parse_provider_config_text("codex", r#"{"OPENAI_API_KEY":"sk-codex"}"#)
+            .expect("Codex auth should parse");
+        assert_eq!(auth.api_key.as_deref(), Some("sk-codex"));
+    }
+
+    #[test]
+    fn imports_claude_and_antigravity_env_json() {
+        let claude = parse_provider_config_text(
+            "claude-code",
+            r#"{"env":{"ANTHROPIC_BASE_URL":"https://claude.example.com","ANTHROPIC_AUTH_TOKEN":"sk-ant","ANTHROPIC_MODEL":"claude-sonnet-test"}}"#,
+        )
+        .expect("Claude config should parse");
+        assert_eq!(
+            claude.base_url.as_deref(),
+            Some("https://claude.example.com")
+        );
+        assert_eq!(claude.api_key.as_deref(), Some("sk-ant"));
+        assert_eq!(claude.model.as_deref(), Some("claude-sonnet-test"));
+        assert_eq!(claude.api_format.as_deref(), Some("anthropic"));
+
+        let antigravity = parse_provider_config_text(
+            "antigravity",
+            r#"{"env":{"GOOGLE_GEMINI_BASE_URL":"https://gemini.example.com","GEMINI_API_KEY":"gem-key","GEMINI_MODEL":"gemini-test"}}"#,
+        )
+        .expect("Antigravity config should parse");
+        assert_eq!(
+            antigravity.base_url.as_deref(),
+            Some("https://gemini.example.com")
+        );
+        assert_eq!(antigravity.api_key.as_deref(), Some("gem-key"));
+        assert_eq!(antigravity.model.as_deref(), Some("gemini-test"));
+        assert_eq!(antigravity.api_format.as_deref(), Some("gemini"));
+    }
+
+    #[test]
+    fn imports_opencode_provider_json() {
+        let parsed = parse_provider_config_text(
+            "opencode",
+            r#"{
+  "provider": {
+    "relay": {
+      "npm": "@ai-sdk/openai-compatible",
+      "options": { "baseURL": "https://open.example.com/v1", "apiKey": "sk-open" },
+      "models": { "deepseek-chat": { "name": "DeepSeek" } }
+    }
+  },
+  "model": "relay/deepseek-chat"
+}"#,
+        )
+        .expect("OpenCode config should parse");
+        assert_eq!(
+            parsed.base_url.as_deref(),
+            Some("https://open.example.com/v1")
+        );
+        assert_eq!(parsed.api_key.as_deref(), Some("sk-open"));
+        assert_eq!(parsed.model.as_deref(), Some("deepseek-chat"));
+    }
+
+    #[test]
+    fn imports_nested_openclaw_provider_json() {
+        let parsed = parse_provider_config_text(
+            "openclaw",
+            r#"{
+  "models": {
+    "providers": {
+      "relay": {
+        "baseUrl": "https://claw.example.com/v1",
+        "apiKey": "sk-claw",
+        "api": "openai-completions",
+        "models": [{ "id": "glm-5", "name": "GLM" }]
+      }
+    }
+  },
+  "agents": { "defaults": { "model": { "primary": "relay/glm-5" } } }
+}"#,
+        )
+        .expect("OpenClaw config should parse");
+        assert_eq!(
+            parsed.base_url.as_deref(),
+            Some("https://claw.example.com/v1")
+        );
+        assert_eq!(parsed.api_key.as_deref(), Some("sk-claw"));
+        assert_eq!(parsed.model.as_deref(), Some("glm-5"));
+        assert_eq!(parsed.api_format.as_deref(), Some("chat-completions"));
+    }
+
+    #[test]
+    fn imports_hermes_json_and_environment_text() {
+        let hermes = parse_provider_config_text(
+            "hermes",
+            r#"{"name":"relay","base_url":"https://hermes.example.com/v1","api_key":"sk-hermes","model":"qwen-coder","api_mode":"anthropic_messages"}"#,
+        )
+        .expect("Hermes config should parse");
+        assert_eq!(
+            hermes.base_url.as_deref(),
+            Some("https://hermes.example.com/v1")
+        );
+        assert_eq!(hermes.api_key.as_deref(), Some("sk-hermes"));
+        assert_eq!(hermes.model.as_deref(), Some("qwen-coder"));
+        assert_eq!(hermes.api_format.as_deref(), Some("anthropic"));
+
+        let env = parse_provider_config_text(
+            "claude-desktop",
+            "export ANTHROPIC_BASE_URL=https://env.example.com\nexport ANTHROPIC_AUTH_TOKEN=sk-env",
+        )
+        .expect("environment config should parse");
+        assert_eq!(env.base_url.as_deref(), Some("https://env.example.com"));
+        assert_eq!(env.api_key.as_deref(), Some("sk-env"));
+    }
 
     #[test]
     fn normalizes_provider_urls() {

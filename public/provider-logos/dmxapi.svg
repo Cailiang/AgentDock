@@ -1,0 +1,6 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64" role="img" aria-labelledby="title">
+  <title id="title">DMXAPI</title>
+  <rect width="64" height="64" rx="14" fill="#fff"/>
+  <path d="M8 17h10c9.5 0 15 5.5 15 15s-5.5 15-15 15H8V17zm8 7v16h2c4.8 0 7-2.5 7-8s-2.2-8-7-8h-2z" fill="#17a7a7"/>
+  <path d="M30 17h8l5 9 5-9h8L47 32l9 15h-8l-5-9-5 9h-8l9-15-9-15z" fill="#cb3156"/>
+</svg>

@@ -191,6 +191,12 @@ body { background: var(--canvas); }
 .provider-card.current { border-color: var(--line); background: #f9fcfb; }
 .provider-card.current::before { top: 0; bottom: 0; width: 3px; border-radius: 0; }
 .provider-logo { width: 35px; height: 35px; flex-basis: 35px; border-radius: 7px; font-size: 9px; }
+.provider-logo.has-image, .mini-logo.has-image { border: 1px solid var(--line); background: #fff; color: var(--ink); }
+.provider-logo.has-image { padding: 6px; }
+.mini-logo.has-image { padding: 4px; }
+.provider-logo img, .mini-logo img { display: block; width: 100%; height: 100%; object-fit: contain; }
+.provider-form-intro .provider-logo.has-image { padding: 7px; }
+.config-import-status { max-width: 270px; overflow: hidden; text-overflow: ellipsis; }
 .provider-copy strong { font-size: 11px; }
 .provider-copy p { margin-top: 3px; font-size: 9px; }
 .provider-name-line { gap: 6px; }
