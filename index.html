@@ -835,7 +835,7 @@
 
     const mock = {
       status: {
-        appVersion: "0.1.9", platform: "browser-preview", dataDir: "/AgentDock/data", configDir: "/AgentDock/config", managedRuntimeReady: true,
+        appVersion: "0.1.10", platform: "browser-preview", dataDir: "/AgentDock/data", configDir: "/AgentDock/config", managedRuntimeReady: true,
         clients: APP_ORDER.map((id) => ({ id, name: APP_META[id].name, installed: id === "claude-desktop", version: id === "claude-desktop" ? "detected" : null, executable: id === "claude-desktop" ? "/Applications/Claude.app" : null, configPath: id === "claude-desktop" ? "/Claude/config.json" : null, managedByAgentdock: false }))
       },
       providers: [{ id: "packycode-preview", name: "PackyCode", notes: "主力线路", websiteUrl: "https://www.packyapi.com", presetId: "packycode", providerType: "openai", baseUrl: "https://www.packyapi.com/v1", apiFormat: "responses", enabledApps: ["codex"], activeApps: ["codex"], codexModel: "gpt-5.6-sol", geminiModel: "gemini-3.5-pro", claudeSonnetModel: "claude-sonnet-5", claudeHaikuModel: "claude-haiku-4-5", claudeOpusModel: "claude-opus-4-8", active: true, apiKeyConfigured: true, createdAt: new Date().toISOString(), updatedAt: new Date().toISOString() }],
@@ -917,7 +917,7 @@
       if (command === "list_software_catalog") return structuredClone(mock.softwareCatalog);
       if (command === "parse_provider_config") return mockParseProviderConfig(args.appId, args.content);
       if (command === "fetch_provider_models") {
-        const models = args.appId === "codex" ? ["gpt-5.6-sol", "gpt-5.5", "glm-5.2"] : args.appId === "grok" ? ["grok-build", "grok-code-fast-1", "grok-4.1-fast"] : args.appId.startsWith("claude") ? ["claude-sonnet-5", "claude-opus-4-8", "glm-5.2"] : args.appId === "antigravity" ? ["gemini-3.5-pro", "gemini-3.5-flash"] : ["gpt-5.6-sol", "deepseek-chat", "glm-5.2"];
+        const models = args.appId === "codex" ? ["gpt-5.6-sol", "gpt-5.5", "glm-5.2"] : args.appId === "grok" ? ["grok-4.5", "grok-build", "grok-code-fast-1", "grok-4.1-fast"] : args.appId.startsWith("claude") ? ["claude-sonnet-5", "claude-opus-4-8", "glm-5.2"] : args.appId === "antigravity" ? ["gemini-3.5-pro", "gemini-3.5-flash"] : ["gpt-5.6-sol", "deepseek-chat", "glm-5.2"];
         return { models, source: args.baseUrl ? "供应商模型接口" : "客户端推荐" };
       }
       if (command === "run_ready_check") {
@@ -931,7 +931,7 @@
       if (command === "run_diagnostics") return {
         generatedAt: new Date().toISOString(), score: 90, passed: 6, warnings: 2, failed: 0,
         checks: [
-          { id: "system-platform", category: "系统", status: "pass", title: "桌面运行环境", detail: "AgentDock 0.1.9 · macOS arm64", action: "" },
+          { id: "system-platform", category: "系统", status: "pass", title: "桌面运行环境", detail: "AgentDock 0.1.10 · macOS arm64", action: "" },
           { id: "system-data-dir", category: "系统", status: "pass", title: "数据目录可写", detail: "/AgentDock/data", action: "" },
           { id: "client-claude", category: "客户端", status: "pass", title: "Claude Desktop 可正常启动", detail: "1.0.2 · 系统安装", action: "" },
           { id: "client-codex", category: "客户端", status: "warning", title: "Codex 尚未安装", detail: "这是推荐客户端，可由 AgentDock 自动安装", action: "前往客户端页面点击一键安装" },
@@ -1235,7 +1235,7 @@
     const configValue = (form, name, fallback = "") => form.elements[name]?.value.trim() || fallback;
     function generatedProviderConfig() {
       const form = document.getElementById("provider-form"); const app = state.activeClient; const official = configValue(form, "provider-type") === "official";
-      const name = configValue(form, "provider-name", "custom"); const baseUrl = configValue(form, "provider-base-url"); const model = configValue(form, "provider-model", app === "antigravity" ? "gemini-3.5-pro" : app === "grok" ? "grok-build" : app.startsWith("claude") ? "claude-sonnet-5" : "gpt-5.6-sol");
+      const name = configValue(form, "provider-name", "custom"); const baseUrl = configValue(form, "provider-base-url"); const model = configValue(form, "provider-model", app === "antigravity" ? "gemini-3.5-pro" : app === "grok" ? "grok-4.5" : app.startsWith("claude") ? "claude-sonnet-5" : "gpt-5.6-sol");
       if (app === "codex") {
         const auth = official ? {} : { OPENAI_API_KEY: configKeyPlaceholder };
         const config = official ? `model = ${JSON.stringify(model)}\n` : `model_provider = "custom"\nmodel = ${JSON.stringify(model)}\nmodel_reasoning_effort = "high"\n\n[model_providers.custom]\nname = ${JSON.stringify(name)}\nbase_url = ${JSON.stringify(baseUrl)}\nwire_api = "responses"\nenv_key = "OPENAI_API_KEY"\n`;
@@ -1369,7 +1369,7 @@
       form.elements["provider-name"].value = preset.id === "custom" ? "" : preset.name;
       form.elements["provider-base-url"].value = preset.baseUrl;
       setModelOptions(preset.model ? [preset.model] : [], preset.model, "正在读取供应商模型"); form.elements["provider-api-format"].value = preset.format;
-      if (["codex", "grok"].includes(state.activeClient)) form.elements["advanced-codex-model"].value = preset.model || (state.activeClient === "grok" ? "grok-build" : "gpt-5.6-sol");
+      if (["codex", "grok"].includes(state.activeClient)) form.elements["advanced-codex-model"].value = preset.model || (state.activeClient === "grok" ? "grok-4.5" : "gpt-5.6-sol");
       if (state.activeClient.startsWith("claude")) form.elements["advanced-claude-sonnet"].value = preset.model || "claude-sonnet-5";
       updateProviderFormPresentation(preset); renderPresetGrid(); regenerateProviderConfig();
     }

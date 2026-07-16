@@ -1794,6 +1794,43 @@ fn apply_provider_for_app(
         _ => return Err("不支持的客户端".to_string()),
     };
 
+    if app_id == "codex" {
+        let auth = codex_auth_for_provider(custom_settings.as_ref(), &api_key);
+        let managed_dir = dirs.managed_configs_dir.join("codex");
+        let mut written_files = write_codex_config_pair(
+            &managed_dir.join("config.toml"),
+            &managed_dir.join("auth.json"),
+            &content,
+            &auth,
+            &backup_dir,
+            "managed-codex",
+        )?;
+
+        let user_dir = external_codex_home()?;
+        written_files.extend(write_codex_config_pair(
+            &user_dir.join("config.toml"),
+            &user_dir.join("auth.json"),
+            &content,
+            &auth,
+            &backup_dir,
+            "user-codex",
+        )?);
+
+        if let Some(env_content) = env_content {
+            let env_target = managed_dir.join("provider.env");
+            fs::write(&env_target, env_content)
+                .map_err(|err| format!("写入客户端密钥环境失败: {}", err))?;
+            protect_secret_file(&env_target)?;
+            written_files.push(env_target.display().to_string());
+        }
+
+        return Ok(ApplyProviderResult {
+            provider_id: provider.id.clone(),
+            backup_dir: backup_dir.display().to_string(),
+            written_files,
+        });
+    }
+
     let target = dirs.managed_configs_dir.join(&relative_path);
     let content = if app_id == "grok" {
         preserve_toml_section(&target, &content, "mcp_servers")?
@@ -4684,6 +4721,106 @@ fn materialized_provider_settings(
     Ok(Some(settings))
 }
 
+fn codex_auth_for_provider(
+    custom_settings: Option<&serde_json::Value>,
+    api_key: &str,
+) -> serde_json::Value {
+    let mut auth = custom_settings
+        .and_then(|settings| settings.get("auth"))
+        .and_then(serde_json::Value::as_object)
+        .cloned()
+        .unwrap_or_default();
+    auth.insert(
+        "OPENAI_API_KEY".to_string(),
+        serde_json::Value::String(api_key.to_string()),
+    );
+    serde_json::Value::Object(auth)
+}
+
+fn external_codex_home() -> Result<PathBuf, String> {
+    if let Some(path) = env::var_os("CODEX_HOME").filter(|path| !path.is_empty()) {
+        return Ok(PathBuf::from(path));
+    }
+    dirs_home()
+        .map(|home| home.join(".codex"))
+        .ok_or_else(|| "无法确定 Codex 配置目录".to_string())
+}
+
+fn restore_file_snapshot(path: &Path, snapshot: Option<&[u8]>) {
+    match snapshot {
+        Some(content) => {
+            let _ = fs::write(path, content);
+        }
+        None => {
+            let _ = fs::remove_file(path);
+        }
+    }
+}
+
+fn write_codex_config_pair(
+    config_path: &Path,
+    auth_path: &Path,
+    config_content: &str,
+    auth: &serde_json::Value,
+    backup_dir: &Path,
+    backup_prefix: &str,
+) -> Result<Vec<String>, String> {
+    let config_content = preserve_toml_section(config_path, config_content, "mcp_servers")?;
+    let auth_content = serde_json::to_vec_pretty(auth)
+        .map_err(|err| format!("生成 Codex auth.json 失败: {}", err))?;
+    let old_config = if config_path.exists() {
+        Some(fs::read(config_path).map_err(|err| format!("读取现有 Codex 配置失败: {}", err))?)
+    } else {
+        None
+    };
+    let old_auth = if auth_path.exists() {
+        Some(fs::read(auth_path).map_err(|err| format!("读取现有 Codex 密钥失败: {}", err))?)
+    } else {
+        None
+    };
+
+    fs::create_dir_all(
+        config_path
+            .parent()
+            .ok_or_else(|| "Codex 配置路径无效".to_string())?,
+    )
+    .map_err(|err| format!("创建 Codex 配置目录失败: {}", err))?;
+    if let Some(content) = old_config.as_deref() {
+        fs::write(
+            backup_dir.join(format!("{}__config.toml", backup_prefix)),
+            content,
+        )
+        .map_err(|err| format!("备份 Codex config.toml 失败: {}", err))?;
+    }
+    if let Some(content) = old_auth.as_deref() {
+        fs::write(
+            backup_dir.join(format!("{}__auth.json", backup_prefix)),
+            content,
+        )
+        .map_err(|err| format!("备份 Codex auth.json 失败: {}", err))?;
+    }
+
+    let write_result = (|| {
+        fs::write(auth_path, &auth_content)
+            .map_err(|err| format!("写入 Codex auth.json 失败: {}", err))?;
+        protect_secret_file(auth_path)?;
+        fs::write(config_path, config_content)
+            .map_err(|err| format!("写入 Codex config.toml 失败: {}", err))?;
+        protect_secret_file(config_path)?;
+        Ok::<(), String>(())
+    })();
+    if let Err(error) = write_result {
+        restore_file_snapshot(auth_path, old_auth.as_deref());
+        restore_file_snapshot(config_path, old_config.as_deref());
+        return Err(error);
+    }
+
+    Ok(vec![
+        config_path.display().to_string(),
+        auth_path.display().to_string(),
+    ])
+}
+
 fn replace_json_placeholder(value: &mut serde_json::Value, api_key: &str) {
     match value {
         serde_json::Value::String(text) => {
@@ -5789,7 +5926,12 @@ fn fallback_models(app_id: &str) -> Vec<String> {
             &["claude-sonnet-5", "claude-opus-4-8", "claude-haiku-4-5"]
         }
         "antigravity" => &["gemini-3.5-pro", "gemini-3.5-flash", "gemini-3.1-pro"],
-        "grok" => &["grok-build", "grok-code-fast-1", "grok-4.1-fast"],
+        "grok" => &[
+            "grok-4.5",
+            "grok-build",
+            "grok-code-fast-1",
+            "grok-4.1-fast",
+        ],
         "opencode" | "openclaw" | "hermes" => &[
             "gpt-5.6-sol",
             "claude-sonnet-5",
@@ -6512,25 +6654,99 @@ supports_backend_search = true"#,
     fn imports_codex_toml_and_auth_json() {
         let config = parse_provider_config_text(
             "codex",
-            r#"model_provider = "relay"
-model = "gpt-5.6-sol"
+            r#"model_provider = "OpenAI"
+model = "gpt-5.5"
+review_model = "gpt-5.5"
+model_reasoning_effort = "xhigh"
+disable_response_storage = true
+network_access = "enabled"
+windows_wsl_setup_acknowledged = true
 
-[model_providers.relay]
-base_url = "https://relay.example.com/v1"
+[model_providers.OpenAI]
+name = "OpenAI"
+base_url = "https://code.xxxxx.cn"
 wire_api = "responses"
-env_key = "OPENAI_API_KEY""#,
+requires_openai_auth = true
+
+[features]
+goals = true"#,
         )
         .expect("Codex config should parse");
-        assert_eq!(
-            config.base_url.as_deref(),
-            Some("https://relay.example.com/v1")
-        );
-        assert_eq!(config.model.as_deref(), Some("gpt-5.6-sol"));
+        assert_eq!(config.base_url.as_deref(), Some("https://code.xxxxx.cn"));
+        assert_eq!(config.model.as_deref(), Some("gpt-5.5"));
         assert_eq!(config.api_format.as_deref(), Some("responses"));
 
         let auth = parse_provider_config_text("codex", r#"{"OPENAI_API_KEY":"sk-codex"}"#)
             .expect("Codex auth should parse");
         assert_eq!(auth.api_key.as_deref(), Some("sk-codex"));
+    }
+
+    #[test]
+    fn writes_codex_config_and_auth_as_a_pair() {
+        let root = env::temp_dir().join(format!(
+            "agentdock-codex-provider-test-{}",
+            std::process::id()
+        ));
+        let codex_home = root.join("codex-home");
+        let backup = root.join("backup");
+        fs::create_dir_all(&codex_home).unwrap();
+        fs::create_dir_all(&backup).unwrap();
+        let config_path = codex_home.join("config.toml");
+        let auth_path = codex_home.join("auth.json");
+        fs::write(
+            &config_path,
+            "model = \"old\"\n\n[mcp_servers.memory]\ncommand = \"npx\"\n",
+        )
+        .unwrap();
+        fs::write(&auth_path, r#"{"OPENAI_API_KEY":"old-key"}"#).unwrap();
+
+        let config = r#"model_provider = "OpenAI"
+model = "gpt-5.5"
+
+[model_providers.OpenAI]
+name = "OpenAI"
+base_url = "https://code.xxxxx.cn"
+wire_api = "responses"
+requires_openai_auth = true"#;
+        let settings = serde_json::json!({
+            "auth": { "OPENAI_API_KEY": "stale-pasted-key", "KEEP": "value" },
+            "config": config
+        });
+        let auth = codex_auth_for_provider(Some(&settings), "sk-xxxxx");
+        let written =
+            write_codex_config_pair(&config_path, &auth_path, config, &auth, &backup, "test")
+                .expect("Codex config pair should be written");
+
+        assert_eq!(
+            written,
+            vec![
+                config_path.display().to_string(),
+                auth_path.display().to_string()
+            ]
+        );
+        let saved_auth: serde_json::Value =
+            serde_json::from_str(&fs::read_to_string(&auth_path).unwrap()).unwrap();
+        assert_eq!(saved_auth["OPENAI_API_KEY"], "sk-xxxxx");
+        assert_eq!(saved_auth["KEEP"], "value");
+        let saved_config: toml::Table = fs::read_to_string(&config_path).unwrap().parse().unwrap();
+        assert_eq!(saved_config["model_provider"].as_str(), Some("OpenAI"));
+        assert_eq!(
+            saved_config["model_providers"]["OpenAI"]["base_url"].as_str(),
+            Some("https://code.xxxxx.cn")
+        );
+        assert_eq!(
+            saved_config["mcp_servers"]["memory"]["command"].as_str(),
+            Some("npx")
+        );
+        assert!(backup.join("test__config.toml").exists());
+        assert!(backup.join("test__auth.json").exists());
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn grok_fallback_models_include_grok_4_5_first() {
+        let models = fallback_models("grok");
+        assert_eq!(models.first().map(String::as_str), Some("grok-4.5"));
     }
 
     #[test]
