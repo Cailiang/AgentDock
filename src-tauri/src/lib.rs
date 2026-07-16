@@ -1,0 +1,6433 @@
+use base64::{engine::general_purpose::STANDARD as BASE64_STANDARD, Engine as _};
+use directories::ProjectDirs;
+use flate2::read::GzDecoder;
+use futures::future::join_all;
+use rmcp::{
+    model::Tool,
+    transport::{
+        sse_client::SseClientConfig, streamable_http_client::StreamableHttpClientTransportConfig,
+        SseClientTransport, StreamableHttpClientTransport, TokioChildProcess,
+    },
+    ServiceExt,
+};
+use serde::{Deserialize, Serialize};
+use sha2::{Digest, Sha256, Sha512};
+use std::{
+    collections::{BTreeMap, HashMap, HashSet},
+    env,
+    ffi::OsString,
+    fs,
+    io::{BufRead, BufReader, Cursor, Read},
+    path::{Path, PathBuf},
+    process::{Command, Stdio},
+    time::Instant,
+};
+use time::{format_description::well_known::Rfc3339, Duration, OffsetDateTime};
+
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct DesktopStatus {
+    app_version: String,
+    platform: String,
+    data_dir: String,
+    config_dir: String,
+    managed_runtime_ready: bool,
+    clients: Vec<ClientStatus>,
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ClientStatus {
+    id: String,
+    name: String,
+    installed: bool,
+    version: Option<String>,
+    executable: Option<String>,
+    config_path: Option<String>,
+    managed_by_agentdock: bool,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SoftwareCatalogItem {
+    id: String,
+    client_id: String,
+    name: String,
+    description: String,
+    publisher: String,
+    website_url: String,
+    category: String,
+    recommended: bool,
+    installed: bool,
+    current_version: Option<String>,
+    latest_version: Option<String>,
+    update_available: bool,
+    install_supported: bool,
+    managed_by_agentdock: bool,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct SoftwareCatalogSeed {
+    id: String,
+    client_id: String,
+    name: String,
+    description: String,
+    publisher: String,
+    website_url: String,
+    category: String,
+    #[serde(default)]
+    recommended: bool,
+    #[serde(default)]
+    install_supported: bool,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct RemoteSoftwareCatalog {
+    items: Vec<SoftwareCatalogSeed>,
+}
+
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ProviderModelsResult {
+    models: Vec<String>,
+    source: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ProviderProfile {
+    id: String,
+    name: String,
+    #[serde(default)]
+    notes: String,
+    #[serde(default)]
+    website_url: String,
+    #[serde(default)]
+    preset_id: String,
+    provider_type: String,
+    base_url: String,
+    api_format: String,
+    #[serde(default)]
+    settings_config: String,
+    enabled_apps: Vec<String>,
+    codex_model: String,
+    #[serde(default = "default_gemini_model")]
+    gemini_model: String,
+    claude_sonnet_model: String,
+    claude_haiku_model: String,
+    claude_opus_model: String,
+    active: bool,
+    #[serde(default)]
+    active_apps: Vec<String>,
+    #[serde(default)]
+    api_key_configured: bool,
+    created_at: String,
+    updated_at: String,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ProviderInput {
+    id: Option<String>,
+    name: String,
+    notes: Option<String>,
+    website_url: Option<String>,
+    preset_id: Option<String>,
+    provider_type: String,
+    base_url: String,
+    api_format: Option<String>,
+    settings_config: Option<String>,
+    enabled_apps: Option<Vec<String>>,
+    codex_model: Option<String>,
+    gemini_model: Option<String>,
+    claude_sonnet_model: Option<String>,
+    claude_haiku_model: Option<String>,
+    claude_opus_model: Option<String>,
+    active: Option<bool>,
+    active_apps: Option<Vec<String>>,
+    api_key: Option<String>,
+}
+
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ReadyCheck {
+    score: u8,
+    blockers: Vec<String>,
+    warnings: Vec<String>,
+    clients_ready: usize,
+    providers_ready: usize,
+}
+
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ConfigPreview {
+    codex_toml: String,
+    claude_env_json: String,
+    gemini_env_json: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ManagedClientRecord {
+    id: String,
+    name: String,
+    installed: bool,
+    version: String,
+    install_dir: String,
+    launcher_path: String,
+    config_dir: String,
+    installed_at: String,
+    updated_at: String,
+}
+
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct InstallClientResult {
+    client: ManagedClientRecord,
+    message: String,
+}
+
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ProviderTestResult {
+    ok: bool,
+    latency_ms: u128,
+    message: String,
+}
+
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ApplyProviderResult {
+    provider_id: String,
+    backup_dir: String,
+    written_files: Vec<String>,
+}
+
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct DiagnosticsResult {
+    path: String,
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct DiagnosticCheck {
+    id: String,
+    category: String,
+    status: String,
+    title: String,
+    detail: String,
+    action: String,
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct DiagnosticsReport {
+    generated_at: String,
+    score: u8,
+    passed: usize,
+    warnings: usize,
+    failed: usize,
+    checks: Vec<DiagnosticCheck>,
+}
+
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct LaunchClientResult {
+    launched: bool,
+    message: String,
+}
+
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct OperationResult {
+    ok: bool,
+    message: String,
+}
+
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SyncResult {
+    written_files: Vec<String>,
+    message: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SkillRecord {
+    id: String,
+    name: String,
+    description: String,
+    source: String,
+    installed: bool,
+    apps: Vec<String>,
+    updated_at: String,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SkillInstallInput {
+    id: String,
+    name: Option<String>,
+    description: Option<String>,
+    source: Option<String>,
+    apps: Option<Vec<String>>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct McpServerRecord {
+    id: String,
+    name: String,
+    #[serde(default)]
+    description: String,
+    #[serde(default)]
+    homepage: String,
+    #[serde(default)]
+    docs: String,
+    #[serde(default)]
+    tags: Vec<String>,
+    transport: String,
+    command: String,
+    args: Vec<String>,
+    env: BTreeMap<String, String>,
+    #[serde(default)]
+    headers: BTreeMap<String, String>,
+    #[serde(default)]
+    cwd: String,
+    #[serde(default)]
+    extra: BTreeMap<String, serde_json::Value>,
+    apps: Vec<String>,
+    enabled: bool,
+    updated_at: String,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct McpServerInput {
+    id: String,
+    name: Option<String>,
+    description: Option<String>,
+    homepage: Option<String>,
+    docs: Option<String>,
+    tags: Option<Vec<String>>,
+    transport: Option<String>,
+    command: Option<String>,
+    args: Option<Vec<String>>,
+    env: Option<BTreeMap<String, String>>,
+    headers: Option<BTreeMap<String, String>>,
+    cwd: Option<String>,
+    extra: Option<BTreeMap<String, serde_json::Value>>,
+    apps: Option<Vec<String>>,
+    enabled: Option<bool>,
+}
+
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct McpImportResult {
+    imported: usize,
+    linked: usize,
+    scanned_apps: Vec<String>,
+    errors: Vec<String>,
+}
+
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct McpToolInfo {
+    name: String,
+    title: Option<String>,
+    description: String,
+    input_schema: serde_json::Value,
+    output_schema: Option<serde_json::Value>,
+    annotations: Option<serde_json::Value>,
+}
+
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct McpToolsResult {
+    server_id: String,
+    server_name: String,
+    transport: String,
+    tools: Vec<McpToolInfo>,
+    latency_ms: u128,
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct UsageSummary {
+    total_tokens: u64,
+    input_tokens: u64,
+    output_tokens: u64,
+    cached_tokens: u64,
+    requests: u64,
+    cost_usd: f64,
+    unpriced_requests: u64,
+}
+
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct UsageTrendPoint {
+    date: String,
+    total_tokens: u64,
+    requests: u64,
+    cost_usd: f64,
+}
+
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct UsageBreakdownItem {
+    id: String,
+    name: String,
+    total_tokens: u64,
+    requests: u64,
+    cost_usd: f64,
+    share: f64,
+}
+
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct UsageStats {
+    days: u32,
+    from: String,
+    to: String,
+    summary: UsageSummary,
+    trend: Vec<UsageTrendPoint>,
+    by_client: Vec<UsageBreakdownItem>,
+    by_provider: Vec<UsageBreakdownItem>,
+    by_model: Vec<UsageBreakdownItem>,
+    sources: Vec<String>,
+    errors: Vec<String>,
+}
+
+#[derive(Debug, Clone)]
+struct UsageRecord {
+    timestamp: OffsetDateTime,
+    client: String,
+    provider: String,
+    model: String,
+    input_tokens: u64,
+    output_tokens: u64,
+    cached_tokens: u64,
+    cost_usd: Option<f64>,
+}
+
+#[tauri::command]
+fn get_desktop_status() -> Result<DesktopStatus, String> {
+    let dirs = agentdock_dirs()?;
+    ensure_dirs(&dirs)?;
+
+    Ok(DesktopStatus {
+        app_version: env!("CARGO_PKG_VERSION").to_string(),
+        platform: env::consts::OS.to_string(),
+        data_dir: dirs.data_dir.display().to_string(),
+        config_dir: dirs.config_dir.display().to_string(),
+        managed_runtime_ready: dirs.runtime_dir.exists(),
+        clients: detect_clients(),
+    })
+}
+
+#[tauri::command]
+async fn list_software_catalog() -> Result<Vec<SoftwareCatalogItem>, String> {
+    let statuses = detect_clients();
+    let client = reqwest::Client::builder()
+        .connect_timeout(std::time::Duration::from_secs(5))
+        .timeout(std::time::Duration::from_secs(10))
+        .user_agent(format!("AgentDock/{}", env!("CARGO_PKG_VERSION")))
+        .build()
+        .map_err(|err| format!("创建软件目录请求失败: {}", err))?;
+    let seeds = load_software_catalog_seeds(&client).await;
+
+    let checks = seeds.into_iter().map(|seed| {
+        let client = client.clone();
+        let status = statuses
+            .iter()
+            .find(|status| status.id == seed.client_id)
+            .cloned();
+        async move {
+            let latest_version = latest_client_version(&client, &seed.client_id)
+                .await
+                .ok()
+                .flatten();
+            let current_version = status.as_ref().and_then(|status| status.version.clone());
+            let update_available = match (&latest_version, &current_version) {
+                (Some(latest), Some(current)) => version_is_newer(latest, current),
+                _ => false,
+            };
+            SoftwareCatalogItem {
+                id: seed.id,
+                client_id: seed.client_id,
+                name: seed.name,
+                description: seed.description,
+                publisher: seed.publisher,
+                website_url: seed.website_url,
+                category: seed.category,
+                recommended: seed.recommended,
+                installed: status
+                    .as_ref()
+                    .map(|status| status.installed)
+                    .unwrap_or(false),
+                current_version,
+                latest_version,
+                update_available,
+                install_supported: seed.install_supported,
+                managed_by_agentdock: status
+                    .as_ref()
+                    .map(|status| status.managed_by_agentdock)
+                    .unwrap_or(false),
+            }
+        }
+    });
+
+    Ok(join_all(checks).await)
+}
+
+#[tauri::command]
+async fn fetch_provider_models(
+    app_id: String,
+    base_url: String,
+    api_key: Option<String>,
+    _api_format: Option<String>,
+) -> Result<ProviderModelsResult, String> {
+    let fallback = fallback_models(&app_id);
+    let normalized_url = normalize_base_url(&base_url);
+    if normalized_url.is_empty() {
+        return Ok(ProviderModelsResult {
+            models: fallback,
+            source: "客户端推荐".to_string(),
+        });
+    }
+    if !(normalized_url.starts_with("https://") || normalized_url.starts_with("http://")) {
+        return Err("请求地址必须以 http:// 或 https:// 开头".to_string());
+    }
+
+    let client = reqwest::Client::builder()
+        .connect_timeout(std::time::Duration::from_secs(5))
+        .timeout(std::time::Duration::from_secs(10))
+        .user_agent(format!("AgentDock/{}", env!("CARGO_PKG_VERSION")))
+        .build()
+        .map_err(|err| format!("创建模型请求失败: {}", err))?;
+    let key = api_key.unwrap_or_default();
+    let mut endpoints = vec![format!("{}/models", normalized_url)];
+    let v1_endpoint = format!("{}/models", ensure_v1_url(&normalized_url));
+    if !endpoints.contains(&v1_endpoint) {
+        endpoints.push(v1_endpoint);
+    }
+    if app_id == "antigravity" {
+        let gemini_endpoint = format!("{}/v1beta/models", normalized_url);
+        if !endpoints.contains(&gemini_endpoint) {
+            endpoints.push(gemini_endpoint);
+        }
+    }
+
+    for endpoint in endpoints {
+        let mut request = client
+            .get(&endpoint)
+            .header("accept", "application/json")
+            .header("anthropic-version", "2023-06-01");
+        if !key.trim().is_empty() {
+            request = request
+                .bearer_auth(key.trim())
+                .header("x-api-key", key.trim())
+                .header("x-goog-api-key", key.trim());
+        }
+        let response = match request.send().await {
+            Ok(response) if response.status().is_success() => response,
+            _ => continue,
+        };
+        let payload: serde_json::Value = match response.json().await {
+            Ok(payload) => payload,
+            Err(_) => continue,
+        };
+        let mut models = parse_model_ids(&payload);
+        if !models.is_empty() {
+            for model in fallback {
+                if !models.contains(&model) {
+                    models.push(model);
+                }
+            }
+            return Ok(ProviderModelsResult {
+                models,
+                source: "供应商模型接口".to_string(),
+            });
+        }
+    }
+
+    Ok(ProviderModelsResult {
+        models: fallback,
+        source: "客户端推荐（供应商接口不可用）".to_string(),
+    })
+}
+
+#[tauri::command]
+fn run_ready_check() -> Result<ReadyCheck, String> {
+    let providers = list_providers()?;
+    let clients = detect_clients();
+    let clients_ready = clients.iter().filter(|client| client.installed).count();
+    let providers_ready = providers
+        .iter()
+        .filter(|provider| {
+            provider.provider_type == "official"
+                || (!provider.base_url.trim().is_empty()
+                    && !provider.base_url.contains("agentdock.example")
+                    && (provider.api_key_configured || is_local_url(&provider.base_url)))
+        })
+        .count();
+
+    let mut blockers = Vec::new();
+    let mut warnings = Vec::new();
+
+    if !clients
+        .iter()
+        .any(|client| client.id == "codex" && client.installed)
+    {
+        blockers.push("Codex 尚未安装".to_string());
+    }
+
+    if providers_ready == 0 {
+        blockers.push("还没有可用供应商".to_string());
+    }
+
+    if !clients
+        .iter()
+        .any(|client| client.id == "claude-code" && client.installed)
+    {
+        warnings.push("Claude Code 未安装，可以稍后安装".to_string());
+    }
+
+    let score = match (blockers.len(), warnings.len()) {
+        (0, 0) => 100,
+        (0, _) => 88,
+        (1, _) => 72,
+        _ => 48,
+    };
+
+    Ok(ReadyCheck {
+        score,
+        blockers,
+        warnings,
+        clients_ready,
+        providers_ready,
+    })
+}
+
+#[tauri::command]
+fn list_providers() -> Result<Vec<ProviderProfile>, String> {
+    let dirs = agentdock_dirs()?;
+    ensure_dirs(&dirs)?;
+    let path = providers_path(&dirs);
+
+    if !path.exists() {
+        let defaults = default_providers();
+        write_providers(&dirs, &defaults)?;
+        return Ok(defaults);
+    }
+
+    let raw = fs::read_to_string(&path).map_err(|err| format!("读取供应商配置失败: {}", err))?;
+    let mut providers: Vec<ProviderProfile> =
+        serde_json::from_str(&raw).map_err(|err| format!("解析供应商配置失败: {}", err))?;
+    let mut migrated = false;
+    let original_len = providers.len();
+    providers.retain(|provider| !provider.base_url.contains("agentdock.example"));
+    migrated |= providers.len() != original_len;
+    for provider in &mut providers {
+        migrated |= migrate_app_ids(&mut provider.enabled_apps);
+        migrated |= migrate_app_ids(&mut provider.active_apps);
+        if provider.active && provider.active_apps.is_empty() {
+            provider.active_apps = provider.enabled_apps.clone();
+            migrated = true;
+        }
+        provider.active = !provider.active_apps.is_empty();
+    }
+    if migrated {
+        write_providers(&dirs, &providers)?;
+    }
+    Ok(providers)
+}
+
+#[tauri::command]
+fn save_provider(input: ProviderInput) -> Result<ProviderProfile, String> {
+    let dirs = agentdock_dirs()?;
+    ensure_dirs(&dirs)?;
+
+    if input.name.trim().is_empty() {
+        return Err("供应商名称不能为空".to_string());
+    }
+    let normalized_url = normalize_base_url(&input.base_url);
+    let is_official = input.provider_type.trim() == "official";
+    if !is_official
+        && !(normalized_url.starts_with("https://") || normalized_url.starts_with("http://"))
+    {
+        return Err("Base URL 必须以 http:// 或 https:// 开头".to_string());
+    }
+
+    let mut providers = list_providers()?;
+    let mut secrets = read_provider_secrets(&dirs)?;
+    let now = now_rfc3339();
+    let requested_id = input.id.clone().filter(|id| !id.trim().is_empty());
+    let provider_id = requested_id.clone().unwrap_or_else(|| {
+        let app = input
+            .enabled_apps
+            .as_ref()
+            .and_then(|apps| apps.first())
+            .map(|app| slugify(app))
+            .unwrap_or_else(|| "provider".to_string());
+        unique_provider_id(&format!("{}-{}", app, slugify(&input.name)), &providers)
+    });
+
+    let existing = providers
+        .iter()
+        .find(|provider| provider.id == provider_id)
+        .cloned();
+    let existing_created_at = existing
+        .as_ref()
+        .map(|provider| provider.created_at.clone())
+        .unwrap_or_else(|| now.clone());
+
+    if let Some(api_key) = input.api_key.as_ref() {
+        let api_key = api_key.trim();
+        if !api_key.is_empty() {
+            secrets.insert(provider_id.clone(), api_key.to_string());
+            write_provider_secrets(&dirs, &secrets)?;
+        }
+    }
+
+    let enabled_apps = input.enabled_apps.unwrap_or_else(|| {
+        existing
+            .as_ref()
+            .map(|provider| provider.enabled_apps.clone())
+            .unwrap_or_else(|| vec!["codex".to_string()])
+    });
+    let active_apps = input.active_apps.unwrap_or_else(|| {
+        if input.active == Some(true) {
+            enabled_apps.clone()
+        } else {
+            existing
+                .as_ref()
+                .map(|provider| provider.active_apps.clone())
+                .unwrap_or_default()
+        }
+    });
+    let mut raw_settings_config = input.settings_config.unwrap_or_else(|| {
+        existing
+            .as_ref()
+            .map(|provider| provider.settings_config.clone())
+            .unwrap_or_default()
+    });
+    if let Some(api_key) = input
+        .api_key
+        .as_deref()
+        .map(str::trim)
+        .filter(|key| !key.is_empty())
+    {
+        raw_settings_config = raw_settings_config.replace(api_key, "${AGENTDOCK_API_KEY}");
+    }
+    let settings_config = if raw_settings_config.trim().is_empty() {
+        String::new()
+    } else {
+        let app_id = enabled_apps.first().map(String::as_str).unwrap_or("codex");
+        validate_provider_settings_config(app_id, &raw_settings_config)?
+    };
+
+    let provider = ProviderProfile {
+        id: provider_id.clone(),
+        name: input.name.trim().to_string(),
+        notes: input.notes.unwrap_or_default().trim().to_string(),
+        website_url: input.website_url.unwrap_or_default().trim().to_string(),
+        preset_id: input.preset_id.unwrap_or_default().trim().to_string(),
+        provider_type: input.provider_type.trim().to_string(),
+        base_url: normalized_url,
+        api_format: input
+            .api_format
+            .unwrap_or_else(|| "auto".to_string())
+            .trim()
+            .to_string(),
+        settings_config,
+        enabled_apps,
+        codex_model: input.codex_model.unwrap_or_else(default_codex_model),
+        gemini_model: input.gemini_model.unwrap_or_else(default_gemini_model),
+        claude_sonnet_model: input
+            .claude_sonnet_model
+            .unwrap_or_else(|| "claude-sonnet-5".to_string()),
+        claude_haiku_model: input
+            .claude_haiku_model
+            .unwrap_or_else(|| "claude-haiku-4-5".to_string()),
+        claude_opus_model: input
+            .claude_opus_model
+            .unwrap_or_else(|| "claude-opus-4-8".to_string()),
+        active: !active_apps.is_empty(),
+        active_apps,
+        api_key_configured: secrets.contains_key(&provider_id),
+        created_at: existing_created_at,
+        updated_at: now,
+    };
+
+    providers.retain(|item| item.id != provider_id);
+    for app in &provider.active_apps {
+        for item in &mut providers {
+            item.active_apps.retain(|active_app| active_app != app);
+            item.active = !item.active_apps.is_empty();
+        }
+    }
+    providers.insert(0, provider.clone());
+
+    write_providers(&dirs, &providers)?;
+    Ok(provider)
+}
+
+#[tauri::command]
+fn activate_provider(provider_id: String, app_id: String) -> Result<ProviderProfile, String> {
+    let dirs = agentdock_dirs()?;
+    ensure_dirs(&dirs)?;
+    let mut providers = list_providers()?;
+    let mut selected = None;
+
+    for provider in &mut providers {
+        provider.active_apps.retain(|app| app != &app_id);
+        if provider.id == provider_id {
+            if !provider.enabled_apps.iter().any(|app| app == &app_id) {
+                return Err("这个供应商没有启用当前客户端".to_string());
+            }
+            provider.active_apps.push(app_id.clone());
+            provider.updated_at = now_rfc3339();
+        }
+        provider.active = !provider.active_apps.is_empty();
+        if provider.id == provider_id {
+            selected = Some(provider.clone());
+        }
+    }
+
+    let selected = selected.ok_or_else(|| "未找到供应商".to_string())?;
+    write_providers(&dirs, &providers)?;
+    Ok(selected)
+}
+
+#[tauri::command]
+fn delete_provider(provider_id: String) -> Result<OperationResult, String> {
+    let dirs = agentdock_dirs()?;
+    ensure_dirs(&dirs)?;
+    let mut providers = list_providers()?;
+    let before = providers.len();
+    providers.retain(|provider| provider.id != provider_id);
+    if providers.len() == before {
+        return Err("未找到供应商".to_string());
+    }
+    for app in supported_provider_apps() {
+        if !providers.iter().any(|provider| {
+            provider
+                .active_apps
+                .iter()
+                .any(|active_app| active_app == app)
+        }) {
+            if let Some(provider) = providers.iter_mut().find(|provider| {
+                provider
+                    .enabled_apps
+                    .iter()
+                    .any(|enabled_app| enabled_app == app)
+            }) {
+                provider.active_apps.push(app.to_string());
+                provider.active = true;
+            }
+        }
+    }
+    write_providers(&dirs, &providers)?;
+
+    let mut secrets = read_provider_secrets(&dirs)?;
+    secrets.remove(&provider_id);
+    write_provider_secrets(&dirs, &secrets)?;
+
+    Ok(OperationResult {
+        ok: true,
+        message: "供应商已删除".to_string(),
+    })
+}
+
+#[tauri::command]
+fn preview_provider_config(provider: ProviderProfile) -> Result<ConfigPreview, String> {
+    let base_url = normalize_base_url(&provider.base_url);
+    let codex_base_url = ensure_v1_url(&base_url);
+    let model = serde_json::to_string(&provider.codex_model).map_err(|err| err.to_string())?;
+    let provider_name = serde_json::to_string(&provider.name).map_err(|err| err.to_string())?;
+    let codex_base_url = serde_json::to_string(&codex_base_url).map_err(|err| err.to_string())?;
+    let codex_toml = format!(
+        r#"model_provider = "custom"
+model = {}
+model_reasoning_effort = "high"
+
+[model_providers.custom]
+name = {}
+base_url = {}
+wire_api = "responses"
+env_key = "OPENAI_API_KEY"
+"#,
+        model, provider_name, codex_base_url
+    );
+
+    let claude_env_json = serde_json::json!({
+        "env": {
+            "ANTHROPIC_BASE_URL": base_url,
+            "ANTHROPIC_AUTH_TOKEN": "${AGENTDOCK_API_KEY}",
+            "ANTHROPIC_MODEL": provider.claude_sonnet_model,
+            "ANTHROPIC_DEFAULT_SONNET_MODEL": provider.claude_sonnet_model,
+            "ANTHROPIC_DEFAULT_HAIKU_MODEL": provider.claude_haiku_model,
+            "ANTHROPIC_DEFAULT_OPUS_MODEL": provider.claude_opus_model
+        }
+    });
+
+    let gemini_env_json = serde_json::json!({
+        "env": {
+            "GOOGLE_GEMINI_BASE_URL": base_url,
+            "GEMINI_API_KEY": "${AGENTDOCK_API_KEY}",
+            "GEMINI_MODEL": provider.gemini_model
+        }
+    });
+
+    Ok(ConfigPreview {
+        codex_toml,
+        claude_env_json: serde_json::to_string_pretty(&claude_env_json)
+            .map_err(|err| err.to_string())?,
+        gemini_env_json: serde_json::to_string_pretty(&gemini_env_json)
+            .map_err(|err| err.to_string())?,
+    })
+}
+
+fn grok_provider_toml(provider: &ProviderProfile) -> Result<String, String> {
+    let mut root = toml::Table::new();
+    let mut models = toml::Table::new();
+    models.insert(
+        "default".to_string(),
+        toml::Value::String("agentdock".to_string()),
+    );
+    root.insert("models".to_string(), toml::Value::Table(models));
+
+    let mut definition = toml::Table::new();
+    definition.insert(
+        "model".to_string(),
+        toml::Value::String(provider.codex_model.clone()),
+    );
+    definition.insert(
+        "base_url".to_string(),
+        toml::Value::String(provider.base_url.clone()),
+    );
+    definition.insert(
+        "name".to_string(),
+        toml::Value::String(provider.name.clone()),
+    );
+    definition.insert(
+        "env_key".to_string(),
+        toml::Value::String("XAI_API_KEY".to_string()),
+    );
+    let backend = match provider.api_format.as_str() {
+        "responses" => "responses",
+        "anthropic" => "messages",
+        _ => "chat_completions",
+    };
+    definition.insert(
+        "api_backend".to_string(),
+        toml::Value::String(backend.to_string()),
+    );
+    let mut model = toml::Table::new();
+    model.insert("agentdock".to_string(), toml::Value::Table(definition));
+    root.insert("model".to_string(), toml::Value::Table(model));
+    toml::to_string_pretty(&root).map_err(|err| format!("生成 Grok config.toml 失败: {}", err))
+}
+
+fn preserve_toml_section(path: &Path, content: &str, section: &str) -> Result<String, String> {
+    let mut updated: toml::Table = content
+        .parse()
+        .map_err(|err| format!("config.toml 格式错误: {}", err))?;
+    if path.exists() {
+        let existing: toml::Table = fs::read_to_string(path)
+            .map_err(|err| format!("读取现有 config.toml 失败: {}", err))?
+            .parse()
+            .map_err(|err| format!("现有 config.toml 格式错误: {}", err))?;
+        if let Some(value) = existing.get(section) {
+            updated.insert(section.to_string(), value.clone());
+        }
+    }
+    toml::to_string_pretty(&updated).map_err(|err| format!("生成 config.toml 失败: {}", err))
+}
+
+#[tauri::command]
+async fn install_client(client_id: String) -> Result<InstallClientResult, String> {
+    let dirs = agentdock_dirs()?;
+    ensure_dirs(&dirs)?;
+    let now = now_rfc3339();
+    let spec = client_spec(&client_id)?;
+    if spec.id == "hermes" {
+        return install_hermes_client(&dirs).await;
+    }
+    let install_dir = dirs.clients_dir.join(&spec.id);
+    let staging_dir = dirs.clients_dir.join(format!("{}.installing", spec.id));
+    if staging_dir.exists() {
+        fs::remove_dir_all(&staging_dir).map_err(|err| format!("清理临时安装目录失败: {}", err))?;
+    }
+    fs::create_dir_all(&staging_dir).map_err(|err| format!("创建客户端目录失败: {}", err))?;
+
+    let (staged_executable, version, payload_message) =
+        if let Some(payload_dir) = bundled_client_payload_dir(spec.id) {
+            copy_dir_all(&payload_dir, &staging_dir)?;
+            let executable = find_client_executable(&staging_dir, spec.id)?;
+            (
+                executable,
+                "bundled".to_string(),
+                format!("内置安装包 {}", payload_dir.display()),
+            )
+        } else {
+            download_client_release(spec.id, &staging_dir).await?
+        };
+
+    make_executable(&staged_executable)?;
+    let relative_executable = staged_executable
+        .strip_prefix(&staging_dir)
+        .map_err(|_| "安装程序返回了无效的启动路径".to_string())?
+        .to_path_buf();
+    fs::write(staging_dir.join("INSTALL_SOURCE.txt"), &payload_message)
+        .map_err(|err| format!("写入安装来源失败: {}", err))?;
+
+    if install_dir.exists() {
+        fs::remove_dir_all(&install_dir).map_err(|err| format!("替换旧客户端失败: {}", err))?;
+    }
+    fs::rename(&staging_dir, &install_dir).map_err(|err| format!("完成客户端安装失败: {}", err))?;
+    let launcher_path = install_dir.join(relative_executable);
+    let config_dir = dirs.managed_configs_dir.join(spec.id);
+    fs::create_dir_all(&config_dir).map_err(|err| format!("创建客户端配置目录失败: {}", err))?;
+
+    let detected_version = command_version(&launcher_path.display().to_string())
+        .ok()
+        .filter(|value| !value.is_empty())
+        .unwrap_or(version);
+
+    let record = ManagedClientRecord {
+        id: spec.id.to_string(),
+        name: spec.name.to_string(),
+        installed: true,
+        version: detected_version,
+        install_dir: install_dir.display().to_string(),
+        launcher_path: launcher_path.display().to_string(),
+        config_dir: config_dir.display().to_string(),
+        installed_at: now.clone(),
+        updated_at: now,
+    };
+
+    let mut clients = list_managed_clients()?;
+    clients.retain(|client| client.id != record.id);
+    clients.push(record.clone());
+    write_json(&managed_clients_path(&dirs), &clients)?;
+
+    Ok(InstallClientResult {
+        client: record,
+        message: format!(
+            "{} 已安装并通过启动文件校验。{}",
+            spec.name, payload_message
+        ),
+    })
+}
+
+#[tauri::command]
+fn list_managed_clients() -> Result<Vec<ManagedClientRecord>, String> {
+    let dirs = agentdock_dirs()?;
+    ensure_dirs(&dirs)?;
+    read_json_or_seed(
+        &managed_clients_path(&dirs),
+        Vec::<ManagedClientRecord>::new(),
+    )
+}
+
+#[tauri::command]
+fn uninstall_client(client_id: String) -> Result<OperationResult, String> {
+    let dirs = agentdock_dirs()?;
+    ensure_dirs(&dirs)?;
+    let mut clients = list_managed_clients()?;
+    let managed = clients
+        .iter()
+        .find(|client| client.id == client_id)
+        .cloned()
+        .ok_or_else(|| "这个客户端不是由 AgentDock 安装的，不能自动卸载".to_string())?;
+
+    let install_dir = PathBuf::from(&managed.install_dir);
+    if install_dir.starts_with(&dirs.clients_dir) && install_dir.exists() {
+        fs::remove_dir_all(&install_dir).map_err(|err| format!("卸载客户端失败: {}", err))?;
+    }
+    clients.retain(|client| client.id != client_id);
+    write_json(&managed_clients_path(&dirs), &clients)?;
+
+    Ok(OperationResult {
+        ok: true,
+        message: format!("{} 已从 AgentDock 托管目录移除", managed.name),
+    })
+}
+
+#[tauri::command]
+async fn test_provider(provider_id: String) -> Result<ProviderTestResult, String> {
+    let start = Instant::now();
+    let dirs = agentdock_dirs()?;
+    ensure_dirs(&dirs)?;
+    let provider = list_providers()?
+        .into_iter()
+        .find(|provider| provider.id == provider_id)
+        .ok_or_else(|| "未找到供应商".to_string())?;
+    if provider.provider_type == "official" {
+        return Ok(ProviderTestResult {
+            ok: true,
+            latency_ms: start.elapsed().as_millis(),
+            message: "官方供应商使用客户端登录，无需测试 API Key".to_string(),
+        });
+    }
+    let base_url = normalize_base_url(&provider.base_url);
+    if !(base_url.starts_with("https://") || base_url.starts_with("http://")) {
+        return Ok(ProviderTestResult {
+            ok: false,
+            latency_ms: start.elapsed().as_millis(),
+            message: "Base URL 必须以 http:// 或 https:// 开头".to_string(),
+        });
+    }
+
+    if base_url.contains("agentdock.example") {
+        return Ok(ProviderTestResult {
+            ok: false,
+            latency_ms: start.elapsed().as_millis(),
+            message: "当前是示例地址，请填入真实供应商地址".to_string(),
+        });
+    }
+
+    let secrets = read_provider_secrets(&dirs)?;
+    let api_key = secrets.get(&provider.id).cloned().unwrap_or_default();
+    if api_key.is_empty() && !is_local_url(&base_url) {
+        return Ok(ProviderTestResult {
+            ok: false,
+            latency_ms: start.elapsed().as_millis(),
+            message: "请先填写 API Key".to_string(),
+        });
+    }
+
+    let endpoint = format!("{}/models", ensure_v1_url(&base_url));
+    let client = reqwest::Client::builder()
+        .timeout(std::time::Duration::from_secs(12))
+        .build()
+        .map_err(|err| format!("创建网络请求失败: {}", err))?;
+    let mut request = client
+        .get(&endpoint)
+        .header("accept", "application/json")
+        .header("anthropic-version", "2023-06-01");
+    if !api_key.is_empty() {
+        request = request.bearer_auth(&api_key).header("x-api-key", &api_key);
+    }
+
+    let response = match request.send().await {
+        Ok(response) => response,
+        Err(error) => {
+            return Ok(ProviderTestResult {
+                ok: false,
+                latency_ms: start.elapsed().as_millis(),
+                message: provider_request_error(&error),
+            });
+        }
+    };
+    let status = response.status();
+    if status.is_success() {
+        return Ok(ProviderTestResult {
+            ok: true,
+            latency_ms: start.elapsed().as_millis().max(1),
+            message: format!("{} 连接成功，模型接口返回 {}", provider.name, status),
+        });
+    }
+
+    let response_text = response.text().await.unwrap_or_default();
+    let detail = response_text.chars().take(180).collect::<String>();
+
+    Ok(ProviderTestResult {
+        ok: false,
+        latency_ms: start.elapsed().as_millis().max(1),
+        message: if detail.is_empty() {
+            format!("连接返回 {}，请检查地址、协议和密钥", status)
+        } else {
+            format!("连接返回 {}: {}", status, detail)
+        },
+    })
+}
+
+fn provider_request_error(error: &reqwest::Error) -> String {
+    if error.is_timeout() {
+        "连接超时，请检查网络或供应商状态".to_string()
+    } else if error.is_connect() {
+        "无法连接供应商，请检查请求地址和网络".to_string()
+    } else if error.is_request() {
+        "供应商请求无法发送，请检查请求地址".to_string()
+    } else {
+        "供应商连接失败".to_string()
+    }
+}
+
+#[tauri::command]
+fn apply_active_provider_configs() -> Result<ApplyProviderResult, String> {
+    let providers = list_providers()?;
+    let mut written_files = Vec::new();
+    let mut backup_dirs = Vec::new();
+    let mut provider_ids = Vec::new();
+
+    for app in supported_provider_apps() {
+        if let Some(provider) = providers.iter().find(|provider| {
+            provider
+                .active_apps
+                .iter()
+                .any(|active_app| active_app == app)
+        }) {
+            let result = apply_provider_for_app(provider, app)?;
+            written_files.extend(result.written_files);
+            backup_dirs.push(result.backup_dir);
+            provider_ids.push(provider.id.clone());
+        }
+    }
+
+    if provider_ids.is_empty() {
+        return Err("还没有为任何客户端选择供应商".to_string());
+    }
+
+    Ok(ApplyProviderResult {
+        provider_id: provider_ids.join(","),
+        backup_dir: backup_dirs.join(","),
+        written_files,
+    })
+}
+
+#[tauri::command]
+fn apply_provider_config(
+    provider_id: String,
+    app_id: String,
+) -> Result<ApplyProviderResult, String> {
+    let provider = list_providers()?
+        .into_iter()
+        .find(|provider| provider.id == provider_id)
+        .ok_or_else(|| "未找到供应商".to_string())?;
+    if !provider.enabled_apps.iter().any(|app| app == &app_id) {
+        return Err("这个供应商没有启用当前客户端".to_string());
+    }
+    apply_provider_for_app(&provider, &app_id)
+}
+
+fn apply_provider_for_app(
+    provider: &ProviderProfile,
+    app_id: &str,
+) -> Result<ApplyProviderResult, String> {
+    let dirs = agentdock_dirs()?;
+    ensure_dirs(&dirs)?;
+    if !supported_provider_apps().contains(&app_id) {
+        return Err("不支持的客户端".to_string());
+    }
+    if provider.provider_type == "official" {
+        return Ok(ApplyProviderResult {
+            provider_id: provider.id.clone(),
+            backup_dir: String::new(),
+            written_files: Vec::new(),
+        });
+    }
+    let secrets = read_provider_secrets(&dirs)?;
+    let api_key = secrets.get(&provider.id).cloned().unwrap_or_default();
+    if api_key.is_empty() && !is_local_url(&provider.base_url) {
+        return Err("当前供应商没有 API Key，请先补充密钥".to_string());
+    }
+    let preview = preview_provider_config(provider.clone())?;
+    let custom_settings = materialized_provider_settings(provider, &api_key)?;
+    let backup_dir = dirs.backups_dir.join(format!(
+        "provider-{}-{}-{}",
+        provider.id,
+        app_id,
+        OffsetDateTime::now_utc().unix_timestamp()
+    ));
+    fs::create_dir_all(&backup_dir).map_err(|err| format!("创建备份目录失败: {}", err))?;
+
+    let (relative_path, content, env_content) = match app_id {
+        "codex" => (
+            "codex/config.toml".to_string(),
+            custom_settings
+                .as_ref()
+                .and_then(|settings| settings.get("config"))
+                .and_then(serde_json::Value::as_str)
+                .map(str::to_string)
+                .unwrap_or(preview.codex_toml),
+            Some(format!(
+                "OPENAI_API_KEY={}\nOPENAI_BASE_URL={}\n",
+                api_key,
+                ensure_v1_url(&provider.base_url)
+            )),
+        ),
+        "claude-code" | "claude-desktop" => (
+            format!("{}/settings.json", app_id),
+            match custom_settings.as_ref() {
+                Some(settings) => serde_json::to_string_pretty(settings)
+                    .map_err(|err| format!("生成 Claude 配置失败: {}", err))?,
+                None => preview
+                    .claude_env_json
+                    .replace("${AGENTDOCK_API_KEY}", &api_key),
+            },
+            Some(format!(
+                "ANTHROPIC_AUTH_TOKEN={}\nANTHROPIC_BASE_URL={}\nANTHROPIC_MODEL={}\n",
+                api_key, provider.base_url, provider.claude_sonnet_model
+            )),
+        ),
+        "antigravity" => (
+            "antigravity/settings.json".to_string(),
+            match custom_settings.as_ref() {
+                Some(settings) => serde_json::to_string_pretty(settings)
+                    .map_err(|err| format!("生成 Antigravity 配置失败: {}", err))?,
+                None => preview
+                    .gemini_env_json
+                    .replace("${AGENTDOCK_API_KEY}", &api_key),
+            },
+            Some(format!(
+                "GEMINI_API_KEY={}\nGOOGLE_GEMINI_BASE_URL={}\n",
+                api_key, provider.base_url
+            )),
+        ),
+        "grok" => (
+            "grok/config.toml".to_string(),
+            custom_settings
+                .as_ref()
+                .and_then(|settings| settings.get("config"))
+                .and_then(serde_json::Value::as_str)
+                .map(str::to_string)
+                .unwrap_or(grok_provider_toml(provider)?),
+            Some(format!(
+                "XAI_API_KEY={}\nGROK_DEFAULT_MODEL=agentdock\n",
+                api_key
+            )),
+        ),
+        "opencode" | "openclaw" | "hermes" => (
+            format!("{}/provider.json", app_id),
+            match custom_settings.as_ref() {
+                Some(settings) => serde_json::to_string_pretty(settings)
+                    .map_err(|err| format!("生成客户端配置失败: {}", err))?,
+                None => serde_json::to_string_pretty(&serde_json::json!({
+                    "provider": provider.name,
+                    "baseUrl": provider.base_url,
+                    "apiKey": api_key,
+                    "model": provider.codex_model,
+                    "apiFormat": provider.api_format,
+                }))
+                .map_err(|err| err.to_string())?,
+            },
+            None,
+        ),
+        _ => return Err("不支持的客户端".to_string()),
+    };
+
+    let target = dirs.managed_configs_dir.join(&relative_path);
+    let content = if app_id == "grok" {
+        preserve_toml_section(&target, &content, "mcp_servers")?
+    } else {
+        content
+    };
+    if let Some(parent) = target.parent() {
+        fs::create_dir_all(parent).map_err(|err| format!("创建配置目录失败: {}", err))?;
+    }
+    if target.exists() {
+        let backup = backup_dir.join(relative_path.replace('/', "__"));
+        fs::copy(&target, backup).map_err(|err| format!("备份旧配置失败: {}", err))?;
+    }
+    fs::write(&target, content).map_err(|err| format!("写入配置失败: {}", err))?;
+    protect_secret_file(&target)?;
+    let mut written_files = vec![target.display().to_string()];
+
+    if let Some(env_content) = env_content {
+        let env_target = dirs.managed_configs_dir.join(app_id).join("provider.env");
+        fs::write(&env_target, env_content)
+            .map_err(|err| format!("写入客户端密钥环境失败: {}", err))?;
+        protect_secret_file(&env_target)?;
+        written_files.push(env_target.display().to_string());
+    }
+
+    if app_id == "grok" {
+        let sync = sync_mcp_servers()?;
+        for path in sync.written_files {
+            if !written_files.contains(&path) {
+                written_files.push(path);
+            }
+        }
+    }
+
+    Ok(ApplyProviderResult {
+        provider_id: provider.id.clone(),
+        backup_dir: backup_dir.display().to_string(),
+        written_files,
+    })
+}
+
+#[tauri::command]
+async fn run_diagnostics() -> Result<DiagnosticsReport, String> {
+    let dirs = agentdock_dirs()?;
+    ensure_dirs(&dirs)?;
+    let desktop = get_desktop_status()?;
+    let mut checks = vec![diagnostic_check(
+        "system-platform",
+        "系统",
+        "pass",
+        "桌面运行环境",
+        &format!(
+            "AgentDock {} · {} {}",
+            desktop.app_version,
+            desktop.platform,
+            env::consts::ARCH
+        ),
+        "",
+    )];
+
+    for (id, title, path) in [
+        ("system-data-dir", "数据目录可写", &dirs.data_dir),
+        ("system-config-dir", "配置目录可写", &dirs.config_dir),
+        ("system-runtime-dir", "运行目录可写", &dirs.runtime_dir),
+    ] {
+        match probe_directory_writable(path) {
+            Ok(()) => checks.push(diagnostic_check(
+                id,
+                "系统",
+                "pass",
+                title,
+                &path.display().to_string(),
+                "",
+            )),
+            Err(error) => checks.push(diagnostic_check(
+                id,
+                "系统",
+                "error",
+                title,
+                &error,
+                "检查目录权限或磁盘剩余空间",
+            )),
+        }
+    }
+
+    let catalog = match list_software_catalog().await {
+        Ok(catalog) => catalog,
+        Err(error) => {
+            checks.push(diagnostic_check(
+                "clients-version-service",
+                "客户端",
+                "warning",
+                "无法检查客户端最新版本",
+                &error,
+                "检查网络后重新诊断",
+            ));
+            Vec::new()
+        }
+    };
+    for client in &desktop.clients {
+        let catalog_item = catalog.iter().find(|item| item.client_id == client.id);
+        if client.installed {
+            let detail = format!(
+                "{} · {} · {}",
+                client.version.as_deref().unwrap_or("版本未知"),
+                if client.managed_by_agentdock {
+                    "AgentDock 托管"
+                } else {
+                    "系统安装"
+                },
+                client.executable.as_deref().unwrap_or("启动路径未知")
+            );
+            checks.push(diagnostic_check(
+                &format!("client-{}", client.id),
+                "客户端",
+                "pass",
+                &format!("{} 可正常启动", client.name),
+                &detail,
+                "",
+            ));
+            if let Some(item) = catalog_item.filter(|item| item.update_available) {
+                checks.push(diagnostic_check(
+                    &format!("client-{}-update", client.id),
+                    "客户端",
+                    "warning",
+                    &format!("{} 有新版本", client.name),
+                    &format!(
+                        "当前 {}，最新 {}",
+                        item.current_version.as_deref().unwrap_or("未知"),
+                        item.latest_version.as_deref().unwrap_or("最新版")
+                    ),
+                    "前往客户端页面点击更新",
+                ));
+            }
+            match client.config_path.as_deref() {
+                Some(path) if Path::new(path).exists() => checks.push(diagnostic_check(
+                    &format!("client-{}-config", client.id),
+                    "客户端",
+                    "pass",
+                    &format!("{} 配置位置可用", client.name),
+                    path,
+                    "",
+                )),
+                _ => checks.push(diagnostic_check(
+                    &format!("client-{}-config", client.id),
+                    "客户端",
+                    "warning",
+                    &format!("{} 尚未生成配置", client.name),
+                    "客户端已安装，但还没有可读取的配置位置",
+                    "添加并启用一个供应商后会自动生成",
+                )),
+            }
+        } else if catalog_item.map(|item| item.recommended).unwrap_or(false) {
+            checks.push(diagnostic_check(
+                &format!("client-{}", client.id),
+                "客户端",
+                "warning",
+                &format!("{} 尚未安装", client.name),
+                "这是推荐客户端，可由 AgentDock 自动安装",
+                "前往客户端页面点击一键安装",
+            ));
+        }
+    }
+
+    let providers = list_providers()?;
+    if providers.is_empty() {
+        checks.push(diagnostic_check(
+            "providers-empty",
+            "供应商",
+            "error",
+            "还没有可用供应商",
+            "客户端无法在没有登录或 API Key 的情况下调用模型",
+            "在已安装客户端中添加供应商",
+        ));
+    } else {
+        let tests = join_all(providers.iter().cloned().map(|provider| async move {
+            let result = test_provider(provider.id.clone()).await;
+            (provider, result)
+        }))
+        .await;
+        for (provider, result) in tests {
+            let apps = if provider.enabled_apps.is_empty() {
+                "未关联客户端".to_string()
+            } else {
+                provider.enabled_apps.join("、")
+            };
+            match result {
+                Ok(result) if result.ok => checks.push(diagnostic_check(
+                    &format!("provider-{}", provider.id),
+                    "供应商",
+                    "pass",
+                    &format!("{} 连接正常", provider.name),
+                    &format!("{} · {} ms · {}", apps, result.latency_ms, result.message),
+                    "",
+                )),
+                Ok(result) => checks.push(diagnostic_check(
+                    &format!("provider-{}", provider.id),
+                    "供应商",
+                    "error",
+                    &format!("{} 无法使用", provider.name),
+                    &result.message,
+                    "编辑供应商的请求地址或 API Key 后重试",
+                )),
+                Err(error) => checks.push(diagnostic_check(
+                    &format!("provider-{}", provider.id),
+                    "供应商",
+                    "error",
+                    &format!("{} 检查失败", provider.name),
+                    &error,
+                    "检查供应商配置后重试",
+                )),
+            }
+        }
+    }
+
+    for client in desktop.clients.iter().filter(|client| client.installed) {
+        if !providers
+            .iter()
+            .any(|provider| provider.active_apps.iter().any(|app| app == &client.id))
+        {
+            checks.push(diagnostic_check(
+                &format!("provider-active-{}", client.id),
+                "供应商",
+                "warning",
+                &format!("{} 没有当前供应商", client.name),
+                "启动时将使用客户端自身的登录状态或默认配置",
+                "在客户端页面选择一个供应商",
+            ));
+        }
+    }
+
+    let mcp_servers = list_mcp_servers()?;
+    if mcp_servers.is_empty() {
+        checks.push(diagnostic_check(
+            "mcp-empty",
+            "MCP",
+            "pass",
+            "MCP 配置可用",
+            "尚未添加 MCP 服务器；这不会影响客户端基础功能",
+            "",
+        ));
+    }
+    for server in mcp_servers.iter().filter(|server| server.enabled) {
+        let validation = if server.apps.is_empty() {
+            Err("没有关联任何客户端".to_string())
+        } else if server.transport == "stdio" && server.command.trim().is_empty() {
+            Err("缺少启动命令".to_string())
+        } else if matches!(server.transport.as_str(), "http" | "sse") {
+            validate_mcp_url(&server.command)
+        } else if server.transport != "stdio" {
+            Err(format!("不支持的传输类型 {}", server.transport))
+        } else {
+            Ok(())
+        };
+        match validation {
+            Ok(()) => checks.push(diagnostic_check(
+                &format!("mcp-{}", server.id),
+                "MCP",
+                "pass",
+                &format!("{} 配置有效", server.name),
+                &format!(
+                    "{} · 已启用到 {} 个客户端",
+                    server.transport.to_uppercase(),
+                    server.apps.len()
+                ),
+                "",
+            )),
+            Err(error) => checks.push(diagnostic_check(
+                &format!("mcp-{}", server.id),
+                "MCP",
+                "error",
+                &format!("{} 配置无效", server.name),
+                &error,
+                "打开 MCP 页面修正配置",
+            )),
+        }
+    }
+
+    match get_usage_stats(Some(7)) {
+        Ok(stats) if stats.errors.is_empty() => checks.push(diagnostic_check(
+            "usage-data",
+            "统计",
+            "pass",
+            "本地统计数据可读取",
+            &if stats.sources.is_empty() {
+                "尚未发现客户端会话记录".to_string()
+            } else {
+                format!("已识别：{}", stats.sources.join("、"))
+            },
+            "",
+        )),
+        Ok(stats) => checks.push(diagnostic_check(
+            "usage-data",
+            "统计",
+            "warning",
+            "部分统计数据无法读取",
+            &stats.errors.join("；"),
+            "检查对应会话目录的读取权限",
+        )),
+        Err(error) => checks.push(diagnostic_check(
+            "usage-data",
+            "统计",
+            "warning",
+            "统计检查失败",
+            &error,
+            "重新检测或查看诊断包",
+        )),
+    }
+
+    Ok(finalize_diagnostics(checks))
+}
+
+fn diagnostic_check(
+    id: &str,
+    category: &str,
+    status: &str,
+    title: &str,
+    detail: &str,
+    action: &str,
+) -> DiagnosticCheck {
+    DiagnosticCheck {
+        id: id.to_string(),
+        category: category.to_string(),
+        status: status.to_string(),
+        title: title.to_string(),
+        detail: detail.to_string(),
+        action: action.to_string(),
+    }
+}
+
+fn finalize_diagnostics(checks: Vec<DiagnosticCheck>) -> DiagnosticsReport {
+    let passed = checks.iter().filter(|check| check.status == "pass").count();
+    let warnings = checks
+        .iter()
+        .filter(|check| check.status == "warning")
+        .count();
+    let failed = checks
+        .iter()
+        .filter(|check| check.status == "error")
+        .count();
+    let penalty = failed.saturating_mul(18) + warnings.saturating_mul(5);
+    DiagnosticsReport {
+        generated_at: now_rfc3339(),
+        score: 100usize.saturating_sub(penalty).min(100) as u8,
+        passed,
+        warnings,
+        failed,
+        checks,
+    }
+}
+
+fn probe_directory_writable(path: &Path) -> Result<(), String> {
+    fs::create_dir_all(path).map_err(|err| format!("无法创建 {}: {}", path.display(), err))?;
+    let probe = path.join(format!(
+        ".agentdock-diagnostic-{}-{}",
+        std::process::id(),
+        OffsetDateTime::now_utc().unix_timestamp_nanos()
+    ));
+    fs::write(&probe, b"ok").map_err(|err| format!("无法写入 {}: {}", path.display(), err))?;
+    fs::remove_file(&probe).map_err(|err| format!("无法清理诊断文件: {}", err))
+}
+
+#[tauri::command]
+async fn export_diagnostics() -> Result<DiagnosticsResult, String> {
+    let dirs = agentdock_dirs()?;
+    ensure_dirs(&dirs)?;
+    let path = dirs.data_dir.join(format!(
+        "diagnostics-{}.json",
+        OffsetDateTime::now_utc().unix_timestamp()
+    ));
+    let providers = list_providers()?;
+    let provider_summaries = providers
+        .iter()
+        .map(|provider| {
+            serde_json::json!({
+                "id": provider.id,
+                "name": provider.name,
+                "providerType": provider.provider_type,
+                "baseUrl": sanitize_url_for_diagnostics(&provider.base_url),
+                "apiFormat": provider.api_format,
+                "enabledApps": provider.enabled_apps,
+                "activeApps": provider.active_apps,
+                "apiKeyConfigured": provider.api_key_configured,
+                "updatedAt": provider.updated_at,
+            })
+        })
+        .collect::<Vec<_>>();
+    let mcp_summaries = list_mcp_servers()?
+        .iter()
+        .map(|server| {
+            serde_json::json!({
+                "id": server.id,
+                "name": server.name,
+                "transport": server.transport,
+                "targetConfigured": !server.command.trim().is_empty(),
+                "argsCount": server.args.len(),
+                "envKeys": server.env.keys().collect::<Vec<_>>(),
+                "headerKeys": server.headers.keys().collect::<Vec<_>>(),
+                "apps": server.apps,
+                "enabled": server.enabled,
+                "updatedAt": server.updated_at,
+            })
+        })
+        .collect::<Vec<_>>();
+    let skill_summaries = list_skills()?
+        .iter()
+        .map(|skill| {
+            serde_json::json!({
+                "id": skill.id,
+                "name": skill.name,
+                "installed": skill.installed,
+                "apps": skill.apps,
+                "updatedAt": skill.updated_at,
+            })
+        })
+        .collect::<Vec<_>>();
+    let payload = serde_json::json!({
+        "exportedAt": now_rfc3339(),
+        "diagnostics": run_diagnostics().await?,
+        "desktopStatus": get_desktop_status()?,
+        "ready": run_ready_check()?,
+        "providers": provider_summaries,
+        "managedClients": list_managed_clients()?,
+        "skills": skill_summaries,
+        "mcpServers": mcp_summaries
+    });
+    write_json(&path, &payload)?;
+    Ok(DiagnosticsResult {
+        path: path.display().to_string(),
+    })
+}
+
+#[tauri::command]
+fn launch_client(client_id: String) -> Result<LaunchClientResult, String> {
+    let dirs = agentdock_dirs()?;
+    ensure_dirs(&dirs)?;
+    let clients = detect_clients();
+    let client = clients
+        .iter()
+        .find(|client| client.id == client_id)
+        .ok_or_else(|| "未找到客户端".to_string())?;
+    let executable = client
+        .executable
+        .as_ref()
+        .ok_or_else(|| "客户端还未安装".to_string())?;
+
+    let active_provider = list_providers()?.into_iter().find(|provider| {
+        provider
+            .active_apps
+            .iter()
+            .any(|active_app| active_app == &client_id)
+    });
+    let environment = match active_provider.as_ref() {
+        Some(provider) => provider_launch_environment(&dirs, &client_id, provider)?,
+        None => BTreeMap::new(),
+    };
+
+    launch_in_terminal(&dirs, &client_id, executable, &environment)?;
+
+    Ok(LaunchClientResult {
+        launched: true,
+        message: match active_provider {
+            Some(provider) => format!("已使用 {} 启动 {}", provider.name, client.name),
+            None => format!("已启动 {}", client.name),
+        },
+    })
+}
+
+fn provider_launch_environment(
+    dirs: &AgentDockDirs,
+    app_id: &str,
+    provider: &ProviderProfile,
+) -> Result<BTreeMap<String, String>, String> {
+    let mut environment = BTreeMap::new();
+    if provider.provider_type == "official" {
+        return Ok(environment);
+    }
+
+    let api_key = read_provider_secrets(dirs)?
+        .get(&provider.id)
+        .cloned()
+        .unwrap_or_default();
+    if api_key.is_empty() && !is_local_url(&provider.base_url) {
+        return Err("当前供应商没有 API Key，请先补充密钥".to_string());
+    }
+
+    if let Some(settings) = materialized_provider_settings(provider, &api_key)? {
+        let section = if app_id == "codex" { "auth" } else { "env" };
+        if let Some(values) = settings.get(section).and_then(serde_json::Value::as_object) {
+            for (key, value) in values {
+                if let Some(value) = value.as_str() {
+                    environment.insert(key.clone(), value.to_string());
+                }
+            }
+        }
+    }
+
+    match app_id {
+        "codex" => {
+            environment
+                .entry("OPENAI_API_KEY".to_string())
+                .or_insert(api_key);
+            environment.insert(
+                "CODEX_HOME".to_string(),
+                dirs.managed_configs_dir.join("codex").display().to_string(),
+            );
+        }
+        "claude-code" | "claude-desktop" => {
+            environment
+                .entry("ANTHROPIC_AUTH_TOKEN".to_string())
+                .or_insert(api_key);
+            environment
+                .entry("ANTHROPIC_BASE_URL".to_string())
+                .or_insert_with(|| provider.base_url.clone());
+            environment
+                .entry("ANTHROPIC_MODEL".to_string())
+                .or_insert_with(|| provider.claude_sonnet_model.clone());
+            environment
+                .entry("ANTHROPIC_DEFAULT_SONNET_MODEL".to_string())
+                .or_insert_with(|| provider.claude_sonnet_model.clone());
+            environment
+                .entry("ANTHROPIC_DEFAULT_HAIKU_MODEL".to_string())
+                .or_insert_with(|| provider.claude_haiku_model.clone());
+            environment
+                .entry("ANTHROPIC_DEFAULT_OPUS_MODEL".to_string())
+                .or_insert_with(|| provider.claude_opus_model.clone());
+            if app_id == "claude-code" {
+                environment.insert(
+                    "CLAUDE_CONFIG_DIR".to_string(),
+                    dirs.managed_configs_dir
+                        .join("claude-code")
+                        .display()
+                        .to_string(),
+                );
+            }
+        }
+        "antigravity" => {
+            environment
+                .entry("GEMINI_API_KEY".to_string())
+                .or_insert(api_key);
+            environment
+                .entry("GOOGLE_GEMINI_BASE_URL".to_string())
+                .or_insert_with(|| provider.base_url.clone());
+            environment
+                .entry("GEMINI_MODEL".to_string())
+                .or_insert_with(|| provider.gemini_model.clone());
+            environment.insert(
+                "AGY_HOME".to_string(),
+                dirs.managed_configs_dir
+                    .join("antigravity")
+                    .display()
+                    .to_string(),
+            );
+        }
+        "grok" => {
+            environment
+                .entry("XAI_API_KEY".to_string())
+                .or_insert(api_key);
+            environment
+                .entry("GROK_DEFAULT_MODEL".to_string())
+                .or_insert_with(|| "agentdock".to_string());
+            environment.insert(
+                "GROK_HOME".to_string(),
+                dirs.managed_configs_dir.join("grok").display().to_string(),
+            );
+        }
+        "opencode" => {
+            environment.insert("OPENAI_API_KEY".to_string(), api_key);
+            environment.insert("OPENAI_BASE_URL".to_string(), provider.base_url.clone());
+            environment.insert(
+                "OPENCODE_CONFIG".to_string(),
+                dirs.managed_configs_dir
+                    .join("opencode/provider.json")
+                    .display()
+                    .to_string(),
+            );
+        }
+        "openclaw" => {
+            environment.insert("OPENAI_API_KEY".to_string(), api_key);
+            environment.insert("OPENAI_BASE_URL".to_string(), provider.base_url.clone());
+            environment.insert(
+                "OPENCLAW_CONFIG_PATH".to_string(),
+                dirs.managed_configs_dir
+                    .join("openclaw/provider.json")
+                    .display()
+                    .to_string(),
+            );
+            environment.insert(
+                "OPENCLAW_STATE_DIR".to_string(),
+                dirs.managed_configs_dir
+                    .join("openclaw/state")
+                    .display()
+                    .to_string(),
+            );
+        }
+        "hermes" => {
+            environment.insert("OPENAI_API_KEY".to_string(), api_key);
+            environment.insert("OPENAI_BASE_URL".to_string(), provider.base_url.clone());
+            environment.insert(
+                "HERMES_CONFIG_PATH".to_string(),
+                dirs.managed_configs_dir
+                    .join("hermes/provider.json")
+                    .display()
+                    .to_string(),
+            );
+            environment.insert(
+                "HERMES_HOME".to_string(),
+                dirs.clients_dir.join("hermes/home").display().to_string(),
+            );
+        }
+        _ => return Err("不支持的客户端".to_string()),
+    }
+
+    Ok(environment)
+}
+
+fn launch_in_terminal(
+    dirs: &AgentDockDirs,
+    client_id: &str,
+    executable: &str,
+    environment: &BTreeMap<String, String>,
+) -> Result<(), String> {
+    #[cfg(target_os = "macos")]
+    {
+        let launcher = write_unix_launcher(dirs, client_id, executable, environment)?;
+        Command::new("open")
+            .args(["-a", "Terminal"])
+            .arg(launcher)
+            .spawn()
+            .map_err(|err| format!("打开终端失败: {}", err))?;
+        return Ok(());
+    }
+
+    #[cfg(windows)]
+    {
+        use std::os::windows::process::CommandExt;
+        let launcher = write_powershell_launcher(dirs, client_id, executable, environment)?;
+        Command::new("powershell.exe")
+            .creation_flags(0x00000010)
+            .args([
+                "-NoExit",
+                "-NoProfile",
+                "-ExecutionPolicy",
+                "Bypass",
+                "-File",
+            ])
+            .arg(launcher)
+            .spawn()
+            .map_err(|err| format!("打开终端失败: {}", err))?;
+        return Ok(());
+    }
+
+    #[cfg(all(unix, not(target_os = "macos")))]
+    {
+        let launcher = write_unix_launcher(dirs, client_id, executable, environment)?;
+        let terminals: [(&str, &[&str]); 3] = [
+            ("x-terminal-emulator", &["-e"]),
+            ("gnome-terminal", &["--"]),
+            ("konsole", &["-e"]),
+        ];
+        for (terminal, args) in terminals {
+            if find_executable(terminal).is_some() {
+                Command::new(terminal)
+                    .args(args)
+                    .arg(&launcher)
+                    .spawn()
+                    .map_err(|err| format!("打开终端失败: {}", err))?;
+                return Ok(());
+            }
+        }
+        Err("没有找到可用的终端程序".to_string())
+    }
+}
+
+#[cfg(unix)]
+fn write_unix_launcher(
+    dirs: &AgentDockDirs,
+    client_id: &str,
+    executable: &str,
+    environment: &BTreeMap<String, String>,
+) -> Result<PathBuf, String> {
+    let path = dirs
+        .runtime_dir
+        .join(format!("launch-{}.command", slugify(client_id)));
+    let mut content = String::from("#!/bin/sh\n");
+    for (key, value) in environment {
+        validate_launch_value(key, value)?;
+        content.push_str(&format!("export {}={}\n", key, shell_quote(value)));
+    }
+    content.push_str(&format!("exec {} \"$@\"\n", shell_quote(executable)));
+    fs::write(&path, content).map_err(|err| format!("写入客户端启动器失败: {}", err))?;
+    make_private_executable(&path)?;
+    Ok(path)
+}
+
+#[cfg(windows)]
+fn write_powershell_launcher(
+    dirs: &AgentDockDirs,
+    client_id: &str,
+    executable: &str,
+    environment: &BTreeMap<String, String>,
+) -> Result<PathBuf, String> {
+    let path = dirs
+        .runtime_dir
+        .join(format!("launch-{}.ps1", slugify(client_id)));
+    let mut content = String::new();
+    for (key, value) in environment {
+        validate_launch_value(key, value)?;
+        content.push_str(&format!("$env:{} = {}\r\n", key, powershell_quote(value)));
+    }
+    content.push_str(&format!("& {}\r\n", powershell_quote(executable)));
+    fs::write(&path, content).map_err(|err| format!("写入客户端启动器失败: {}", err))?;
+    Ok(path)
+}
+
+fn validate_launch_value(key: &str, value: &str) -> Result<(), String> {
+    if key.is_empty()
+        || !key.chars().all(|character| {
+            character.is_ascii_uppercase() || character.is_ascii_digit() || character == '_'
+        })
+        || value.contains('\0')
+    {
+        return Err("供应商启动参数包含无效字符".to_string());
+    }
+    Ok(())
+}
+
+fn shell_quote(value: &str) -> String {
+    format!("'{}'", value.replace('\'', "'\"'\"'"))
+}
+
+#[cfg(windows)]
+fn powershell_quote(value: &str) -> String {
+    format!("'{}'", value.replace('\'', "''"))
+}
+
+#[tauri::command]
+fn open_path(path: String) -> Result<OperationResult, String> {
+    let requested = PathBuf::from(path);
+    let target = existing_directory_for_path(&requested)
+        .ok_or_else(|| "无法找到可打开的配置目录".to_string())?;
+
+    #[cfg(target_os = "macos")]
+    let mut command = {
+        let mut command = Command::new("open");
+        command.arg(&target);
+        command
+    };
+    #[cfg(windows)]
+    let mut command = {
+        let mut command = Command::new("explorer");
+        command.arg(&target);
+        command
+    };
+    #[cfg(all(unix, not(target_os = "macos")))]
+    let mut command = {
+        let mut command = Command::new("xdg-open");
+        command.arg(&target);
+        command
+    };
+
+    command
+        .spawn()
+        .map_err(|err| format!("打开路径失败: {}", err))?;
+    Ok(OperationResult {
+        ok: true,
+        message: if requested == target {
+            format!("已打开 {}", target.display())
+        } else {
+            format!("目标尚未生成，已打开最近的目录 {}", target.display())
+        },
+    })
+}
+
+#[tauri::command]
+fn open_external(url: String) -> Result<OperationResult, String> {
+    let parsed = reqwest::Url::parse(url.trim()).map_err(|_| "链接格式无效".to_string())?;
+    if !matches!(parsed.scheme(), "http" | "https") || parsed.host_str().is_none() {
+        return Err("只允许打开 HTTP 或 HTTPS 链接".to_string());
+    }
+    let target = parsed.as_str();
+
+    #[cfg(target_os = "macos")]
+    let mut command = {
+        let mut command = Command::new("open");
+        command.arg(target);
+        command
+    };
+    #[cfg(windows)]
+    let mut command = {
+        let mut command = Command::new("explorer");
+        command.arg(target);
+        command
+    };
+    #[cfg(all(unix, not(target_os = "macos")))]
+    let mut command = {
+        let mut command = Command::new("xdg-open");
+        command.arg(target);
+        command
+    };
+
+    command
+        .spawn()
+        .map_err(|error| format!("打开链接失败: {}", error))?;
+    Ok(OperationResult {
+        ok: true,
+        message: "已在浏览器中打开链接".to_string(),
+    })
+}
+
+#[tauri::command]
+fn list_skills() -> Result<Vec<SkillRecord>, String> {
+    let dirs = agentdock_dirs()?;
+    ensure_dirs(&dirs)?;
+    let path = skills_path(&dirs);
+    let mut skills: Vec<SkillRecord> = read_json_or_seed(&path, default_skills())?;
+    let mut migrated = false;
+    for skill in &mut skills {
+        migrated |= migrate_app_ids(&mut skill.apps);
+    }
+    if migrated {
+        write_json(&path, &skills)?;
+    }
+    Ok(skills)
+}
+
+#[tauri::command]
+fn install_skill(input: SkillInstallInput) -> Result<SkillRecord, String> {
+    let dirs = agentdock_dirs()?;
+    ensure_dirs(&dirs)?;
+    let mut skills = list_skills()?;
+    let now = now_rfc3339();
+    let id = slugify(&input.id);
+    let skill_dir = dirs.skills_dir.join(&id);
+    fs::create_dir_all(&skill_dir).map_err(|err| format!("创建 Skill 目录失败: {}", err))?;
+    fs::write(
+        skill_dir.join("SKILL.md"),
+        format!(
+            "---\nname: {}\ndescription: {}\n---\n\nManaged by AgentDock.\n",
+            input.name.clone().unwrap_or_else(|| id.clone()),
+            input
+                .description
+                .clone()
+                .unwrap_or_else(|| "AgentDock managed skill".to_string())
+        ),
+    )
+    .map_err(|err| format!("写入 Skill 文件失败: {}", err))?;
+
+    let record = SkillRecord {
+        id: id.clone(),
+        name: input.name.unwrap_or_else(|| id.clone()),
+        description: input
+            .description
+            .unwrap_or_else(|| "AgentDock managed skill".to_string()),
+        source: input.source.unwrap_or_else(|| "local".to_string()),
+        installed: true,
+        apps: input
+            .apps
+            .unwrap_or_else(|| vec!["codex".to_string(), "claude-code".to_string()]),
+        updated_at: now,
+    };
+
+    skills.retain(|skill| skill.id != id);
+    skills.push(record.clone());
+    write_json(&skills_path(&dirs), &skills)?;
+    Ok(record)
+}
+
+#[tauri::command]
+fn toggle_skill_app(skill_id: String, app: String, enabled: bool) -> Result<SkillRecord, String> {
+    let dirs = agentdock_dirs()?;
+    ensure_dirs(&dirs)?;
+    let mut skills = list_skills()?;
+    let skill = skills
+        .iter_mut()
+        .find(|skill| skill.id == skill_id)
+        .ok_or_else(|| "未找到 Skill".to_string())?;
+
+    if enabled && !skill.apps.iter().any(|item| item == &app) {
+        skill.apps.push(app);
+    } else if !enabled {
+        skill.apps.retain(|item| item != &app);
+    }
+    skill.updated_at = now_rfc3339();
+    let updated = skill.clone();
+    write_json(&skills_path(&dirs), &skills)?;
+    Ok(updated)
+}
+
+#[tauri::command]
+fn uninstall_skill(skill_id: String) -> Result<SkillRecord, String> {
+    let dirs = agentdock_dirs()?;
+    ensure_dirs(&dirs)?;
+    let mut skills = list_skills()?;
+    let skill = skills
+        .iter_mut()
+        .find(|skill| skill.id == skill_id)
+        .ok_or_else(|| "未找到 Skill".to_string())?;
+
+    let skill_dir = dirs.skills_dir.join(&skill.id);
+    if skill_dir.exists() {
+        let backup_dir = dirs.backups_dir.join(format!(
+            "skill-{}-{}",
+            skill.id,
+            OffsetDateTime::now_utc().unix_timestamp()
+        ));
+        copy_dir_all(&skill_dir, &backup_dir)?;
+        fs::remove_dir_all(&skill_dir).map_err(|err| format!("卸载 Skill 失败: {}", err))?;
+    }
+    skill.installed = false;
+    skill.updated_at = now_rfc3339();
+    let updated = skill.clone();
+    write_json(&skills_path(&dirs), &skills)?;
+    Ok(updated)
+}
+
+#[tauri::command]
+fn sync_skills() -> Result<SyncResult, String> {
+    let dirs = agentdock_dirs()?;
+    ensure_dirs(&dirs)?;
+    let skills = list_skills()?;
+    let mut written_files = Vec::new();
+
+    for skill in skills.iter().filter(|skill| skill.installed) {
+        let source = dirs.skills_dir.join(&skill.id).join("SKILL.md");
+        if !source.exists() {
+            continue;
+        }
+        for app in &skill.apps {
+            let target = dirs
+                .managed_configs_dir
+                .join(app)
+                .join("skills")
+                .join(&skill.id)
+                .join("SKILL.md");
+            if let Some(parent) = target.parent() {
+                fs::create_dir_all(parent)
+                    .map_err(|err| format!("创建 Skill 同步目录失败: {}", err))?;
+            }
+            fs::copy(&source, &target).map_err(|err| format!("同步 Skill 失败: {}", err))?;
+            written_files.push(target.display().to_string());
+            if app == "grok" {
+                if let Some(home) = dirs_home() {
+                    let user_target = home.join(".grok/skills").join(&skill.id).join("SKILL.md");
+                    if let Some(parent) = user_target.parent() {
+                        fs::create_dir_all(parent)
+                            .map_err(|err| format!("创建 Grok Skill 目录失败: {}", err))?;
+                    }
+                    fs::copy(&source, &user_target)
+                        .map_err(|err| format!("同步 Grok Skill 失败: {}", err))?;
+                    written_files.push(user_target.display().to_string());
+                }
+            }
+        }
+    }
+
+    Ok(SyncResult {
+        message: format!("已同步 {} 个 Skill 配置文件", written_files.len()),
+        written_files,
+    })
+}
+
+#[tauri::command]
+fn list_mcp_servers() -> Result<Vec<McpServerRecord>, String> {
+    let dirs = agentdock_dirs()?;
+    ensure_dirs(&dirs)?;
+    let path = mcp_servers_path(&dirs);
+    let mut servers: Vec<McpServerRecord> = read_json_or_seed(&path, default_mcp_servers())?;
+    let mut migrated = false;
+    for server in &mut servers {
+        migrated |= migrate_app_ids(&mut server.apps);
+    }
+    if migrated {
+        write_json(&path, &servers)?;
+    }
+    Ok(servers)
+}
+
+#[tauri::command]
+fn upsert_mcp_server(input: McpServerInput) -> Result<McpServerRecord, String> {
+    let dirs = agentdock_dirs()?;
+    ensure_dirs(&dirs)?;
+    let mut servers = list_mcp_servers()?;
+    let id = input.id.trim().to_string();
+    if id.is_empty() {
+        return Err("MCP 服务器 ID 不能为空".to_string());
+    }
+    let record = McpServerRecord {
+        id: id.clone(),
+        name: input.name.unwrap_or_else(|| id.clone()),
+        description: input.description.unwrap_or_default(),
+        homepage: input.homepage.unwrap_or_default(),
+        docs: input.docs.unwrap_or_default(),
+        tags: input.tags.unwrap_or_default(),
+        transport: input.transport.unwrap_or_else(|| "stdio".to_string()),
+        command: input.command.unwrap_or_else(|| "npx".to_string()),
+        args: input.args.unwrap_or_default(),
+        env: input.env.unwrap_or_default(),
+        headers: input.headers.unwrap_or_default(),
+        cwd: input.cwd.unwrap_or_default(),
+        extra: input.extra.unwrap_or_default(),
+        apps: input
+            .apps
+            .unwrap_or_else(|| vec!["codex".to_string(), "claude-code".to_string()]),
+        enabled: input.enabled.unwrap_or(true),
+        updated_at: now_rfc3339(),
+    };
+
+    servers.retain(|server| server.id != id);
+    servers.push(record.clone());
+    write_json(&mcp_servers_path(&dirs), &servers)?;
+    sync_mcp_servers()?;
+    Ok(record)
+}
+
+#[tauri::command]
+fn toggle_mcp_app(
+    server_id: String,
+    app: String,
+    enabled: bool,
+) -> Result<McpServerRecord, String> {
+    let dirs = agentdock_dirs()?;
+    ensure_dirs(&dirs)?;
+    let mut servers = list_mcp_servers()?;
+    let server = servers
+        .iter_mut()
+        .find(|server| server.id == server_id)
+        .ok_or_else(|| "未找到 MCP 服务器".to_string())?;
+
+    if enabled && !server.apps.iter().any(|item| item == &app) {
+        server.apps.push(app);
+    } else if !enabled {
+        server.apps.retain(|item| item != &app);
+    }
+    if enabled {
+        server.enabled = true;
+    }
+    server.updated_at = now_rfc3339();
+    let updated = server.clone();
+    write_json(&mcp_servers_path(&dirs), &servers)?;
+    sync_mcp_servers()?;
+    Ok(updated)
+}
+
+#[tauri::command]
+fn toggle_mcp_server(server_id: String, enabled: bool) -> Result<McpServerRecord, String> {
+    let dirs = agentdock_dirs()?;
+    ensure_dirs(&dirs)?;
+    let mut servers = list_mcp_servers()?;
+    let server = servers
+        .iter_mut()
+        .find(|server| server.id == server_id)
+        .ok_or_else(|| "未找到 MCP 服务器".to_string())?;
+    server.enabled = enabled;
+    server.updated_at = now_rfc3339();
+    let updated = server.clone();
+    write_json(&mcp_servers_path(&dirs), &servers)?;
+    sync_mcp_servers()?;
+    Ok(updated)
+}
+
+#[tauri::command]
+async fn list_mcp_tools(server_id: String) -> Result<McpToolsResult, String> {
+    let dirs = agentdock_dirs()?;
+    ensure_dirs(&dirs)?;
+    let server = list_mcp_servers()?
+        .into_iter()
+        .find(|server| server.id == server_id)
+        .ok_or_else(|| "未找到 MCP 服务器".to_string())?;
+    let started = Instant::now();
+    let tools = tokio::time::timeout(
+        std::time::Duration::from_secs(20),
+        discover_mcp_tools(&dirs, &server),
+    )
+    .await
+    .map_err(|_| "连接 MCP 服务器超时，请检查网络或服务器配置".to_string())??;
+
+    Ok(McpToolsResult {
+        server_id: server.id,
+        server_name: server.name,
+        transport: server.transport,
+        tools: tools.into_iter().map(mcp_tool_info).collect(),
+        latency_ms: started.elapsed().as_millis(),
+    })
+}
+
+async fn discover_mcp_tools(
+    dirs: &AgentDockDirs,
+    server: &McpServerRecord,
+) -> Result<Vec<Tool>, String> {
+    match server.transport.as_str() {
+        "stdio" => {
+            let command = mcp_stdio_command(dirs, server)?;
+            let (transport, _) = TokioChildProcess::builder(command)
+                .stderr(Stdio::null())
+                .spawn()
+                .map_err(|error| format!("启动 MCP 服务器失败: {}", error))?;
+            let client =
+                ().serve(transport)
+                    .await
+                    .map_err(|error| format!("MCP 初始化失败: {}", error))?;
+            let tools = client
+                .list_all_tools()
+                .await
+                .map_err(|error| format!("读取 MCP 工具失败: {}", error))?;
+            let _ = client.cancel().await;
+            Ok(tools)
+        }
+        "http" => {
+            validate_mcp_url(&server.command)?;
+            let transport = StreamableHttpClientTransport::with_client(
+                mcp_http_client(&server.headers)?,
+                StreamableHttpClientTransportConfig::with_uri(server.command.clone()),
+            );
+            let client = ()
+                .serve(transport)
+                .await
+                .map_err(|error| format!("MCP HTTP 初始化失败: {}", error))?;
+            let tools = client
+                .list_all_tools()
+                .await
+                .map_err(|error| format!("读取 MCP 工具失败: {}", error))?;
+            let _ = client.cancel().await;
+            Ok(tools)
+        }
+        "sse" => {
+            validate_mcp_url(&server.command)?;
+            let transport = SseClientTransport::start_with_client(
+                mcp_http_client(&server.headers)?,
+                SseClientConfig {
+                    sse_endpoint: server.command.clone().into(),
+                    ..Default::default()
+                },
+            )
+            .await
+            .map_err(|error| format!("MCP SSE 连接失败: {}", error))?;
+            let client = ()
+                .serve(transport)
+                .await
+                .map_err(|error| format!("MCP SSE 初始化失败: {}", error))?;
+            let tools = client
+                .list_all_tools()
+                .await
+                .map_err(|error| format!("读取 MCP 工具失败: {}", error))?;
+            let _ = client.cancel().await;
+            Ok(tools)
+        }
+        transport => Err(format!("不支持的 MCP 传输类型: {}", transport)),
+    }
+}
+
+fn mcp_stdio_command(
+    dirs: &AgentDockDirs,
+    server: &McpServerRecord,
+) -> Result<tokio::process::Command, String> {
+    let mut paths = mcp_command_paths();
+    let executable = resolve_mcp_executable(dirs, &paths, &server.command);
+    if let Some(parent) = executable.parent() {
+        paths.insert(0, parent.to_path_buf());
+    }
+    let mut seen = HashSet::new();
+    paths.retain(|path| seen.insert(path.clone()));
+    let mut command = tokio::process::Command::new(executable);
+    command.args(&server.args).envs(&server.env);
+    if !server.cwd.trim().is_empty() {
+        command.current_dir(&server.cwd);
+    }
+    let joined =
+        env::join_paths(paths).map_err(|error| format!("生成 MCP PATH 失败: {}", error))?;
+    if !server.env.contains_key("PATH") {
+        command.env("PATH", joined);
+    }
+
+    let invokes_npx = server.command.to_ascii_lowercase().contains("npx")
+        || server
+            .args
+            .iter()
+            .any(|arg| arg.eq_ignore_ascii_case("npx"));
+    if invokes_npx {
+        if !server.env.contains_key("npm_config_registry") {
+            command.env("npm_config_registry", "https://registry.npmmirror.com");
+        }
+        command
+            .env("npm_config_update_notifier", "false")
+            .env("npm_config_yes", "true");
+    }
+    if server.command.to_ascii_lowercase().contains("uvx")
+        && !server.env.contains_key("UV_DEFAULT_INDEX")
+    {
+        command.env(
+            "UV_DEFAULT_INDEX",
+            "https://pypi.tuna.tsinghua.edu.cn/simple",
+        );
+    }
+    Ok(command)
+}
+
+fn mcp_command_paths() -> Vec<PathBuf> {
+    let mut paths = Vec::new();
+    if let Some(home) = dirs_home() {
+        paths.extend([
+            home.join(".local/bin"),
+            home.join(".cargo/bin"),
+            home.join(".npm-global/bin"),
+        ]);
+        #[cfg(windows)]
+        paths.push(home.join("AppData/Roaming/npm"));
+    }
+    #[cfg(target_os = "macos")]
+    paths.extend([
+        PathBuf::from("/opt/homebrew/bin"),
+        PathBuf::from("/usr/local/bin"),
+        PathBuf::from("/usr/bin"),
+        PathBuf::from("/bin"),
+    ]);
+    #[cfg(all(unix, not(target_os = "macos")))]
+    paths.extend([
+        PathBuf::from("/usr/local/bin"),
+        PathBuf::from("/usr/bin"),
+        PathBuf::from("/bin"),
+    ]);
+    if let Some(current) = env::var_os("PATH") {
+        paths.extend(env::split_paths(&current));
+    }
+    let mut seen = HashSet::new();
+    paths.retain(|path| seen.insert(path.clone()));
+    paths
+}
+
+fn resolve_mcp_executable(dirs: &AgentDockDirs, paths: &[PathBuf], command: &str) -> PathBuf {
+    let configured = PathBuf::from(command);
+    if configured.components().count() > 1 {
+        return configured;
+    }
+    for path in paths {
+        for candidate in executable_candidates(command) {
+            let executable = path.join(candidate);
+            if executable.is_file() {
+                return executable;
+            }
+        }
+    }
+    for root in [
+        dirs.runtime_dir.join("hermes/bin"),
+        dirs.clients_dir.join("openclaw/runtime"),
+    ] {
+        for candidate in executable_candidates(command) {
+            if let Some(executable) = find_file_named(&root, &candidate.to_string_lossy()) {
+                return executable;
+            }
+        }
+    }
+    configured
+}
+
+fn mcp_http_client(headers: &BTreeMap<String, String>) -> Result<reqwest::Client, String> {
+    let mut defaults = reqwest::header::HeaderMap::new();
+    for (name, value) in headers {
+        let name = reqwest::header::HeaderName::from_bytes(name.as_bytes())
+            .map_err(|_| format!("MCP 请求头名称无效: {}", name))?;
+        let value = reqwest::header::HeaderValue::from_str(value)
+            .map_err(|_| format!("MCP 请求头内容无效: {}", name))?;
+        defaults.insert(name, value);
+    }
+    reqwest::Client::builder()
+        .connect_timeout(std::time::Duration::from_secs(8))
+        .default_headers(defaults)
+        .user_agent(format!("AgentDock/{}", env!("CARGO_PKG_VERSION")))
+        .build()
+        .map_err(|error| format!("创建 MCP HTTP 客户端失败: {}", error))
+}
+
+fn validate_mcp_url(value: &str) -> Result<(), String> {
+    let url = reqwest::Url::parse(value).map_err(|_| "MCP URL 格式无效".to_string())?;
+    if !matches!(url.scheme(), "http" | "https") || url.host_str().is_none() {
+        return Err("MCP URL 必须使用 HTTP 或 HTTPS".to_string());
+    }
+    Ok(())
+}
+
+fn mcp_tool_info(tool: Tool) -> McpToolInfo {
+    McpToolInfo {
+        name: tool.name.into_owned(),
+        title: tool.title,
+        description: tool
+            .description
+            .map(|description| description.into_owned())
+            .unwrap_or_default(),
+        input_schema: serde_json::Value::Object((*tool.input_schema).clone()),
+        output_schema: tool
+            .output_schema
+            .map(|schema| serde_json::Value::Object((*schema).clone())),
+        annotations: tool
+            .annotations
+            .and_then(|annotations| serde_json::to_value(annotations).ok()),
+    }
+}
+
+#[tauri::command]
+fn delete_mcp_server(server_id: String) -> Result<OperationResult, String> {
+    let dirs = agentdock_dirs()?;
+    ensure_dirs(&dirs)?;
+    let mut servers = list_mcp_servers()?;
+    let before = servers.len();
+    servers.retain(|server| server.id != server_id);
+    if before == servers.len() {
+        return Err("未找到 MCP 服务器".to_string());
+    }
+    write_json(&mcp_servers_path(&dirs), &servers)?;
+    sync_mcp_servers()?;
+    Ok(OperationResult {
+        ok: true,
+        message: "MCP 服务器已删除".to_string(),
+    })
+}
+
+#[tauri::command]
+fn import_mcp_from_apps() -> Result<McpImportResult, String> {
+    let dirs = agentdock_dirs()?;
+    ensure_dirs(&dirs)?;
+    let home = dirs_home().ok_or_else(|| "无法确定用户主目录".to_string())?;
+    let mut servers = list_mcp_servers()?;
+    let mut discovered = Vec::new();
+    let mut scanned_apps = Vec::new();
+    let mut errors = Vec::new();
+
+    import_json_mcp_file(
+        &home.join(".claude.json"),
+        "mcpServers",
+        "claude-code",
+        "standard",
+        &mut discovered,
+        &mut scanned_apps,
+        &mut errors,
+    );
+    if let Some(path) = claude_desktop_config_path() {
+        import_json_mcp_file(
+            &path,
+            "mcpServers",
+            "claude-desktop",
+            "standard",
+            &mut discovered,
+            &mut scanned_apps,
+            &mut errors,
+        );
+    }
+    for path in [
+        home.join(".agy/settings.json"),
+        home.join(".gemini/settings.json"),
+    ] {
+        import_json_mcp_file(
+            &path,
+            "mcpServers",
+            "antigravity",
+            "standard",
+            &mut discovered,
+            &mut scanned_apps,
+            &mut errors,
+        );
+    }
+    import_json_mcp_file(
+        &home.join(".config/opencode/opencode.json"),
+        "mcp",
+        "opencode",
+        "opencode",
+        &mut discovered,
+        &mut scanned_apps,
+        &mut errors,
+    );
+    import_json_mcp_file(
+        &home.join(".openclaw/openclaw.json"),
+        "mcpServers",
+        "openclaw",
+        "standard",
+        &mut discovered,
+        &mut scanned_apps,
+        &mut errors,
+    );
+    import_toml_mcp_file(
+        &home.join(".codex/config.toml"),
+        "codex",
+        &mut discovered,
+        &mut scanned_apps,
+        &mut errors,
+    );
+    import_toml_mcp_file(
+        &home.join(".grok/config.toml"),
+        "grok",
+        &mut discovered,
+        &mut scanned_apps,
+        &mut errors,
+    );
+    import_hermes_mcp_file(
+        &home.join(".hermes/config.yaml"),
+        &mut discovered,
+        &mut scanned_apps,
+        &mut errors,
+    );
+
+    let mut imported = 0;
+    let mut linked = 0;
+    for (app, raw_id, value, style) in discovered {
+        let Some(record) = mcp_record_from_value(&raw_id, &value, &app, &style) else {
+            errors.push(format!("{}: MCP 服务器 {} 的格式无法识别", app, raw_id));
+            continue;
+        };
+        if let Some(existing) = servers.iter_mut().find(|item| item.id == record.id) {
+            if !existing.apps.contains(&app) {
+                existing.apps.push(app);
+                existing.updated_at = now_rfc3339();
+                linked += 1;
+            }
+        } else {
+            servers.push(record);
+            imported += 1;
+        }
+    }
+    scanned_apps.sort();
+    scanned_apps.dedup();
+    if imported > 0 || linked > 0 {
+        write_json(&mcp_servers_path(&dirs), &servers)?;
+    }
+
+    Ok(McpImportResult {
+        imported,
+        linked,
+        scanned_apps,
+        errors,
+    })
+}
+
+#[tauri::command]
+fn sync_mcp_servers() -> Result<SyncResult, String> {
+    let servers = list_mcp_servers()?;
+    let dirs = agentdock_dirs()?;
+    let home = dirs_home().ok_or_else(|| "无法确定用户主目录".to_string())?;
+    let installed_apps = detect_clients()
+        .into_iter()
+        .filter(|client| client.installed)
+        .map(|client| client.id)
+        .collect::<HashSet<_>>();
+    let mut written_files = Vec::new();
+    let mut errors = Vec::new();
+
+    sync_json_mcp_projection(
+        &home.join(".claude.json"),
+        home.join(".claude").exists() || home.join(".claude.json").exists(),
+        "mcpServers",
+        "claude-code",
+        "standard",
+        &servers,
+        &mut written_files,
+        &mut errors,
+    );
+    if let Some(path) = claude_desktop_config_path() {
+        let initialized = path.exists() || path.parent().map(Path::exists).unwrap_or(false);
+        sync_json_mcp_projection(
+            &path,
+            initialized,
+            "mcpServers",
+            "claude-desktop",
+            "standard",
+            &servers,
+            &mut written_files,
+            &mut errors,
+        );
+    }
+    sync_json_mcp_projection(
+        &home.join(".agy/settings.json"),
+        home.join(".agy").exists(),
+        "mcpServers",
+        "antigravity",
+        "standard",
+        &servers,
+        &mut written_files,
+        &mut errors,
+    );
+    sync_json_mcp_projection(
+        &home.join(".config/opencode/opencode.json"),
+        home.join(".config/opencode").exists(),
+        "mcp",
+        "opencode",
+        "opencode",
+        &servers,
+        &mut written_files,
+        &mut errors,
+    );
+    sync_json_mcp_projection(
+        &home.join(".openclaw/openclaw.json"),
+        home.join(".openclaw").exists(),
+        "mcpServers",
+        "openclaw",
+        "standard",
+        &servers,
+        &mut written_files,
+        &mut errors,
+    );
+    sync_toml_mcp_projection(
+        &home.join(".codex/config.toml"),
+        home.join(".codex").exists() || installed_apps.contains("codex"),
+        "codex",
+        &servers,
+        &mut written_files,
+        &mut errors,
+    );
+    sync_toml_mcp_projection(
+        &home.join(".grok/config.toml"),
+        home.join(".grok").exists() || installed_apps.contains("grok"),
+        "grok",
+        &servers,
+        &mut written_files,
+        &mut errors,
+    );
+    sync_toml_mcp_projection(
+        &dirs.managed_configs_dir.join("grok/config.toml"),
+        installed_apps.contains("grok"),
+        "grok",
+        &servers,
+        &mut written_files,
+        &mut errors,
+    );
+    sync_hermes_mcp_projection(
+        &home.join(".hermes/config.yaml"),
+        &servers,
+        &mut written_files,
+        &mut errors,
+    );
+
+    let message = if errors.is_empty() {
+        format!("已同步 {} 个客户端配置", written_files.len())
+    } else {
+        format!(
+            "已同步 {} 个客户端配置，{} 个配置写入失败：{}",
+            written_files.len(),
+            errors.len(),
+            errors.join("；")
+        )
+    };
+    Ok(SyncResult {
+        written_files,
+        message,
+    })
+}
+
+fn import_json_mcp_file(
+    path: &Path,
+    key: &str,
+    app: &str,
+    style: &str,
+    discovered: &mut Vec<(String, String, serde_json::Value, String)>,
+    scanned_apps: &mut Vec<String>,
+    errors: &mut Vec<String>,
+) {
+    if !path.exists() {
+        return;
+    }
+    scanned_apps.push(app.to_string());
+    let raw = match fs::read_to_string(path) {
+        Ok(raw) => raw,
+        Err(error) => {
+            errors.push(format!("{}: 读取失败 ({})", app, error));
+            return;
+        }
+    };
+    let value: serde_json::Value = match serde_json::from_str(&raw) {
+        Ok(value) => value,
+        Err(error) => {
+            errors.push(format!("{}: 配置不是有效 JSON ({})", app, error));
+            return;
+        }
+    };
+    let Some(map) = value.get(key).and_then(serde_json::Value::as_object) else {
+        return;
+    };
+    for (id, spec) in map {
+        discovered.push((app.to_string(), id.clone(), spec.clone(), style.to_string()));
+    }
+}
+
+fn import_toml_mcp_file(
+    path: &Path,
+    app: &str,
+    discovered: &mut Vec<(String, String, serde_json::Value, String)>,
+    scanned_apps: &mut Vec<String>,
+    errors: &mut Vec<String>,
+) {
+    if !path.exists() {
+        return;
+    }
+    scanned_apps.push(app.to_string());
+    let raw = match fs::read_to_string(path) {
+        Ok(raw) => raw,
+        Err(error) => {
+            errors.push(format!("{}: 读取失败 ({})", app, error));
+            return;
+        }
+    };
+    let root: toml::Table = match raw.parse() {
+        Ok(root) => root,
+        Err(error) => {
+            errors.push(format!("{}: config.toml 格式错误 ({})", app, error));
+            return;
+        }
+    };
+    let table = root
+        .get("mcp_servers")
+        .and_then(toml::Value::as_table)
+        .or_else(|| {
+            root.get("mcp")
+                .and_then(toml::Value::as_table)
+                .and_then(|mcp| mcp.get("servers"))
+                .and_then(toml::Value::as_table)
+        });
+    if let Some(table) = table {
+        for (id, spec) in table {
+            if let Ok(value) = serde_json::to_value(spec) {
+                discovered.push((app.to_string(), id.clone(), value, "standard".to_string()));
+            }
+        }
+    }
+}
+
+fn import_hermes_mcp_file(
+    path: &Path,
+    discovered: &mut Vec<(String, String, serde_json::Value, String)>,
+    scanned_apps: &mut Vec<String>,
+    errors: &mut Vec<String>,
+) {
+    if !path.exists() {
+        return;
+    }
+    scanned_apps.push("hermes".to_string());
+    let raw = match fs::read_to_string(path) {
+        Ok(raw) => raw,
+        Err(error) => {
+            errors.push(format!("hermes: 读取失败 ({})", error));
+            return;
+        }
+    };
+    let yaml: serde_yaml::Value = match serde_yaml::from_str(&raw) {
+        Ok(value) => value,
+        Err(error) => {
+            errors.push(format!("hermes: config.yaml 格式错误 ({})", error));
+            return;
+        }
+    };
+    let value = serde_json::to_value(yaml).unwrap_or(serde_json::Value::Null);
+    if let Some(map) = value
+        .get("mcp_servers")
+        .and_then(serde_json::Value::as_object)
+    {
+        for (id, spec) in map {
+            discovered.push((
+                "hermes".to_string(),
+                id.clone(),
+                spec.clone(),
+                "standard".to_string(),
+            ));
+        }
+    }
+}
+
+fn mcp_record_from_value(
+    raw_id: &str,
+    value: &serde_json::Value,
+    app: &str,
+    style: &str,
+) -> Option<McpServerRecord> {
+    let object = value.as_object()?;
+    let raw_type = object
+        .get("type")
+        .and_then(serde_json::Value::as_str)
+        .unwrap_or("stdio");
+    let transport = match raw_type {
+        "local" | "stdio" => "stdio",
+        "remote" | "sse" => "sse",
+        "streamable-http" | "http" => "http",
+        _ if object.get("url").is_some() => "http",
+        _ => "stdio",
+    }
+    .to_string();
+    let command_array = object.get("command").and_then(serde_json::Value::as_array);
+    let command = if transport == "stdio" {
+        object
+            .get("command")
+            .and_then(serde_json::Value::as_str)
+            .or_else(|| {
+                command_array
+                    .and_then(|items| items.first())
+                    .and_then(serde_json::Value::as_str)
+            })?
+            .to_string()
+    } else {
+        object
+            .get("url")
+            .and_then(serde_json::Value::as_str)
+            .or_else(|| object.get("command").and_then(serde_json::Value::as_str))?
+            .to_string()
+    };
+    let args = if style == "opencode" {
+        command_array
+            .map(|items| {
+                items
+                    .iter()
+                    .skip(1)
+                    .filter_map(serde_json::Value::as_str)
+                    .map(str::to_string)
+                    .collect()
+            })
+            .unwrap_or_default()
+    } else {
+        object
+            .get("args")
+            .and_then(serde_json::Value::as_array)
+            .map(|items| {
+                items
+                    .iter()
+                    .filter_map(serde_json::Value::as_str)
+                    .map(str::to_string)
+                    .collect()
+            })
+            .unwrap_or_default()
+    };
+    let env = json_string_map(
+        object
+            .get(if style == "opencode" {
+                "environment"
+            } else {
+                "env"
+            })
+            .unwrap_or(&serde_json::Value::Null),
+    );
+    let headers = json_string_map(
+        object
+            .get("headers")
+            .or_else(|| object.get("http_headers"))
+            .unwrap_or(&serde_json::Value::Null),
+    );
+    let known_fields = [
+        "type",
+        "command",
+        "args",
+        "env",
+        "environment",
+        "url",
+        "headers",
+        "http_headers",
+        "cwd",
+        "enabled",
+    ];
+    let extra = object
+        .iter()
+        .filter(|(key, _)| !known_fields.contains(&key.as_str()))
+        .map(|(key, value)| (key.clone(), value.clone()))
+        .collect();
+    let id = raw_id.trim().to_string();
+    Some(McpServerRecord {
+        id: id.clone(),
+        name: raw_id.to_string(),
+        description: String::new(),
+        homepage: String::new(),
+        docs: String::new(),
+        tags: vec!["已导入".to_string()],
+        transport,
+        command,
+        args,
+        env,
+        headers,
+        cwd: object
+            .get("cwd")
+            .and_then(serde_json::Value::as_str)
+            .unwrap_or_default()
+            .to_string(),
+        extra,
+        apps: vec![app.to_string()],
+        enabled: true,
+        updated_at: now_rfc3339(),
+    })
+}
+
+fn json_string_map(value: &serde_json::Value) -> BTreeMap<String, String> {
+    value
+        .as_object()
+        .map(|map| {
+            map.iter()
+                .filter_map(|(key, value)| {
+                    value.as_str().map(|value| (key.clone(), value.to_string()))
+                })
+                .collect()
+        })
+        .unwrap_or_default()
+}
+
+#[allow(clippy::too_many_arguments)]
+fn sync_json_mcp_projection(
+    path: &Path,
+    initialized: bool,
+    key: &str,
+    app: &str,
+    style: &str,
+    servers: &[McpServerRecord],
+    written_files: &mut Vec<String>,
+    errors: &mut Vec<String>,
+) {
+    if !initialized {
+        return;
+    }
+    let result = (|| -> Result<(), String> {
+        let mut root: serde_json::Value = if path.exists() {
+            let raw = fs::read_to_string(path)
+                .map_err(|error| format!("读取 {} 失败: {}", path.display(), error))?;
+            serde_json::from_str(&raw)
+                .map_err(|error| format!("{} 不是有效 JSON: {}", path.display(), error))?
+        } else {
+            serde_json::json!({})
+        };
+        let object = root
+            .as_object_mut()
+            .ok_or_else(|| format!("{} 的根配置必须是 JSON 对象", path.display()))?;
+        let mut projection = serde_json::Map::new();
+        for server in servers
+            .iter()
+            .filter(|server| server.enabled && server.apps.iter().any(|item| item == app))
+        {
+            projection.insert(server.id.clone(), mcp_json_projection(server, style));
+        }
+        object.insert(key.to_string(), serde_json::Value::Object(projection));
+        if let Some(parent) = path.parent() {
+            fs::create_dir_all(parent)
+                .map_err(|error| format!("创建 {} 失败: {}", parent.display(), error))?;
+        }
+        write_json(path, &root)
+    })();
+    match result {
+        Ok(()) => written_files.push(path.display().to_string()),
+        Err(error) => errors.push(format!("{}: {}", app, error)),
+    }
+}
+
+fn mcp_json_projection(server: &McpServerRecord, style: &str) -> serde_json::Value {
+    let mut value: serde_json::Map<String, serde_json::Value> = server
+        .extra
+        .iter()
+        .map(|(key, value)| (key.clone(), value.clone()))
+        .collect();
+    if style == "opencode" {
+        if server.transport == "stdio" {
+            let command = std::iter::once(server.command.clone())
+                .chain(server.args.clone())
+                .collect::<Vec<_>>();
+            value.insert("type".to_string(), serde_json::json!("local"));
+            value.insert("command".to_string(), serde_json::json!(command));
+            value.insert("environment".to_string(), serde_json::json!(server.env));
+            value.insert("enabled".to_string(), serde_json::json!(true));
+        } else {
+            value.insert("type".to_string(), serde_json::json!("remote"));
+            value.insert("url".to_string(), serde_json::json!(server.command));
+            value.insert("headers".to_string(), serde_json::json!(server.headers));
+            value.insert("enabled".to_string(), serde_json::json!(true));
+        }
+    } else if server.transport == "stdio" {
+        value.insert("command".to_string(), serde_json::json!(server.command));
+        value.insert("args".to_string(), serde_json::json!(server.args));
+        value.insert("env".to_string(), serde_json::json!(server.env));
+        if !server.cwd.is_empty() {
+            value.insert("cwd".to_string(), serde_json::json!(server.cwd));
+        }
+    } else {
+        value.insert("type".to_string(), serde_json::json!(server.transport));
+        value.insert("url".to_string(), serde_json::json!(server.command));
+        value.insert("headers".to_string(), serde_json::json!(server.headers));
+    }
+    serde_json::Value::Object(value)
+}
+
+fn sync_toml_mcp_projection(
+    path: &Path,
+    initialized: bool,
+    app: &str,
+    servers: &[McpServerRecord],
+    written_files: &mut Vec<String>,
+    errors: &mut Vec<String>,
+) {
+    if !initialized {
+        return;
+    }
+    let result = (|| -> Result<(), String> {
+        let mut root: toml::Table = if path.exists() {
+            fs::read_to_string(path)
+                .map_err(|error| format!("读取 config.toml 失败: {}", error))?
+                .parse()
+                .map_err(|error| format!("config.toml 格式错误: {}", error))?
+        } else {
+            toml::Table::new()
+        };
+        let mut projection = toml::Table::new();
+        for server in servers
+            .iter()
+            .filter(|server| server.enabled && server.apps.iter().any(|item| item == app))
+        {
+            projection.insert(server.id.clone(), mcp_toml_projection(server));
+        }
+        root.remove("mcp_servers");
+        if !projection.is_empty() {
+            root.insert("mcp_servers".to_string(), toml::Value::Table(projection));
+        }
+        let raw = toml::to_string_pretty(&root)
+            .map_err(|error| format!("生成 config.toml 失败: {}", error))?;
+        if let Some(parent) = path.parent() {
+            fs::create_dir_all(parent)
+                .map_err(|error| format!("创建 {} 失败: {}", parent.display(), error))?;
+        }
+        fs::write(path, raw).map_err(|error| format!("写入 config.toml 失败: {}", error))
+    })();
+    match result {
+        Ok(()) => written_files.push(path.display().to_string()),
+        Err(error) => errors.push(format!("{}: {}", app, error)),
+    }
+}
+
+fn mcp_toml_projection(server: &McpServerRecord) -> toml::Value {
+    let mut table: toml::Table = server
+        .extra
+        .iter()
+        .filter_map(|(key, value)| json_value_to_toml(value).map(|value| (key.clone(), value)))
+        .collect();
+    if server.transport == "stdio" {
+        table.insert(
+            "command".to_string(),
+            toml::Value::String(server.command.clone()),
+        );
+        if !server.args.is_empty() {
+            table.insert(
+                "args".to_string(),
+                toml::Value::Array(
+                    server
+                        .args
+                        .iter()
+                        .cloned()
+                        .map(toml::Value::String)
+                        .collect(),
+                ),
+            );
+        }
+        if !server.env.is_empty() {
+            table.insert("env".to_string(), string_map_to_toml(&server.env));
+        }
+        if !server.cwd.is_empty() {
+            table.insert("cwd".to_string(), toml::Value::String(server.cwd.clone()));
+        }
+    } else {
+        table.insert(
+            "url".to_string(),
+            toml::Value::String(server.command.clone()),
+        );
+        if !server.headers.is_empty() {
+            table.insert(
+                "http_headers".to_string(),
+                string_map_to_toml(&server.headers),
+            );
+        }
+    }
+    toml::Value::Table(table)
+}
+
+fn json_value_to_toml(value: &serde_json::Value) -> Option<toml::Value> {
+    match value {
+        serde_json::Value::Null => None,
+        serde_json::Value::Bool(value) => Some(toml::Value::Boolean(*value)),
+        serde_json::Value::Number(value) => value
+            .as_i64()
+            .map(toml::Value::Integer)
+            .or_else(|| value.as_f64().map(toml::Value::Float)),
+        serde_json::Value::String(value) => Some(toml::Value::String(value.clone())),
+        serde_json::Value::Array(values) => Some(toml::Value::Array(
+            values.iter().filter_map(json_value_to_toml).collect(),
+        )),
+        serde_json::Value::Object(values) => Some(toml::Value::Table(
+            values
+                .iter()
+                .filter_map(|(key, value)| {
+                    json_value_to_toml(value).map(|value| (key.clone(), value))
+                })
+                .collect(),
+        )),
+    }
+}
+
+fn string_map_to_toml(map: &BTreeMap<String, String>) -> toml::Value {
+    toml::Value::Table(
+        map.iter()
+            .map(|(key, value)| (key.clone(), toml::Value::String(value.clone())))
+            .collect(),
+    )
+}
+
+fn sync_hermes_mcp_projection(
+    path: &Path,
+    servers: &[McpServerRecord],
+    written_files: &mut Vec<String>,
+    errors: &mut Vec<String>,
+) {
+    if !path.exists() && !path.parent().map(Path::exists).unwrap_or(false) {
+        return;
+    }
+    let result = (|| -> Result<(), String> {
+        let mut root: serde_json::Value = if path.exists() {
+            let raw = fs::read_to_string(path)
+                .map_err(|error| format!("读取 config.yaml 失败: {}", error))?;
+            let yaml: serde_yaml::Value = serde_yaml::from_str(&raw)
+                .map_err(|error| format!("config.yaml 格式错误: {}", error))?;
+            serde_json::to_value(yaml)
+                .map_err(|error| format!("转换 config.yaml 失败: {}", error))?
+        } else {
+            serde_json::json!({})
+        };
+        let object = root
+            .as_object_mut()
+            .ok_or_else(|| "config.yaml 根配置必须是对象".to_string())?;
+        let mut projection = serde_json::Map::new();
+        for server in servers
+            .iter()
+            .filter(|server| server.enabled && server.apps.iter().any(|item| item == "hermes"))
+        {
+            let mut value = mcp_json_projection(server, "standard");
+            value["enabled"] = serde_json::Value::Bool(true);
+            projection.insert(server.id.clone(), value);
+        }
+        object.insert(
+            "mcp_servers".to_string(),
+            serde_json::Value::Object(projection),
+        );
+        let raw = serde_yaml::to_string(&root)
+            .map_err(|error| format!("生成 config.yaml 失败: {}", error))?;
+        fs::write(path, raw).map_err(|error| format!("写入 config.yaml 失败: {}", error))
+    })();
+    match result {
+        Ok(()) => written_files.push(path.display().to_string()),
+        Err(error) => errors.push(format!("hermes: {}", error)),
+    }
+}
+
+#[tauri::command]
+fn get_usage_stats(days: Option<u32>) -> Result<UsageStats, String> {
+    let days = days.unwrap_or(7).clamp(1, 90);
+    let now = OffsetDateTime::now_utc();
+    let today = now.date();
+    let first_date = today - Duration::days((days - 1) as i64);
+    let from_timestamp = first_date.midnight().assume_utc();
+    let providers = list_providers().unwrap_or_default();
+    let mut records = Vec::new();
+    let mut sources = Vec::new();
+    let mut errors = Vec::new();
+
+    if let Some(home) = dirs_home() {
+        scan_claude_usage(
+            &home.join(".claude/projects"),
+            from_timestamp,
+            &providers,
+            &mut records,
+            &mut sources,
+            &mut errors,
+        );
+        scan_codex_usage(
+            &home.join(".codex/sessions"),
+            from_timestamp,
+            &providers,
+            &mut records,
+            &mut sources,
+            &mut errors,
+        );
+        scan_opencode_usage(
+            &home.join(".local/share/opencode/opencode.db"),
+            from_timestamp,
+            &providers,
+            &mut records,
+            &mut sources,
+            &mut errors,
+        );
+        scan_grok_usage(
+            &home.join(".grok/sessions"),
+            from_timestamp,
+            &providers,
+            &mut records,
+            &mut sources,
+            &mut errors,
+        );
+    }
+
+    records.retain(|record| record.timestamp >= from_timestamp && record.timestamp <= now);
+    let mut summary = UsageSummary {
+        total_tokens: 0,
+        input_tokens: 0,
+        output_tokens: 0,
+        cached_tokens: 0,
+        requests: 0,
+        cost_usd: 0.0,
+        unpriced_requests: 0,
+    };
+    let mut trend_map: BTreeMap<String, UsageAggregate> = BTreeMap::new();
+    let mut client_map: HashMap<String, UsageAggregate> = HashMap::new();
+    let mut provider_map: HashMap<String, UsageAggregate> = HashMap::new();
+    let mut model_map: HashMap<String, UsageAggregate> = HashMap::new();
+
+    for offset in (0..days).rev() {
+        let date = today - Duration::days(offset as i64);
+        trend_map.insert(date.to_string(), UsageAggregate::default());
+    }
+    for record in &records {
+        let total = record.input_tokens + record.output_tokens + record.cached_tokens;
+        summary.total_tokens += total;
+        summary.input_tokens += record.input_tokens;
+        summary.output_tokens += record.output_tokens;
+        summary.cached_tokens += record.cached_tokens;
+        summary.requests += 1;
+        if let Some(cost) = record.cost_usd {
+            summary.cost_usd += cost;
+        } else {
+            summary.unpriced_requests += 1;
+        }
+        let date = record.timestamp.date().to_string();
+        add_usage_aggregate(trend_map.entry(date).or_default(), total, record.cost_usd);
+        add_usage_aggregate(
+            client_map.entry(record.client.clone()).or_default(),
+            total,
+            record.cost_usd,
+        );
+        add_usage_aggregate(
+            provider_map.entry(record.provider.clone()).or_default(),
+            total,
+            record.cost_usd,
+        );
+        add_usage_aggregate(
+            model_map.entry(record.model.clone()).or_default(),
+            total,
+            record.cost_usd,
+        );
+    }
+    summary.cost_usd = round_cost(summary.cost_usd);
+
+    let trend = trend_map
+        .into_iter()
+        .map(|(date, value)| UsageTrendPoint {
+            date,
+            total_tokens: value.tokens,
+            requests: value.requests,
+            cost_usd: round_cost(value.cost),
+        })
+        .collect();
+    let total_tokens = summary.total_tokens;
+
+    Ok(UsageStats {
+        days,
+        from: first_date.to_string(),
+        to: today.to_string(),
+        summary,
+        trend,
+        by_client: usage_breakdown(client_map, total_tokens, true),
+        by_provider: usage_breakdown(provider_map, total_tokens, false),
+        by_model: usage_breakdown(model_map, total_tokens, false),
+        sources,
+        errors,
+    })
+}
+
+#[derive(Debug, Default)]
+struct UsageAggregate {
+    tokens: u64,
+    requests: u64,
+    cost: f64,
+}
+
+fn add_usage_aggregate(aggregate: &mut UsageAggregate, tokens: u64, cost: Option<f64>) {
+    aggregate.tokens += tokens;
+    aggregate.requests += 1;
+    aggregate.cost += cost.unwrap_or(0.0);
+}
+
+fn usage_breakdown(
+    values: HashMap<String, UsageAggregate>,
+    total_tokens: u64,
+    use_client_names: bool,
+) -> Vec<UsageBreakdownItem> {
+    let mut result = values
+        .into_iter()
+        .map(|(id, value)| UsageBreakdownItem {
+            name: if use_client_names {
+                usage_client_name(&id).to_string()
+            } else {
+                id.clone()
+            },
+            id,
+            total_tokens: value.tokens,
+            requests: value.requests,
+            cost_usd: round_cost(value.cost),
+            share: if total_tokens == 0 {
+                0.0
+            } else {
+                value.tokens as f64 / total_tokens as f64
+            },
+        })
+        .collect::<Vec<_>>();
+    result.sort_by(|left, right| right.total_tokens.cmp(&left.total_tokens));
+    result
+}
+
+fn usage_client_name(id: &str) -> &str {
+    match id {
+        "claude-code" => "Claude Code",
+        "codex" => "Codex",
+        "opencode" => "OpenCode",
+        "antigravity" => "Antigravity",
+        "grok" => "Grok",
+        other => other,
+    }
+}
+
+fn scan_grok_usage(
+    root: &Path,
+    from: OffsetDateTime,
+    providers: &[ProviderProfile],
+    records: &mut Vec<UsageRecord>,
+    sources: &mut Vec<String>,
+    errors: &mut Vec<String>,
+) {
+    if !root.exists() {
+        return;
+    }
+    sources.push("Grok 会话".to_string());
+    let mut files = Vec::new();
+    collect_files_named(root, "signals.json", &mut files);
+    let provider = active_provider_name(providers, "grok");
+    for path in files {
+        let signals: serde_json::Value = match fs::read_to_string(&path)
+            .map_err(|error| error.to_string())
+            .and_then(|raw| serde_json::from_str(&raw).map_err(|error| error.to_string()))
+        {
+            Ok(value) => value,
+            Err(error) => {
+                errors.push(format!("Grok: 无法读取 {} ({})", path.display(), error));
+                continue;
+            }
+        };
+        let Some(usage) = find_grok_usage(&signals) else {
+            continue;
+        };
+        let input_tokens = json_u64_any(usage, &["inputTokens", "input_tokens"]);
+        let output_tokens = json_u64_any(usage, &["outputTokens", "output_tokens"])
+            + json_u64_any(usage, &["thoughtTokens", "thought_tokens"]);
+        let cached_tokens = json_u64_any(
+            usage,
+            &[
+                "cachedTokens",
+                "cached_tokens",
+                "cachedWriteTokens",
+                "cached_write_tokens",
+            ],
+        );
+        if input_tokens + output_tokens + cached_tokens == 0 {
+            continue;
+        }
+
+        let summary_path = path.parent().map(|parent| parent.join("summary.json"));
+        let summary = summary_path
+            .as_ref()
+            .and_then(|summary_path| fs::read_to_string(summary_path).ok())
+            .and_then(|raw| serde_json::from_str::<serde_json::Value>(&raw).ok())
+            .unwrap_or(serde_json::Value::Null);
+        let timestamp = [
+            "updatedAt",
+            "updated_at",
+            "lastModified",
+            "createdAt",
+            "created_at",
+        ]
+        .iter()
+        .find_map(|key| summary.get(*key).and_then(parse_json_timestamp))
+        .unwrap_or_else(|| file_modified_time(&path).unwrap_or(OffsetDateTime::UNIX_EPOCH));
+        if timestamp < from {
+            continue;
+        }
+        let model = ["modelId", "model_id", "model"]
+            .iter()
+            .find_map(|key| summary.get(*key).and_then(serde_json::Value::as_str))
+            .unwrap_or("未知模型")
+            .to_string();
+        records.push(UsageRecord {
+            timestamp,
+            client: "grok".to_string(),
+            provider: provider.clone(),
+            cost_usd: estimate_model_cost(&model, input_tokens, output_tokens, cached_tokens),
+            model,
+            input_tokens,
+            output_tokens,
+            cached_tokens,
+        });
+    }
+}
+
+fn find_grok_usage(value: &serde_json::Value) -> Option<&serde_json::Value> {
+    match value {
+        serde_json::Value::Object(values) => {
+            if values.contains_key("inputTokens")
+                || values.contains_key("input_tokens")
+                || values.contains_key("totalTokens")
+                || values.contains_key("total_tokens")
+            {
+                return Some(value);
+            }
+            values.values().find_map(find_grok_usage)
+        }
+        serde_json::Value::Array(values) => values.iter().rev().find_map(find_grok_usage),
+        _ => None,
+    }
+}
+
+fn json_u64_any(value: &serde_json::Value, keys: &[&str]) -> u64 {
+    keys.iter().map(|key| json_u64(value, key)).sum()
+}
+
+fn scan_claude_usage(
+    root: &Path,
+    from: OffsetDateTime,
+    providers: &[ProviderProfile],
+    records: &mut Vec<UsageRecord>,
+    sources: &mut Vec<String>,
+    errors: &mut Vec<String>,
+) {
+    if !root.exists() {
+        return;
+    }
+    sources.push("Claude Code 会话".to_string());
+    let mut files = Vec::new();
+    collect_files_with_extension(root, "jsonl", &mut files);
+    let mut seen_messages = HashSet::new();
+    let provider = active_provider_name(providers, "claude-code");
+
+    for path in files {
+        let file = match fs::File::open(&path) {
+            Ok(file) => file,
+            Err(error) => {
+                errors.push(format!("Claude: 无法读取 {} ({})", path.display(), error));
+                continue;
+            }
+        };
+        for line in BufReader::new(file).lines().map_while(Result::ok) {
+            let Ok(value) = serde_json::from_str::<serde_json::Value>(&line) else {
+                continue;
+            };
+            if value.get("type").and_then(serde_json::Value::as_str) != Some("assistant") {
+                continue;
+            }
+            let timestamp = value
+                .get("timestamp")
+                .and_then(parse_json_timestamp)
+                .unwrap_or(OffsetDateTime::UNIX_EPOCH);
+            if timestamp < from {
+                continue;
+            }
+            let Some(message) = value.get("message") else {
+                continue;
+            };
+            let message_id = message
+                .get("id")
+                .and_then(serde_json::Value::as_str)
+                .map(str::to_string)
+                .unwrap_or_else(|| {
+                    format!("{}:{}", path.display(), timestamp.unix_timestamp_nanos())
+                });
+            if !seen_messages.insert(message_id) {
+                continue;
+            }
+            let Some(usage) = message.get("usage") else {
+                continue;
+            };
+            let model = message
+                .get("model")
+                .and_then(serde_json::Value::as_str)
+                .unwrap_or("未知模型")
+                .to_string();
+            let input_tokens =
+                json_u64(usage, "input_tokens") + json_u64(usage, "cache_creation_input_tokens");
+            let output_tokens = json_u64(usage, "output_tokens");
+            let cached_tokens = json_u64(usage, "cache_read_input_tokens");
+            if input_tokens + output_tokens + cached_tokens == 0 {
+                continue;
+            }
+            records.push(UsageRecord {
+                timestamp,
+                client: "claude-code".to_string(),
+                provider: provider.clone(),
+                cost_usd: estimate_model_cost(&model, input_tokens, output_tokens, cached_tokens),
+                model,
+                input_tokens,
+                output_tokens,
+                cached_tokens,
+            });
+        }
+    }
+}
+
+fn scan_codex_usage(
+    root: &Path,
+    from: OffsetDateTime,
+    providers: &[ProviderProfile],
+    records: &mut Vec<UsageRecord>,
+    sources: &mut Vec<String>,
+    errors: &mut Vec<String>,
+) {
+    if !root.exists() {
+        return;
+    }
+    sources.push("Codex 会话".to_string());
+    let mut files = Vec::new();
+    collect_files_with_extension(root, "jsonl", &mut files);
+    let provider = active_provider_name(providers, "codex");
+
+    for path in files {
+        let file = match fs::File::open(&path) {
+            Ok(file) => file,
+            Err(error) => {
+                errors.push(format!("Codex: 无法读取 {} ({})", path.display(), error));
+                continue;
+            }
+        };
+        let mut current_model = "未知模型".to_string();
+        let mut previous: Option<(u64, u64, u64)> = None;
+        for line in BufReader::new(file).lines().map_while(Result::ok) {
+            let Ok(value) = serde_json::from_str::<serde_json::Value>(&line) else {
+                continue;
+            };
+            let event_type = value.get("type").and_then(serde_json::Value::as_str);
+            if event_type == Some("turn_context") {
+                if let Some(model) = value
+                    .get("payload")
+                    .and_then(|payload| payload.get("model"))
+                    .and_then(serde_json::Value::as_str)
+                {
+                    current_model = model.to_string();
+                }
+                continue;
+            }
+            let payload = value.get("payload").unwrap_or(&serde_json::Value::Null);
+            if event_type != Some("event_msg")
+                || payload.get("type").and_then(serde_json::Value::as_str) != Some("token_count")
+            {
+                continue;
+            }
+            let Some(total) = payload
+                .get("info")
+                .and_then(|info| info.get("total_token_usage"))
+            else {
+                continue;
+            };
+            let current = (
+                json_u64(total, "input_tokens"),
+                json_u64(total, "output_tokens"),
+                json_u64(total, "cached_input_tokens"),
+            );
+            let delta = previous
+                .map(|old| {
+                    (
+                        current.0.saturating_sub(old.0),
+                        current.1.saturating_sub(old.1),
+                        current.2.saturating_sub(old.2),
+                    )
+                })
+                .unwrap_or(current);
+            previous = Some(current);
+            if delta.0 + delta.1 + delta.2 == 0 {
+                continue;
+            }
+            let timestamp = value
+                .get("timestamp")
+                .and_then(parse_json_timestamp)
+                .unwrap_or(OffsetDateTime::UNIX_EPOCH);
+            if timestamp < from {
+                continue;
+            }
+            records.push(UsageRecord {
+                timestamp,
+                client: "codex".to_string(),
+                provider: provider.clone(),
+                cost_usd: estimate_model_cost(&current_model, delta.0, delta.1, delta.2),
+                model: current_model.clone(),
+                input_tokens: delta.0,
+                output_tokens: delta.1,
+                cached_tokens: delta.2,
+            });
+        }
+    }
+}
+
+fn scan_opencode_usage(
+    path: &Path,
+    from: OffsetDateTime,
+    providers: &[ProviderProfile],
+    records: &mut Vec<UsageRecord>,
+    sources: &mut Vec<String>,
+    errors: &mut Vec<String>,
+) {
+    if !path.exists() {
+        return;
+    }
+    sources.push("OpenCode 会话".to_string());
+    let connection = match rusqlite::Connection::open_with_flags(
+        path,
+        rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY,
+    ) {
+        Ok(connection) => connection,
+        Err(error) => {
+            errors.push(format!("OpenCode: 无法读取数据库 ({})", error));
+            return;
+        }
+    };
+    let mut statement = match connection.prepare("SELECT id, data FROM message") {
+        Ok(statement) => statement,
+        Err(error) => {
+            errors.push(format!("OpenCode: 无法查询消息 ({})", error));
+            return;
+        }
+    };
+    let rows = match statement.query_map([], |row| {
+        Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?))
+    }) {
+        Ok(rows) => rows,
+        Err(error) => {
+            errors.push(format!("OpenCode: 查询消息失败 ({})", error));
+            return;
+        }
+    };
+    let fallback_provider = active_provider_name(providers, "opencode");
+    for row in rows.flatten() {
+        let Ok(value) = serde_json::from_str::<serde_json::Value>(&row.1) else {
+            continue;
+        };
+        if value.get("role").and_then(serde_json::Value::as_str) != Some("assistant") {
+            continue;
+        }
+        let timestamp = value
+            .get("time")
+            .and_then(|time| time.get("created"))
+            .and_then(parse_json_timestamp)
+            .unwrap_or(OffsetDateTime::UNIX_EPOCH);
+        if timestamp < from {
+            continue;
+        }
+        let Some(tokens) = value.get("tokens") else {
+            continue;
+        };
+        let input_tokens = json_u64(tokens, "input");
+        let output_tokens = json_u64(tokens, "output") + json_u64(tokens, "reasoning");
+        let cached_tokens = tokens
+            .get("cache")
+            .map(|cache| json_u64(cache, "read"))
+            .unwrap_or(0);
+        if input_tokens + output_tokens + cached_tokens == 0 {
+            continue;
+        }
+        let model = value
+            .get("modelID")
+            .or_else(|| value.get("modelId"))
+            .and_then(serde_json::Value::as_str)
+            .unwrap_or("未知模型")
+            .to_string();
+        let provider = value
+            .get("providerID")
+            .or_else(|| value.get("providerId"))
+            .and_then(serde_json::Value::as_str)
+            .map(str::to_string)
+            .unwrap_or_else(|| fallback_provider.clone());
+        let reported_cost = value.get("cost").and_then(serde_json::Value::as_f64);
+        records.push(UsageRecord {
+            timestamp,
+            client: "opencode".to_string(),
+            provider,
+            cost_usd: reported_cost.or_else(|| {
+                estimate_model_cost(&model, input_tokens, output_tokens, cached_tokens)
+            }),
+            model,
+            input_tokens,
+            output_tokens,
+            cached_tokens,
+        });
+    }
+}
+
+fn collect_files_with_extension(root: &Path, extension: &str, files: &mut Vec<PathBuf>) {
+    let Ok(entries) = fs::read_dir(root) else {
+        return;
+    };
+    for entry in entries.flatten() {
+        let path = entry.path();
+        if path.is_dir() {
+            collect_files_with_extension(&path, extension, files);
+        } else if path
+            .extension()
+            .and_then(|value| value.to_str())
+            .is_some_and(|value| value.eq_ignore_ascii_case(extension))
+        {
+            files.push(path);
+        }
+    }
+}
+
+fn collect_files_named(root: &Path, file_name: &str, files: &mut Vec<PathBuf>) {
+    let Ok(entries) = fs::read_dir(root) else {
+        return;
+    };
+    for entry in entries.flatten() {
+        let path = entry.path();
+        if path.is_dir() {
+            collect_files_named(&path, file_name, files);
+        } else if path.file_name().and_then(|name| name.to_str()) == Some(file_name) {
+            files.push(path);
+        }
+    }
+}
+
+fn file_modified_time(path: &Path) -> Option<OffsetDateTime> {
+    let modified = fs::metadata(path).ok()?.modified().ok()?;
+    let seconds = modified
+        .duration_since(std::time::UNIX_EPOCH)
+        .ok()?
+        .as_secs();
+    OffsetDateTime::from_unix_timestamp(seconds as i64).ok()
+}
+
+fn parse_json_timestamp(value: &serde_json::Value) -> Option<OffsetDateTime> {
+    if let Some(raw) = value.as_str() {
+        return OffsetDateTime::parse(raw, &Rfc3339).ok();
+    }
+    let numeric = value
+        .as_i64()
+        .or_else(|| value.as_u64().map(|value| value as i64))?;
+    let seconds = if numeric.abs() > 10_000_000_000 {
+        numeric / 1000
+    } else {
+        numeric
+    };
+    OffsetDateTime::from_unix_timestamp(seconds).ok()
+}
+
+fn json_u64(value: &serde_json::Value, key: &str) -> u64 {
+    value
+        .get(key)
+        .and_then(|value| {
+            value
+                .as_u64()
+                .or_else(|| value.as_i64().map(|value| value.max(0) as u64))
+        })
+        .unwrap_or(0)
+}
+
+fn active_provider_name(providers: &[ProviderProfile], app: &str) -> String {
+    providers
+        .iter()
+        .find(|provider| provider.active_apps.iter().any(|item| item == app))
+        .map(|provider| provider.name.clone())
+        .unwrap_or_else(|| "未识别供应商".to_string())
+}
+
+fn estimate_model_cost(
+    model: &str,
+    input_tokens: u64,
+    output_tokens: u64,
+    cached_tokens: u64,
+) -> Option<f64> {
+    let model = model.to_ascii_lowercase();
+    let (input_rate, output_rate, cache_rate) = if model.contains("gpt-5.6-sol") {
+        (5.0, 30.0, 0.5)
+    } else if model.contains("glm-5.2") {
+        (1.4, 4.4, 0.26)
+    } else if model.contains("claude-opus") {
+        (15.0, 75.0, 1.5)
+    } else if model.contains("claude-sonnet") {
+        (3.0, 15.0, 0.3)
+    } else if model.contains("claude-haiku") {
+        (1.0, 5.0, 0.1)
+    } else {
+        return None;
+    };
+    Some(
+        (input_tokens as f64 * input_rate
+            + output_tokens as f64 * output_rate
+            + cached_tokens as f64 * cache_rate)
+            / 1_000_000.0,
+    )
+}
+
+fn round_cost(value: f64) -> f64 {
+    (value * 1_000_000.0).round() / 1_000_000.0
+}
+
+pub fn run() {
+    tauri::Builder::default()
+        .invoke_handler(tauri::generate_handler![
+            get_desktop_status,
+            list_software_catalog,
+            fetch_provider_models,
+            run_ready_check,
+            list_providers,
+            save_provider,
+            activate_provider,
+            delete_provider,
+            preview_provider_config,
+            install_client,
+            list_managed_clients,
+            uninstall_client,
+            test_provider,
+            apply_active_provider_configs,
+            apply_provider_config,
+            run_diagnostics,
+            export_diagnostics,
+            launch_client,
+            open_path,
+            open_external,
+            list_skills,
+            install_skill,
+            toggle_skill_app,
+            uninstall_skill,
+            sync_skills,
+            list_mcp_servers,
+            upsert_mcp_server,
+            toggle_mcp_app,
+            toggle_mcp_server,
+            list_mcp_tools,
+            delete_mcp_server,
+            import_mcp_from_apps,
+            sync_mcp_servers,
+            get_usage_stats
+        ])
+        .run(tauri::generate_context!())
+        .expect("failed to run AgentDock");
+}
+
+struct AgentDockDirs {
+    data_dir: PathBuf,
+    config_dir: PathBuf,
+    runtime_dir: PathBuf,
+    clients_dir: PathBuf,
+    skills_dir: PathBuf,
+    mcp_dir: PathBuf,
+    backups_dir: PathBuf,
+    managed_configs_dir: PathBuf,
+}
+
+fn agentdock_dirs() -> Result<AgentDockDirs, String> {
+    let project_dirs = ProjectDirs::from("com", "AgentDock", "AgentDock")
+        .ok_or_else(|| "无法解析当前系统的应用数据目录".to_string())?;
+    let data_dir = project_dirs.data_dir().to_path_buf();
+    let config_dir = project_dirs.config_dir().to_path_buf();
+    let runtime_dir = data_dir.join("runtime");
+    let clients_dir = data_dir.join("clients");
+    let skills_dir = data_dir.join("skills");
+    let mcp_dir = data_dir.join("mcp");
+    let backups_dir = data_dir.join("backups");
+    let managed_configs_dir = config_dir.join("managed-configs");
+    Ok(AgentDockDirs {
+        data_dir,
+        config_dir,
+        runtime_dir,
+        clients_dir,
+        skills_dir,
+        mcp_dir,
+        backups_dir,
+        managed_configs_dir,
+    })
+}
+
+fn ensure_dirs(dirs: &AgentDockDirs) -> Result<(), String> {
+    fs::create_dir_all(&dirs.data_dir).map_err(|err| format!("创建数据目录失败: {}", err))?;
+    fs::create_dir_all(&dirs.config_dir).map_err(|err| format!("创建配置目录失败: {}", err))?;
+    fs::create_dir_all(&dirs.runtime_dir)
+        .map_err(|err| format!("创建托管运行时目录失败: {}", err))?;
+    fs::create_dir_all(&dirs.clients_dir).map_err(|err| format!("创建客户端目录失败: {}", err))?;
+    fs::create_dir_all(&dirs.skills_dir).map_err(|err| format!("创建 Skills 目录失败: {}", err))?;
+    fs::create_dir_all(&dirs.mcp_dir).map_err(|err| format!("创建 MCP 目录失败: {}", err))?;
+    fs::create_dir_all(&dirs.backups_dir).map_err(|err| format!("创建备份目录失败: {}", err))?;
+    fs::create_dir_all(&dirs.managed_configs_dir)
+        .map_err(|err| format!("创建托管配置目录失败: {}", err))?;
+    Ok(())
+}
+
+fn providers_path(dirs: &AgentDockDirs) -> PathBuf {
+    dirs.config_dir.join("providers.json")
+}
+
+fn managed_clients_path(dirs: &AgentDockDirs) -> PathBuf {
+    dirs.config_dir.join("managed-clients.json")
+}
+
+fn skills_path(dirs: &AgentDockDirs) -> PathBuf {
+    dirs.config_dir.join("skills.json")
+}
+
+fn mcp_servers_path(dirs: &AgentDockDirs) -> PathBuf {
+    dirs.config_dir.join("mcp-servers.json")
+}
+
+fn provider_secrets_path(dirs: &AgentDockDirs) -> PathBuf {
+    dirs.config_dir.join("provider-secrets.json")
+}
+
+fn read_provider_secrets(dirs: &AgentDockDirs) -> Result<BTreeMap<String, String>, String> {
+    read_json_or_seed(
+        &provider_secrets_path(dirs),
+        BTreeMap::<String, String>::new(),
+    )
+}
+
+fn write_provider_secrets(
+    dirs: &AgentDockDirs,
+    secrets: &BTreeMap<String, String>,
+) -> Result<(), String> {
+    let path = provider_secrets_path(dirs);
+    write_json(&path, secrets)?;
+    protect_secret_file(&path)
+}
+
+fn write_providers(dirs: &AgentDockDirs, providers: &[ProviderProfile]) -> Result<(), String> {
+    let path = providers_path(dirs);
+    write_json(&path, &providers)?;
+    protect_secret_file(&path)
+}
+
+fn write_json<T: Serialize>(path: &Path, value: &T) -> Result<(), String> {
+    let raw = serde_json::to_string_pretty(value).map_err(|err| err.to_string())?;
+    fs::write(path, raw).map_err(|err| format!("写入配置失败: {}", err))
+}
+
+fn read_json_or_seed<T>(path: &Path, seed: T) -> Result<T, String>
+where
+    T: Serialize + for<'de> Deserialize<'de>,
+{
+    if !path.exists() {
+        write_json(path, &seed)?;
+        return Ok(seed);
+    }
+    let raw = fs::read_to_string(path).map_err(|err| format!("读取配置失败: {}", err))?;
+    serde_json::from_str(&raw).map_err(|err| format!("解析配置失败: {}", err))
+}
+
+fn validate_provider_settings_config(app_id: &str, raw: &str) -> Result<String, String> {
+    let settings: serde_json::Value =
+        serde_json::from_str(raw).map_err(|err| format!("配置文件内容不是有效 JSON: {}", err))?;
+    if !settings.is_object() {
+        return Err("配置文件内容必须是 JSON 对象".to_string());
+    }
+    if app_id == "codex" {
+        let config = settings
+            .get("config")
+            .and_then(serde_json::Value::as_str)
+            .ok_or_else(|| "Codex 配置必须包含 config.toml 内容".to_string())?;
+        config
+            .parse::<toml::Table>()
+            .map_err(|err| format!("config.toml 格式错误: {}", err))?;
+        if !settings
+            .get("auth")
+            .map(serde_json::Value::is_object)
+            .unwrap_or(false)
+        {
+            return Err("Codex 配置必须包含 auth.json 对象".to_string());
+        }
+    } else if app_id == "grok" {
+        let config = settings
+            .get("config")
+            .and_then(serde_json::Value::as_str)
+            .ok_or_else(|| "Grok 配置必须包含 config.toml 内容".to_string())?;
+        config
+            .parse::<toml::Table>()
+            .map_err(|err| format!("config.toml 格式错误: {}", err))?;
+    }
+    serde_json::to_string_pretty(&settings).map_err(|err| err.to_string())
+}
+
+fn materialized_provider_settings(
+    provider: &ProviderProfile,
+    api_key: &str,
+) -> Result<Option<serde_json::Value>, String> {
+    if provider.settings_config.trim().is_empty() {
+        return Ok(None);
+    }
+    let mut settings: serde_json::Value = serde_json::from_str(&provider.settings_config)
+        .map_err(|err| format!("读取供应商配置内容失败: {}", err))?;
+    replace_json_placeholder(&mut settings, api_key);
+    Ok(Some(settings))
+}
+
+fn replace_json_placeholder(value: &mut serde_json::Value, api_key: &str) {
+    match value {
+        serde_json::Value::String(text) => {
+            *text = text.replace("${AGENTDOCK_API_KEY}", api_key);
+        }
+        serde_json::Value::Array(items) => {
+            for item in items {
+                replace_json_placeholder(item, api_key);
+            }
+        }
+        serde_json::Value::Object(entries) => {
+            for value in entries.values_mut() {
+                replace_json_placeholder(value, api_key);
+            }
+        }
+        _ => {}
+    }
+}
+
+fn detect_clients() -> Vec<ClientStatus> {
+    let managed = list_managed_clients().unwrap_or_default();
+    let managed_configs_dir = agentdock_dirs().ok().map(|dirs| dirs.managed_configs_dir);
+    vec![
+        detect_client(
+            "codex",
+            "Codex",
+            &["codex"],
+            user_home_config(".codex/config.toml"),
+            managed_config_path(&managed_configs_dir, "codex"),
+            &managed,
+        ),
+        detect_client(
+            "claude-code",
+            "Claude Code",
+            &["claude"],
+            user_home_config(".claude/settings.json"),
+            managed_config_path(&managed_configs_dir, "claude-code"),
+            &managed,
+        ),
+        detect_client(
+            "claude-desktop",
+            "Claude Desktop",
+            &["claude-desktop", "Claude Desktop"],
+            claude_desktop_config_path(),
+            managed_config_path(&managed_configs_dir, "claude-desktop"),
+            &managed,
+        ),
+        detect_client(
+            "antigravity",
+            "Antigravity CLI",
+            &["agy"],
+            user_home_config(".agy"),
+            managed_config_path(&managed_configs_dir, "antigravity"),
+            &managed,
+        ),
+        detect_client(
+            "grok",
+            "Grok",
+            &["grok"],
+            user_home_config(".grok/config.toml"),
+            managed_config_path(&managed_configs_dir, "grok"),
+            &managed,
+        ),
+        detect_client(
+            "opencode",
+            "OpenCode",
+            &["opencode"],
+            user_home_config(".config/opencode/opencode.json"),
+            managed_config_path(&managed_configs_dir, "opencode"),
+            &managed,
+        ),
+        detect_client(
+            "openclaw",
+            "OpenClaw",
+            &["openclaw"],
+            user_home_config(".openclaw/openclaw.json"),
+            managed_config_path(&managed_configs_dir, "openclaw"),
+            &managed,
+        ),
+        detect_client(
+            "hermes",
+            "Hermes",
+            &["hermes"],
+            user_home_config(".hermes/config.yaml"),
+            managed_config_path(&managed_configs_dir, "hermes"),
+            &managed,
+        ),
+    ]
+}
+
+fn detect_client(
+    id: &str,
+    name: &str,
+    executable_names: &[&str],
+    config_path: Option<PathBuf>,
+    managed_config_path: Option<PathBuf>,
+    managed_clients: &[ManagedClientRecord],
+) -> ClientStatus {
+    let managed = managed_clients
+        .iter()
+        .find(|client| client.id == id && client.installed && managed_client_is_runnable(client));
+    let executable = executable_names
+        .iter()
+        .find_map(|name| find_executable(name))
+        .map(|path| path.display().to_string());
+    let version = executable
+        .as_ref()
+        .and_then(|path| command_version(path).ok())
+        .filter(|version| !version.trim().is_empty());
+
+    let config_path = if managed.is_some() {
+        managed_config_path.and_then(|path| {
+            fs::create_dir_all(&path).ok()?;
+            Some(path.display().to_string())
+        })
+    } else {
+        config_path
+            .as_deref()
+            .and_then(existing_directory_for_path)
+            .map(|path| path.display().to_string())
+    };
+
+    ClientStatus {
+        id: id.to_string(),
+        name: name.to_string(),
+        installed: executable.is_some() || managed.is_some(),
+        version: version.or_else(|| managed.map(|client| client.version.clone())),
+        executable: executable.or_else(|| managed.map(|client| client.launcher_path.clone())),
+        config_path,
+        managed_by_agentdock: managed.is_some(),
+    }
+}
+
+fn managed_config_path(root: &Option<PathBuf>, client_id: &str) -> Option<PathBuf> {
+    root.as_ref().map(|root| root.join(client_id))
+}
+
+fn managed_client_is_runnable(client: &ManagedClientRecord) -> bool {
+    let launcher = PathBuf::from(&client.launcher_path);
+    if !launcher.is_file() {
+        return false;
+    }
+    fs::read_to_string(&launcher)
+        .map(|content| !content.contains("Native client payload will be launched"))
+        .unwrap_or(true)
+}
+
+fn find_executable(name: &str) -> Option<PathBuf> {
+    let path_var = env::var_os("PATH")?;
+    let candidates = executable_candidates(name);
+
+    for dir in env::split_paths(&path_var) {
+        for candidate in &candidates {
+            let full_path = dir.join(candidate);
+            if full_path.is_file() {
+                return Some(full_path);
+            }
+        }
+    }
+
+    None
+}
+
+fn executable_candidates(name: &str) -> Vec<OsString> {
+    if cfg!(windows) {
+        let path_ext = env::var_os("PATHEXT")
+            .and_then(|value| value.into_string().ok())
+            .unwrap_or_else(|| ".EXE;.CMD;.BAT;.COM".to_string());
+        let mut candidates = vec![OsString::from(name)];
+        for ext in path_ext.split(';') {
+            candidates.push(OsString::from(format!("{}{}", name, ext.to_lowercase())));
+            candidates.push(OsString::from(format!("{}{}", name, ext.to_uppercase())));
+        }
+        candidates
+    } else {
+        vec![OsString::from(name)]
+    }
+}
+
+fn command_version(executable: &str) -> Result<String, String> {
+    #[cfg(windows)]
+    let output = if executable.to_ascii_lowercase().ends_with(".cmd")
+        || executable.to_ascii_lowercase().ends_with(".bat")
+    {
+        Command::new("cmd.exe")
+            .args(["/D", "/C", executable, "--version"])
+            .output()
+            .map_err(|err| err.to_string())?
+    } else {
+        Command::new(executable)
+            .arg("--version")
+            .output()
+            .map_err(|err| err.to_string())?
+    };
+    #[cfg(not(windows))]
+    let output = Command::new(executable)
+        .arg("--version")
+        .output()
+        .map_err(|err| err.to_string())?;
+
+    let stdout = String::from_utf8_lossy(&output.stdout).trim().to_string();
+    if !stdout.is_empty() {
+        return Ok(first_line(&stdout));
+    }
+
+    let stderr = String::from_utf8_lossy(&output.stderr).trim().to_string();
+    Ok(first_line(&stderr))
+}
+
+fn first_line(value: &str) -> String {
+    value.lines().next().unwrap_or_default().trim().to_string()
+}
+
+fn user_home_config(relative_path: &str) -> Option<PathBuf> {
+    dirs_home().map(|home| home.join(relative_path))
+}
+
+fn dirs_home() -> Option<PathBuf> {
+    if cfg!(windows) {
+        env::var_os("USERPROFILE").map(PathBuf::from)
+    } else {
+        env::var_os("HOME").map(PathBuf::from)
+    }
+}
+
+fn claude_desktop_config_path() -> Option<PathBuf> {
+    if cfg!(target_os = "macos") {
+        dirs_home().map(|home| {
+            home.join("Library")
+                .join("Application Support")
+                .join("Claude")
+                .join("claude_desktop_config.json")
+        })
+    } else if cfg!(windows) {
+        env::var_os("APPDATA").map(|appdata| {
+            PathBuf::from(appdata)
+                .join("Claude")
+                .join("claude_desktop_config.json")
+        })
+    } else {
+        dirs_home().map(|home| {
+            home.join(".config")
+                .join("Claude")
+                .join("claude_desktop_config.json")
+        })
+    }
+}
+
+struct ClientSpec {
+    id: &'static str,
+    name: &'static str,
+}
+
+fn client_spec(client_id: &str) -> Result<ClientSpec, String> {
+    match client_id {
+        "codex" => Ok(ClientSpec {
+            id: "codex",
+            name: "Codex",
+        }),
+        "claude-code" | "claude" => Ok(ClientSpec {
+            id: "claude-code",
+            name: "Claude Code",
+        }),
+        "claude-desktop" => Ok(ClientSpec {
+            id: "claude-desktop",
+            name: "Claude Desktop",
+        }),
+        "antigravity" | "agy" => Ok(ClientSpec {
+            id: "antigravity",
+            name: "Antigravity CLI",
+        }),
+        "grok" => Ok(ClientSpec {
+            id: "grok",
+            name: "Grok",
+        }),
+        "opencode" => Ok(ClientSpec {
+            id: "opencode",
+            name: "OpenCode",
+        }),
+        "openclaw" => Ok(ClientSpec {
+            id: "openclaw",
+            name: "OpenClaw",
+        }),
+        "hermes" => Ok(ClientSpec {
+            id: "hermes",
+            name: "Hermes",
+        }),
+        other => Err(format!("暂不支持安装客户端: {}", other)),
+    }
+}
+
+async fn download_client_release(
+    client_id: &str,
+    target_dir: &Path,
+) -> Result<(PathBuf, String, String), String> {
+    match client_id {
+        "codex" => match download_codex_from_npm(target_dir).await {
+            Ok(result) => Ok(result),
+            Err(mirror_error) => {
+                download_github_client("openai/codex", codex_asset_name()?, client_id, target_dir)
+                    .await
+                    .map_err(|official_error| {
+                        format!(
+                            "国内镜像与官方源均不可用。镜像: {}; GitHub: {}",
+                            mirror_error, official_error
+                        )
+                    })
+            }
+        },
+        "claude-code" => download_claude_code_from_npm(target_dir).await,
+        "antigravity" => download_antigravity_cli(target_dir).await,
+        "grok" => download_grok_from_npm(target_dir).await,
+        "opencode" => download_opencode_from_npm(target_dir).await,
+        "openclaw" => download_openclaw_client(target_dir).await,
+        _ => Err(format!(
+            "{} 当前只支持本机检测",
+            client_spec(client_id)?.name
+        )),
+    }
+}
+
+fn codex_asset_name() -> Result<&'static str, String> {
+    match (env::consts::OS, env::consts::ARCH) {
+        ("macos", "aarch64") => Ok("codex-aarch64-apple-darwin.tar.gz"),
+        ("macos", "x86_64") => Ok("codex-x86_64-apple-darwin.tar.gz"),
+        ("windows", "aarch64") => Ok("codex-aarch64-pc-windows-msvc.exe.zip"),
+        ("windows", "x86_64") => Ok("codex-x86_64-pc-windows-msvc.exe.zip"),
+        ("linux", "aarch64") => Ok("codex-aarch64-unknown-linux-musl.tar.gz"),
+        ("linux", "x86_64") => Ok("codex-x86_64-unknown-linux-musl.tar.gz"),
+        (os, arch) => Err(format!("Codex 暂不支持当前平台: {} {}", os, arch)),
+    }
+}
+
+async fn download_github_client(
+    repository: &str,
+    asset_name: &str,
+    client_id: &str,
+    target_dir: &Path,
+) -> Result<(PathBuf, String, String), String> {
+    let client = reqwest::Client::builder()
+        .timeout(std::time::Duration::from_secs(300))
+        .user_agent(format!("AgentDock/{}", env!("CARGO_PKG_VERSION")))
+        .build()
+        .map_err(|err| format!("创建下载请求失败: {}", err))?;
+    let release_url = format!(
+        "https://api.github.com/repos/{}/releases/latest",
+        repository
+    );
+    let release: serde_json::Value = client
+        .get(&release_url)
+        .send()
+        .await
+        .map_err(|err| format!("查询最新版本失败: {}", err))?
+        .error_for_status()
+        .map_err(|err| format!("查询最新版本失败: {}", err))?
+        .json()
+        .await
+        .map_err(|err| format!("解析最新版本失败: {}", err))?;
+    let version = release
+        .get("tag_name")
+        .and_then(|value| value.as_str())
+        .unwrap_or("latest")
+        .to_string();
+    let asset = release
+        .get("assets")
+        .and_then(|value| value.as_array())
+        .and_then(|assets| {
+            assets.iter().find(|asset| {
+                asset.get("name").and_then(|value| value.as_str()) == Some(asset_name)
+            })
+        })
+        .ok_or_else(|| format!("最新版本没有适用于本机的安装包: {}", asset_name))?;
+    let url = asset
+        .get("browser_download_url")
+        .and_then(|value| value.as_str())
+        .ok_or_else(|| "安装包缺少下载地址".to_string())?;
+    let expected_digest = asset
+        .get("digest")
+        .and_then(|value| value.as_str())
+        .and_then(|value| value.strip_prefix("sha256:"))
+        .map(str::to_string);
+    let bytes = download_bytes(&client, url).await?;
+    if let Some(expected) = expected_digest {
+        verify_sha256(&bytes, &expected)?;
+    }
+    extract_archive(&bytes, asset_name, target_dir)?;
+    let executable = find_client_executable(target_dir, client_id)?;
+    Ok((
+        executable,
+        version.clone(),
+        format!("GitHub 官方版本 {}", version),
+    ))
+}
+
+async fn download_codex_from_npm(target_dir: &Path) -> Result<(PathBuf, String, String), String> {
+    download_npm_native_client(
+        "@openai/codex",
+        "@openai/codex",
+        Some(codex_npm_platform_suffix()?),
+        None,
+        "codex",
+        target_dir,
+    )
+    .await
+}
+
+async fn download_claude_code_from_npm(
+    target_dir: &Path,
+) -> Result<(PathBuf, String, String), String> {
+    download_npm_native_client(
+        "@anthropic-ai/claude-code",
+        claude_platform_package()?,
+        None,
+        None,
+        "claude-code",
+        target_dir,
+    )
+    .await
+}
+
+#[derive(Debug, Deserialize)]
+struct AntigravityManifest {
+    version: String,
+    url: String,
+    sha512: String,
+}
+
+async fn download_antigravity_cli(target_dir: &Path) -> Result<(PathBuf, String, String), String> {
+    let client = reqwest::Client::builder()
+        .connect_timeout(std::time::Duration::from_secs(12))
+        .timeout(std::time::Duration::from_secs(300))
+        .user_agent(format!("AgentDock/{}", env!("CARGO_PKG_VERSION")))
+        .build()
+        .map_err(|err| format!("创建 Antigravity 下载请求失败: {}", err))?;
+    let manifest_url = antigravity_manifest_url()?;
+    let manifest: AntigravityManifest = client
+        .get(&manifest_url)
+        .send()
+        .await
+        .map_err(|err| format!("查询 Agy 最新版本失败: {}", err))?
+        .error_for_status()
+        .map_err(|err| format!("查询 Agy 最新版本失败: {}", err))?
+        .json()
+        .await
+        .map_err(|err| format!("解析 Agy 版本信息失败: {}", err))?;
+    let bytes = download_bytes(&client, &manifest.url).await?;
+    verify_sha512_hex(&bytes, &manifest.sha512)?;
+
+    let executable = if manifest.url.contains(".tar.gz") {
+        extract_archive(&bytes, "agy.tar.gz", target_dir)?;
+        let source = find_file_named(target_dir, "antigravity")
+            .ok_or_else(|| "Agy 安装包中缺少 antigravity 启动文件".to_string())?;
+        let target = target_dir.join("agy");
+        fs::copy(source, &target).map_err(|err| format!("写入 Agy 启动文件失败: {}", err))?;
+        target
+    } else {
+        let target = target_dir.join(if cfg!(windows) { "agy.exe" } else { "agy" });
+        fs::write(&target, bytes).map_err(|err| format!("写入 Agy 启动文件失败: {}", err))?;
+        target
+    };
+
+    Ok((
+        executable,
+        manifest.version.clone(),
+        format!("Google 官方 Agy {}，SHA-512 校验通过", manifest.version),
+    ))
+}
+
+async fn download_opencode_from_npm(
+    target_dir: &Path,
+) -> Result<(PathBuf, String, String), String> {
+    download_npm_native_client(
+        "opencode-ai",
+        opencode_platform_package()?,
+        None,
+        None,
+        "opencode",
+        target_dir,
+    )
+    .await
+}
+
+async fn download_grok_from_npm(target_dir: &Path) -> Result<(PathBuf, String, String), String> {
+    const GROK_MINIMUM_VERSION: &str = "0.2.101";
+    download_npm_native_client(
+        "@xai-official/grok",
+        grok_platform_package()?,
+        None,
+        Some(GROK_MINIMUM_VERSION),
+        "grok",
+        target_dir,
+    )
+    .await
+}
+
+const MANAGED_NODE_VERSION: &str = "24.15.0";
+
+async fn download_openclaw_client(target_dir: &Path) -> Result<(PathBuf, String, String), String> {
+    let client = reqwest::Client::builder()
+        .connect_timeout(std::time::Duration::from_secs(12))
+        .timeout(std::time::Duration::from_secs(600))
+        .user_agent(format!("AgentDock/{}", env!("CARGO_PKG_VERSION")))
+        .build()
+        .map_err(|err| format!("创建 OpenClaw 下载请求失败: {}", err))?;
+    let (node_asset, node_sha256) = managed_node_asset()?;
+    let node_urls = [
+        format!(
+            "https://npmmirror.com/mirrors/node/v{}/{}",
+            MANAGED_NODE_VERSION, node_asset
+        ),
+        format!(
+            "https://nodejs.org/dist/v{}/{}",
+            MANAGED_NODE_VERSION, node_asset
+        ),
+    ];
+    let mut node_errors = Vec::new();
+    let mut node_bytes = None;
+    for url in node_urls {
+        match download_bytes(&client, &url).await {
+            Ok(bytes) => {
+                verify_sha256(&bytes, node_sha256)?;
+                node_bytes = Some(bytes);
+                break;
+            }
+            Err(error) => node_errors.push(error),
+        }
+    }
+    let node_bytes = node_bytes.ok_or_else(|| {
+        format!(
+            "国内镜像和 Node.js 官方源均不可用: {}",
+            node_errors.join("；")
+        )
+    })?;
+    let runtime_dir = target_dir.join("runtime");
+    fs::create_dir_all(&runtime_dir).map_err(|err| format!("创建 Node 运行时目录失败: {}", err))?;
+    extract_archive(&node_bytes, node_asset, &runtime_dir)?;
+    let node_name = if cfg!(windows) { "node.exe" } else { "node" };
+    let node_path = find_file_named(&runtime_dir, node_name)
+        .ok_or_else(|| "Node 运行时中缺少启动文件".to_string())?;
+    make_executable(&node_path)?;
+    let npm_cli = find_file_named(&runtime_dir, "npm-cli.js")
+        .ok_or_else(|| "Node 运行时中缺少 npm".to_string())?;
+
+    let version = fetch_npm_latest_version(&client, "openclaw")
+        .await?
+        .ok_or_else(|| "无法获取 OpenClaw 最新版本".to_string())?;
+    let app_dir = target_dir.join("app");
+    let cache_dir = target_dir.join("npm-cache");
+    let registries = [
+        ("https://registry.npmmirror.com", "npmmirror 国内镜像"),
+        ("https://registry.npmjs.org", "npm 官方源"),
+    ];
+    let mut install_errors = Vec::new();
+    let mut source_name = "";
+    for (registry, source) in registries {
+        if app_dir.exists() {
+            fs::remove_dir_all(&app_dir)
+                .map_err(|err| format!("清理 OpenClaw 安装目录失败: {}", err))?;
+        }
+        fs::create_dir_all(&app_dir)
+            .map_err(|err| format!("创建 OpenClaw 安装目录失败: {}", err))?;
+        let mut command = Command::new(&node_path);
+        command
+            .arg(&npm_cli)
+            .args(["install", "--omit=dev", "--no-audit", "--no-fund"])
+            .arg(format!("--prefix={}", app_dir.display()))
+            .arg(format!("--registry={}", registry))
+            .arg(format!("openclaw@{}", version))
+            .env("npm_config_cache", &cache_dir)
+            .env("npm_config_update_notifier", "false");
+        prepend_command_path(&mut command, node_path.parent())?;
+        let output = command
+            .output()
+            .map_err(|err| format!("启动 OpenClaw 安装器失败: {}", err))?;
+        if output.status.success() {
+            source_name = source;
+            break;
+        }
+        install_errors.push(format!("{}: {}", source, command_failure_detail(&output)));
+    }
+    if source_name.is_empty() {
+        return Err(format!(
+            "OpenClaw 依赖安装失败: {}",
+            install_errors.join("；")
+        ));
+    }
+
+    let entry = find_file_named(&app_dir, "openclaw.mjs")
+        .ok_or_else(|| "OpenClaw 安装后缺少 openclaw.mjs".to_string())?;
+    let launcher = write_node_client_launcher(target_dir, "openclaw", &node_path, &entry)?;
+    Ok((
+        launcher,
+        version.clone(),
+        format!(
+            "{}，OpenClaw {}，托管 Node {}，npm 完整性校验通过",
+            source_name, version, MANAGED_NODE_VERSION
+        ),
+    ))
+}
+
+async fn install_hermes_client(dirs: &AgentDockDirs) -> Result<InstallClientResult, String> {
+    let install_dir = dirs.clients_dir.join("hermes");
+    let home_dir = install_dir.join("home");
+    let runtime_dir = install_dir.join("runtime");
+    let venv_dir = install_dir.join("venv");
+    fs::create_dir_all(&home_dir).map_err(|err| format!("创建 Hermes HOME 失败: {}", err))?;
+    fs::create_dir_all(&runtime_dir)
+        .map_err(|err| format!("创建 Hermes 运行时目录失败: {}", err))?;
+
+    let client = reqwest::Client::builder()
+        .connect_timeout(std::time::Duration::from_secs(12))
+        .timeout(std::time::Duration::from_secs(600))
+        .user_agent(format!("AgentDock/{}", env!("CARGO_PKG_VERSION")))
+        .build()
+        .map_err(|err| format!("创建 Hermes 下载请求失败: {}", err))?;
+    let version = fetch_pypi_latest_version(&client, "hermes-agent")
+        .await?
+        .ok_or_else(|| "无法获取 Hermes 最新版本".to_string())?;
+
+    let uv_installer_url = if cfg!(windows) {
+        "https://astral.sh/uv/install.ps1"
+    } else {
+        "https://astral.sh/uv/install.sh"
+    };
+    let installer = download_bytes(&client, uv_installer_url).await?;
+    let installer_path = runtime_dir.join(if cfg!(windows) {
+        "install-uv.ps1"
+    } else {
+        "install-uv.sh"
+    });
+    fs::write(&installer_path, installer).map_err(|err| format!("写入 uv 安装器失败: {}", err))?;
+
+    let uv_dir = runtime_dir.join("bin");
+    fs::create_dir_all(&uv_dir).map_err(|err| format!("创建 uv 目录失败: {}", err))?;
+    let uv_path = uv_dir.join(if cfg!(windows) { "uv.exe" } else { "uv" });
+    if !uv_path.is_file() {
+        #[cfg(windows)]
+        let output = Command::new("powershell.exe")
+            .args(["-NoProfile", "-ExecutionPolicy", "Bypass", "-File"])
+            .arg(&installer_path)
+            .env("UV_UNMANAGED_INSTALL", &uv_dir)
+            .env("UV_INSTALL_DIR", &uv_dir)
+            .output()
+            .map_err(|err| format!("启动 uv 安装器失败: {}", err))?;
+        #[cfg(not(windows))]
+        let output = Command::new("/bin/sh")
+            .arg(&installer_path)
+            .env("UV_UNMANAGED_INSTALL", &uv_dir)
+            .output()
+            .map_err(|err| format!("启动 uv 安装器失败: {}", err))?;
+        if !output.status.success() {
+            return Err(format!(
+                "安装 Hermes 托管 uv 失败: {}",
+                command_failure_detail(&output)
+            ));
+        }
+    }
+    if !uv_path.is_file() {
+        return Err("uv 安装器完成后未找到 uv 启动文件".to_string());
+    }
+    make_executable(&uv_path)?;
+
+    let python_install = Command::new(&uv_path)
+        .args(["python", "install", "3.11"])
+        .env("UV_CACHE_DIR", runtime_dir.join("uv-cache"))
+        .env("UV_PYTHON_INSTALL_DIR", runtime_dir.join("python"))
+        .output()
+        .map_err(|err| format!("启动 Python 安装器失败: {}", err))?;
+    if !python_install.status.success() {
+        return Err(format!(
+            "安装 Hermes 托管 Python 失败: {}",
+            command_failure_detail(&python_install)
+        ));
+    }
+
+    if venv_dir.exists() {
+        fs::remove_dir_all(&venv_dir)
+            .map_err(|err| format!("更新 Hermes 虚拟环境失败: {}", err))?;
+    }
+    let venv = Command::new(&uv_path)
+        .arg("venv")
+        .arg(&venv_dir)
+        .args(["--python", "3.11"])
+        .env("UV_CACHE_DIR", runtime_dir.join("uv-cache"))
+        .env("UV_PYTHON_INSTALL_DIR", runtime_dir.join("python"))
+        .output()
+        .map_err(|err| format!("创建 Hermes 虚拟环境失败: {}", err))?;
+    if !venv.status.success() {
+        return Err(format!(
+            "创建 Hermes 虚拟环境失败: {}",
+            command_failure_detail(&venv)
+        ));
+    }
+
+    let python_path = if cfg!(windows) {
+        venv_dir.join("Scripts/python.exe")
+    } else {
+        venv_dir.join("bin/python")
+    };
+    let package_specs = [
+        format!("hermes-agent[all]=={}", version),
+        format!("hermes-agent=={}", version),
+    ];
+    let indexes = [
+        (
+            "https://mirrors.aliyun.com/pypi/simple/",
+            "阿里云 PyPI 镜像",
+        ),
+        ("https://pypi.org/simple/", "PyPI 官方源"),
+    ];
+    let mut installed_source = None;
+    let mut errors = Vec::new();
+    for package_spec in package_specs {
+        for (index, source) in indexes {
+            let output = Command::new(&uv_path)
+                .args(["pip", "install", "--python"])
+                .arg(&python_path)
+                .arg("--index-url")
+                .arg(index)
+                .arg(&package_spec)
+                .env("UV_CACHE_DIR", runtime_dir.join("uv-cache"))
+                .env("UV_PYTHON_INSTALL_DIR", runtime_dir.join("python"))
+                .env("HERMES_HOME", &home_dir)
+                .output()
+                .map_err(|err| format!("启动 Hermes 包安装器失败: {}", err))?;
+            if output.status.success() {
+                installed_source = Some((source, package_spec.contains("[all]")));
+                break;
+            }
+            errors.push(format!("{}: {}", source, command_failure_detail(&output)));
+        }
+        if installed_source.is_some() {
+            break;
+        }
+    }
+    let (source, full_features) =
+        installed_source.ok_or_else(|| format!("Hermes 安装失败: {}", errors.join("；")))?;
+    let launcher = if cfg!(windows) {
+        venv_dir.join("Scripts/hermes.exe")
+    } else {
+        venv_dir.join("bin/hermes")
+    };
+    if !launcher.is_file() {
+        return Err("Hermes 安装完成后缺少启动文件".to_string());
+    }
+    make_executable(&launcher)?;
+    let config_dir = dirs.managed_configs_dir.join("hermes");
+    fs::create_dir_all(&config_dir).map_err(|err| format!("创建 Hermes 配置目录失败: {}", err))?;
+
+    let now = now_rfc3339();
+    let record = ManagedClientRecord {
+        id: "hermes".to_string(),
+        name: "Hermes".to_string(),
+        installed: true,
+        version: command_version(&launcher.display().to_string())
+            .ok()
+            .filter(|value| !value.is_empty())
+            .unwrap_or(version.clone()),
+        install_dir: install_dir.display().to_string(),
+        launcher_path: launcher.display().to_string(),
+        config_dir: config_dir.display().to_string(),
+        installed_at: now.clone(),
+        updated_at: now,
+    };
+    save_managed_client_record(record.clone())?;
+    Ok(InstallClientResult {
+        client: record,
+        message: format!(
+            "Hermes {} 已通过 {} 安装，托管 Python 运行时已就绪{}",
+            version,
+            source,
+            if full_features {
+                ""
+            } else {
+                "（核心功能）"
+            }
+        ),
+    })
+}
+
+async fn download_npm_native_client(
+    root_package: &str,
+    platform_package: &str,
+    platform_version_suffix: Option<&str>,
+    minimum_version: Option<&str>,
+    client_id: &str,
+    target_dir: &Path,
+) -> Result<(PathBuf, String, String), String> {
+    let client = reqwest::Client::builder()
+        .connect_timeout(std::time::Duration::from_secs(12))
+        .timeout(std::time::Duration::from_secs(300))
+        .user_agent(format!("AgentDock/{}", env!("CARGO_PKG_VERSION")))
+        .build()
+        .map_err(|err| format!("创建下载请求失败: {}", err))?;
+    let registries = [
+        ("https://registry.npmmirror.com", "npmmirror 国内镜像"),
+        ("https://registry.npmjs.org", "npm 官方源"),
+    ];
+    let mut errors = Vec::new();
+
+    for (registry, source_name) in registries {
+        let result = async {
+            let root_url = npm_metadata_url(registry, root_package, "latest");
+            let root_metadata: serde_json::Value = client
+                .get(&root_url)
+                .send()
+                .await
+                .map_err(|err| format!("查询版本失败: {}", err))?
+                .error_for_status()
+                .map_err(|err| format!("查询版本失败: {}", err))?
+                .json()
+                .await
+                .map_err(|err| format!("解析版本失败: {}", err))?;
+            let reported_version = root_metadata
+                .get("version")
+                .and_then(serde_json::Value::as_str)
+                .ok_or_else(|| "版本信息无效".to_string())?;
+            let version = minimum_version
+                .filter(|minimum| version_is_newer(minimum, reported_version))
+                .unwrap_or(reported_version);
+            let platform_version = platform_version_suffix
+                .map(|suffix| format!("{}-{}", version, suffix))
+                .unwrap_or_else(|| version.to_string());
+            let metadata_url = npm_metadata_url(registry, platform_package, &platform_version);
+            let metadata: serde_json::Value = client
+                .get(&metadata_url)
+                .send()
+                .await
+                .map_err(|err| format!("查询本机安装包失败: {}", err))?
+                .error_for_status()
+                .map_err(|err| format!("查询本机安装包失败: {}", err))?
+                .json()
+                .await
+                .map_err(|err| format!("解析安装包失败: {}", err))?;
+            let dist = metadata
+                .get("dist")
+                .ok_or_else(|| "安装包缺少校验信息".to_string())?;
+            let url = dist
+                .get("tarball")
+                .and_then(serde_json::Value::as_str)
+                .ok_or_else(|| "安装包缺少下载地址".to_string())?;
+            let integrity = dist
+                .get("integrity")
+                .and_then(serde_json::Value::as_str)
+                .ok_or_else(|| "安装包缺少 SHA-512 校验".to_string())?;
+            let bytes = download_bytes(&client, url).await?;
+            verify_npm_integrity(&bytes, integrity)?;
+            extract_archive(&bytes, "client.tgz", target_dir)?;
+            if client_id == "grok" {
+                decompress_grok_binary(target_dir)?;
+            }
+            let executable = find_client_executable(target_dir, client_id)?;
+            Ok::<_, String>((executable, version.to_string()))
+        }
+        .await;
+
+        match result {
+            Ok((executable, version)) => {
+                return Ok((
+                    executable,
+                    version.clone(),
+                    format!("{}，官方包版本 {}，SHA-512 校验通过", source_name, version),
+                ));
+            }
+            Err(error) => errors.push(format!("{}: {}", source_name, error)),
+        }
+    }
+
+    Err(errors.join("；"))
+}
+
+fn decompress_grok_binary(root: &Path) -> Result<PathBuf, String> {
+    let compressed_name = if cfg!(windows) {
+        "grok.exe.br"
+    } else {
+        "grok.br"
+    };
+    let compressed_path = find_file_named(root, compressed_name)
+        .ok_or_else(|| "Grok 安装包中缺少平台二进制".to_string())?;
+    let output_name = compressed_name
+        .strip_suffix(".br")
+        .ok_or_else(|| "Grok 安装包文件名无效".to_string())?;
+    let output_path = compressed_path.with_file_name(output_name);
+    let compressed =
+        fs::read(&compressed_path).map_err(|err| format!("读取 Grok 安装包失败: {}", err))?;
+    let mut decoder = brotli::Decompressor::new(Cursor::new(compressed), 4096);
+    let mut executable = Vec::new();
+    decoder
+        .read_to_end(&mut executable)
+        .map_err(|err| format!("解压 Grok 启动文件失败: {}", err))?;
+    fs::write(&output_path, executable)
+        .map_err(|err| format!("写入 Grok 启动文件失败: {}", err))?;
+    make_executable(&output_path)?;
+    Ok(output_path)
+}
+
+fn npm_metadata_url(registry: &str, package: &str, version: &str) -> String {
+    format!("{}/{}/{}", registry, package.replace('/', "%2F"), version)
+}
+
+async fn load_software_catalog_seeds(client: &reqwest::Client) -> Vec<SoftwareCatalogSeed> {
+    if let Some(url) = option_env!("AGENTDOCK_SOFTWARE_CATALOG_URL") {
+        if let Ok(response) = client.get(url).send().await {
+            if let Ok(response) = response.error_for_status() {
+                if let Ok(payload) = response.json::<RemoteSoftwareCatalog>().await {
+                    if !payload.items.is_empty() {
+                        return payload.items;
+                    }
+                }
+            }
+        }
+    }
+    built_in_software_catalog()
+}
+
+fn built_in_software_catalog() -> Vec<SoftwareCatalogSeed> {
+    vec![
+        SoftwareCatalogSeed {
+            id: "codex".to_string(),
+            client_id: "codex".to_string(),
+            name: "Codex".to_string(),
+            description: "OpenAI 官方终端编程代理，适合代码生成、修改和自动化任务。".to_string(),
+            publisher: "OpenAI".to_string(),
+            website_url: "https://github.com/openai/codex".to_string(),
+            category: "编程客户端".to_string(),
+            recommended: true,
+            install_supported: true,
+        },
+        SoftwareCatalogSeed {
+            id: "claude-code".to_string(),
+            client_id: "claude-code".to_string(),
+            name: "Claude Code".to_string(),
+            description: "Anthropic 官方终端编程代理，支持代码库分析和多文件任务。".to_string(),
+            publisher: "Anthropic".to_string(),
+            website_url: "https://www.anthropic.com/claude-code".to_string(),
+            category: "编程客户端".to_string(),
+            recommended: true,
+            install_supported: true,
+        },
+        SoftwareCatalogSeed {
+            id: "antigravity".to_string(),
+            client_id: "antigravity".to_string(),
+            name: "Antigravity CLI".to_string(),
+            description: "Google 新一代终端代理，Agy 已接替原 Gemini CLI 工作流。".to_string(),
+            publisher: "Google".to_string(),
+            website_url: "https://antigravity.google/product/antigravity-cli".to_string(),
+            category: "编程客户端".to_string(),
+            recommended: true,
+            install_supported: true,
+        },
+        SoftwareCatalogSeed {
+            id: "opencode".to_string(),
+            client_id: "opencode".to_string(),
+            name: "OpenCode".to_string(),
+            description: "开源终端编程代理，可连接多种模型供应商。".to_string(),
+            publisher: "Anomaly".to_string(),
+            website_url: "https://opencode.ai".to_string(),
+            category: "编程客户端".to_string(),
+            recommended: true,
+            install_supported: true,
+        },
+        SoftwareCatalogSeed {
+            id: "grok".to_string(),
+            client_id: "grok".to_string(),
+            name: "Grok".to_string(),
+            description: "xAI 官方终端编程代理，支持规划、子代理、MCP 和并行任务。".to_string(),
+            publisher: "xAI".to_string(),
+            website_url: "https://x.ai/cli".to_string(),
+            category: "编程客户端".to_string(),
+            recommended: true,
+            install_supported: true,
+        },
+        SoftwareCatalogSeed {
+            id: "openclaw".to_string(),
+            client_id: "openclaw".to_string(),
+            name: "OpenClaw".to_string(),
+            description: "可连接聊天渠道的本地个人 AI 助手和自动化网关。".to_string(),
+            publisher: "OpenClaw".to_string(),
+            website_url: "https://openclaw.ai".to_string(),
+            category: "智能助手".to_string(),
+            recommended: false,
+            install_supported: true,
+        },
+        SoftwareCatalogSeed {
+            id: "hermes".to_string(),
+            client_id: "hermes".to_string(),
+            name: "Hermes Agent".to_string(),
+            description: "Nous Research 开源智能代理，包含记忆、技能和消息网关。".to_string(),
+            publisher: "Nous Research".to_string(),
+            website_url: "https://hermes-agent.nousresearch.com".to_string(),
+            category: "智能助手".to_string(),
+            recommended: false,
+            install_supported: true,
+        },
+        SoftwareCatalogSeed {
+            id: "claude-desktop".to_string(),
+            client_id: "claude-desktop".to_string(),
+            name: "Claude Desktop".to_string(),
+            description: "Anthropic 桌面客户端，AgentDock 可检测并同步 MCP 配置。".to_string(),
+            publisher: "Anthropic".to_string(),
+            website_url: "https://claude.ai/download".to_string(),
+            category: "桌面客户端".to_string(),
+            recommended: false,
+            install_supported: false,
+        },
+    ]
+}
+
+async fn latest_client_version(
+    client: &reqwest::Client,
+    client_id: &str,
+) -> Result<Option<String>, String> {
+    match client_id {
+        "codex" => fetch_npm_latest_version(client, "@openai/codex").await,
+        "claude-code" => fetch_npm_latest_version(client, "@anthropic-ai/claude-code").await,
+        "antigravity" => {
+            let manifest: AntigravityManifest = client
+                .get(antigravity_manifest_url()?)
+                .send()
+                .await
+                .map_err(|err| err.to_string())?
+                .error_for_status()
+                .map_err(|err| err.to_string())?
+                .json()
+                .await
+                .map_err(|err| err.to_string())?;
+            Ok(Some(manifest.version))
+        }
+        "opencode" => fetch_npm_latest_version(client, "opencode-ai").await,
+        "grok" => fetch_npm_latest_version(client, "@xai-official/grok").await,
+        "openclaw" => fetch_npm_latest_version(client, "openclaw").await,
+        "hermes" => fetch_pypi_latest_version(client, "hermes-agent").await,
+        _ => Ok(None),
+    }
+}
+
+async fn fetch_npm_latest_version(
+    client: &reqwest::Client,
+    package: &str,
+) -> Result<Option<String>, String> {
+    let mut errors = Vec::new();
+    let mut versions = Vec::new();
+    for registry in [
+        "https://registry.npmmirror.com",
+        "https://registry.npmjs.org",
+    ] {
+        match client
+            .get(npm_metadata_url(registry, package, "latest"))
+            .send()
+            .await
+        {
+            Ok(response) => match response.error_for_status() {
+                Ok(response) => match response.json::<serde_json::Value>().await {
+                    Ok(payload) => {
+                        if let Some(version) =
+                            payload.get("version").and_then(|value| value.as_str())
+                        {
+                            versions.push(version.to_string());
+                            continue;
+                        }
+                        errors.push(format!("{} 返回的版本信息无效", registry));
+                    }
+                    Err(error) => errors.push(error.to_string()),
+                },
+                Err(error) => errors.push(error.to_string()),
+            },
+            Err(error) => errors.push(error.to_string()),
+        }
+    }
+    versions.sort_by_key(|version| version_numbers(version));
+    if let Some(version) = versions.pop() {
+        Ok(Some(version))
+    } else {
+        Err(errors.join("；"))
+    }
+}
+
+async fn fetch_pypi_latest_version(
+    client: &reqwest::Client,
+    package: &str,
+) -> Result<Option<String>, String> {
+    let url = format!("https://pypi.org/pypi/{}/json", package);
+    let payload: serde_json::Value = client
+        .get(url)
+        .send()
+        .await
+        .map_err(|err| err.to_string())?
+        .error_for_status()
+        .map_err(|err| err.to_string())?
+        .json()
+        .await
+        .map_err(|err| err.to_string())?;
+    Ok(payload
+        .get("info")
+        .and_then(|info| info.get("version"))
+        .and_then(|version| version.as_str())
+        .map(str::to_string))
+}
+
+fn fallback_models(app_id: &str) -> Vec<String> {
+    let models: &[&str] = match app_id {
+        "claude-code" | "claude-desktop" => {
+            &["claude-sonnet-5", "claude-opus-4-8", "claude-haiku-4-5"]
+        }
+        "antigravity" => &["gemini-3.5-pro", "gemini-3.5-flash", "gemini-3.1-pro"],
+        "grok" => &["grok-build", "grok-code-fast-1", "grok-4.1-fast"],
+        "opencode" | "openclaw" | "hermes" => &[
+            "gpt-5.6-sol",
+            "claude-sonnet-5",
+            "gemini-3.5-pro",
+            "deepseek-chat",
+        ],
+        _ => &["gpt-5.6-sol", "gpt-5.5-codex", "gpt-5.5"],
+    };
+    models.iter().map(|model| (*model).to_string()).collect()
+}
+
+fn parse_model_ids(payload: &serde_json::Value) -> Vec<String> {
+    let entries = payload
+        .get("data")
+        .and_then(serde_json::Value::as_array)
+        .or_else(|| payload.get("models").and_then(serde_json::Value::as_array));
+    let mut models = Vec::new();
+    for entry in entries.into_iter().flatten() {
+        let model = entry
+            .get("id")
+            .and_then(serde_json::Value::as_str)
+            .or_else(|| entry.get("name").and_then(serde_json::Value::as_str));
+        if let Some(model) = model {
+            let model = model.trim_start_matches("models/").trim();
+            if !model.is_empty() && !models.iter().any(|item| item == model) {
+                models.push(model.to_string());
+            }
+        }
+    }
+    models
+}
+
+fn version_is_newer(latest: &str, current: &str) -> bool {
+    let latest = version_numbers(latest);
+    let current = version_numbers(current);
+    !latest.is_empty() && !current.is_empty() && latest > current
+}
+
+fn version_numbers(value: &str) -> Vec<u64> {
+    let mut groups = Vec::new();
+    let mut current = String::new();
+    for character in value.chars() {
+        if character.is_ascii_digit() {
+            current.push(character);
+        } else if !current.is_empty() {
+            groups.push(current.parse::<u64>().unwrap_or(0));
+            current.clear();
+        }
+    }
+    if !current.is_empty() {
+        groups.push(current.parse::<u64>().unwrap_or(0));
+    }
+    while groups.last() == Some(&0) {
+        groups.pop();
+    }
+    groups
+}
+
+fn migrate_app_ids(apps: &mut Vec<String>) -> bool {
+    let mut migrated = false;
+    for app in apps.iter_mut() {
+        if app == "gemini" {
+            *app = "antigravity".to_string();
+            migrated = true;
+        }
+    }
+    apps.sort();
+    apps.dedup();
+    migrated
+}
+
+fn existing_directory_for_path(path: &Path) -> Option<PathBuf> {
+    let mut current = if path.is_dir() {
+        path.to_path_buf()
+    } else if path.is_file() {
+        path.parent()?.to_path_buf()
+    } else {
+        path.parent()?.to_path_buf()
+    };
+    loop {
+        if current.is_dir() {
+            return Some(current);
+        }
+        current = current.parent()?.to_path_buf();
+    }
+}
+
+fn antigravity_manifest_url() -> Result<String, String> {
+    let platform = match (env::consts::OS, env::consts::ARCH) {
+        ("macos", "aarch64") => "darwin_arm64",
+        ("macos", "x86_64") => "darwin_amd64",
+        ("windows", "aarch64") => "windows_arm64",
+        ("windows", "x86_64") => "windows_amd64",
+        ("linux", "aarch64") => "linux_arm64",
+        ("linux", "x86_64") => "linux_amd64",
+        (os, arch) => return Err(format!("Antigravity 暂不支持当前平台: {} {}", os, arch)),
+    };
+    Ok(format!(
+        "https://antigravity-cli-auto-updater-974169037036.us-central1.run.app/manifests/{}.json",
+        platform
+    ))
+}
+
+fn opencode_platform_package() -> Result<&'static str, String> {
+    match (env::consts::OS, env::consts::ARCH, linux_uses_musl()) {
+        ("macos", "aarch64", _) => Ok("opencode-darwin-arm64"),
+        ("macos", "x86_64", _) => Ok("opencode-darwin-x64"),
+        ("windows", "aarch64", _) => Ok("opencode-windows-arm64"),
+        ("windows", "x86_64", _) => Ok("opencode-windows-x64"),
+        ("linux", "aarch64", true) => Ok("opencode-linux-arm64-musl"),
+        ("linux", "x86_64", true) => Ok("opencode-linux-x64-musl"),
+        ("linux", "aarch64", false) => Ok("opencode-linux-arm64"),
+        ("linux", "x86_64", false) => Ok("opencode-linux-x64"),
+        (os, arch, _) => Err(format!("OpenCode 暂不支持当前平台: {} {}", os, arch)),
+    }
+}
+
+fn linux_uses_musl() -> bool {
+    if env::consts::OS != "linux" {
+        return false;
+    }
+    Path::new("/lib/libc.musl-x86_64.so.1").exists()
+        || Path::new("/lib/libc.musl-aarch64.so.1").exists()
+        || Command::new("ldd")
+            .arg("--version")
+            .output()
+            .map(|output| {
+                String::from_utf8_lossy(&output.stdout)
+                    .to_ascii_lowercase()
+                    .contains("musl")
+                    || String::from_utf8_lossy(&output.stderr)
+                        .to_ascii_lowercase()
+                        .contains("musl")
+            })
+            .unwrap_or(false)
+}
+
+fn managed_node_asset() -> Result<(&'static str, &'static str), String> {
+    match (env::consts::OS, env::consts::ARCH) {
+        ("macos", "aarch64") => Ok((
+            "node-v24.15.0-darwin-arm64.tar.gz",
+            "372331b969779ab5d15b949884fc6eaf88d5afe87bde8ba881d6400b9100ffc4",
+        )),
+        ("macos", "x86_64") => Ok((
+            "node-v24.15.0-darwin-x64.tar.gz",
+            "ffd5ee293467927f3ee731a553eb88fd1f48cf74eebc2d74a6babe4af228673b",
+        )),
+        ("linux", "aarch64") => Ok((
+            "node-v24.15.0-linux-arm64.tar.gz",
+            "73afc234d558c24919875f51c2d1ea002a2ada4ea6f83601a383869fefa64eed",
+        )),
+        ("linux", "x86_64") => Ok((
+            "node-v24.15.0-linux-x64.tar.gz",
+            "44836872d9aec49f1e6b52a9a922872db9a2b02d235a616a5681b6a85fec8d89",
+        )),
+        ("windows", "aarch64") => Ok((
+            "node-v24.15.0-win-arm64.zip",
+            "c9eb7402eda26e2ba7e44b6727fc85a8de56c5095b1f71ebd3062892211aa116",
+        )),
+        ("windows", "x86_64") => Ok((
+            "node-v24.15.0-win-x64.zip",
+            "cc5149eabd53779ce1e7bdc5401643622d0c7e6800ade18928a767e940bb0e62",
+        )),
+        (os, arch) => Err(format!("OpenClaw 暂不支持当前平台: {} {}", os, arch)),
+    }
+}
+
+fn prepend_command_path(command: &mut Command, path: Option<&Path>) -> Result<(), String> {
+    let Some(path) = path else {
+        return Ok(());
+    };
+    let mut entries = vec![path.to_path_buf()];
+    if let Some(current) = env::var_os("PATH") {
+        entries.extend(env::split_paths(&current));
+    }
+    let joined = env::join_paths(entries).map_err(|err| format!("生成托管 PATH 失败: {}", err))?;
+    command.env("PATH", joined);
+    Ok(())
+}
+
+fn command_failure_detail(output: &std::process::Output) -> String {
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let detail = if stderr.trim().is_empty() {
+        stdout
+    } else {
+        stderr
+    };
+    let lines = detail.lines().rev().take(8).collect::<Vec<_>>();
+    if lines.is_empty() {
+        format!("进程退出状态 {}", output.status)
+    } else {
+        lines.into_iter().rev().collect::<Vec<_>>().join(" | ")
+    }
+}
+
+fn find_file_named(root: &Path, expected_name: &str) -> Option<PathBuf> {
+    let mut directories = vec![root.to_path_buf()];
+    while let Some(directory) = directories.pop() {
+        let entries = fs::read_dir(directory).ok()?;
+        for entry in entries.flatten() {
+            let path = entry.path();
+            if path.is_dir() {
+                directories.push(path);
+            } else if path
+                .file_name()
+                .and_then(|name| name.to_str())
+                .map(|name| name.eq_ignore_ascii_case(expected_name))
+                .unwrap_or(false)
+            {
+                return Some(path);
+            }
+        }
+    }
+    None
+}
+
+fn write_node_client_launcher(
+    root: &Path,
+    client_id: &str,
+    node_path: &Path,
+    entry_path: &Path,
+) -> Result<PathBuf, String> {
+    let node_relative = node_path
+        .strip_prefix(root)
+        .map_err(|_| "Node 启动路径不在托管目录内".to_string())?
+        .to_string_lossy()
+        .replace('\\', "/");
+    let entry_relative = entry_path
+        .strip_prefix(root)
+        .map_err(|_| "客户端入口不在托管目录内".to_string())?
+        .to_string_lossy()
+        .replace('\\', "/");
+
+    #[cfg(windows)]
+    let (launcher, content) = {
+        let launcher = root.join(format!("{}.cmd", client_id));
+        let node = node_relative.replace('/', "\\");
+        let entry = entry_relative.replace('/', "\\");
+        (
+            launcher,
+            format!("@echo off\r\n\"%~dp0{}\" \"%~dp0{}\" %*\r\n", node, entry),
+        )
+    };
+    #[cfg(not(windows))]
+    let (launcher, content) = {
+        let launcher = root.join(client_id);
+        (
+            launcher,
+            format!(
+                "#!/bin/sh\nROOT=$(CDPATH= cd -- \"$(dirname -- \"$0\")\" && pwd)\nexec \"$ROOT/{}\" \"$ROOT/{}\" \"$@\"\n",
+                node_relative, entry_relative
+            ),
+        )
+    };
+    fs::write(&launcher, content).map_err(|err| format!("写入客户端启动器失败: {}", err))?;
+    make_executable(&launcher)?;
+    Ok(launcher)
+}
+
+fn save_managed_client_record(record: ManagedClientRecord) -> Result<(), String> {
+    let dirs = agentdock_dirs()?;
+    let mut clients = list_managed_clients()?;
+    clients.retain(|client| client.id != record.id);
+    clients.push(record);
+    write_json(&managed_clients_path(&dirs), &clients)
+}
+
+fn codex_npm_platform_suffix() -> Result<&'static str, String> {
+    match (env::consts::OS, env::consts::ARCH) {
+        ("macos", "aarch64") => Ok("darwin-arm64"),
+        ("macos", "x86_64") => Ok("darwin-x64"),
+        ("windows", "aarch64") => Ok("win32-arm64"),
+        ("windows", "x86_64") => Ok("win32-x64"),
+        ("linux", "aarch64") => Ok("linux-arm64"),
+        ("linux", "x86_64") => Ok("linux-x64"),
+        (os, arch) => Err(format!("Codex 暂不支持当前平台: {} {}", os, arch)),
+    }
+}
+
+fn claude_platform_package() -> Result<&'static str, String> {
+    match (env::consts::OS, env::consts::ARCH) {
+        ("macos", "aarch64") => Ok("@anthropic-ai/claude-code-darwin-arm64"),
+        ("macos", "x86_64") => Ok("@anthropic-ai/claude-code-darwin-x64"),
+        ("windows", "aarch64") => Ok("@anthropic-ai/claude-code-win32-arm64"),
+        ("windows", "x86_64") => Ok("@anthropic-ai/claude-code-win32-x64"),
+        ("linux", "aarch64") => Ok("@anthropic-ai/claude-code-linux-arm64"),
+        ("linux", "x86_64") => Ok("@anthropic-ai/claude-code-linux-x64"),
+        (os, arch) => Err(format!("Claude Code 暂不支持当前平台: {} {}", os, arch)),
+    }
+}
+
+fn grok_platform_package() -> Result<&'static str, String> {
+    match (env::consts::OS, env::consts::ARCH) {
+        ("macos", "aarch64") => Ok("@xai-official/grok-darwin-arm64"),
+        ("macos", "x86_64") => Ok("@xai-official/grok-darwin-x64"),
+        ("windows", "aarch64") => Ok("@xai-official/grok-win32-arm64"),
+        ("windows", "x86_64") => Ok("@xai-official/grok-win32-x64"),
+        ("linux", "aarch64") => Ok("@xai-official/grok-linux-arm64"),
+        ("linux", "x86_64") => Ok("@xai-official/grok-linux-x64"),
+        (os, arch) => Err(format!("Grok 暂不支持当前平台: {} {}", os, arch)),
+    }
+}
+
+async fn download_bytes(client: &reqwest::Client, url: &str) -> Result<Vec<u8>, String> {
+    let response = client
+        .get(url)
+        .send()
+        .await
+        .map_err(|err| format!("下载安装包失败: {}", err))?
+        .error_for_status()
+        .map_err(|err| format!("下载安装包失败: {}", err))?;
+    response
+        .bytes()
+        .await
+        .map(|bytes| bytes.to_vec())
+        .map_err(|err| format!("读取安装包失败: {}", err))
+}
+
+fn verify_sha256(bytes: &[u8], expected: &str) -> Result<(), String> {
+    let actual = format!("{:x}", Sha256::digest(bytes));
+    if actual.eq_ignore_ascii_case(expected) {
+        Ok(())
+    } else {
+        Err("安装包 SHA-256 校验失败，已停止安装".to_string())
+    }
+}
+
+fn verify_sha512_hex(bytes: &[u8], expected: &str) -> Result<(), String> {
+    let actual = format!("{:x}", Sha512::digest(bytes));
+    if actual.eq_ignore_ascii_case(expected) {
+        Ok(())
+    } else {
+        Err("安装包 SHA-512 校验失败，已停止安装".to_string())
+    }
+}
+
+fn verify_npm_integrity(bytes: &[u8], integrity: &str) -> Result<(), String> {
+    let expected = integrity
+        .strip_prefix("sha512-")
+        .ok_or_else(|| "不支持的 npm 完整性校验格式".to_string())?;
+    let actual = BASE64_STANDARD.encode(Sha512::digest(bytes));
+    if actual == expected {
+        Ok(())
+    } else {
+        Err("安装包 SHA-512 校验失败，已停止安装".to_string())
+    }
+}
+
+fn extract_archive(bytes: &[u8], archive_name: &str, target_dir: &Path) -> Result<(), String> {
+    if archive_name.ends_with(".zip") {
+        let mut archive = zip::ZipArchive::new(Cursor::new(bytes))
+            .map_err(|err| format!("打开 ZIP 安装包失败: {}", err))?;
+        for index in 0..archive.len() {
+            let mut entry = archive
+                .by_index(index)
+                .map_err(|err| format!("读取 ZIP 安装包失败: {}", err))?;
+            let relative = entry
+                .enclosed_name()
+                .ok_or_else(|| "ZIP 安装包包含不安全路径".to_string())?;
+            let output = target_dir.join(relative);
+            if entry.is_dir() {
+                fs::create_dir_all(&output).map_err(|err| format!("创建安装目录失败: {}", err))?;
+                continue;
+            }
+            if let Some(parent) = output.parent() {
+                fs::create_dir_all(parent).map_err(|err| format!("创建安装目录失败: {}", err))?;
+            }
+            let mut file =
+                fs::File::create(&output).map_err(|err| format!("写入安装文件失败: {}", err))?;
+            std::io::copy(&mut entry, &mut file)
+                .map_err(|err| format!("解压安装文件失败: {}", err))?;
+        }
+        return Ok(());
+    }
+
+    if archive_name.ends_with(".tar.gz") || archive_name.ends_with(".tgz") {
+        let decoder = GzDecoder::new(Cursor::new(bytes));
+        let mut archive = tar::Archive::new(decoder);
+        archive
+            .unpack(target_dir)
+            .map_err(|err| format!("解压安装包失败: {}", err))?;
+        return Ok(());
+    }
+
+    Err(format!("不支持的安装包格式: {}", archive_name))
+}
+
+fn find_client_executable(root: &Path, client_id: &str) -> Result<PathBuf, String> {
+    let prefix = if client_id == "claude-code" {
+        "claude"
+    } else {
+        client_id
+    };
+    let mut directories = vec![root.to_path_buf()];
+    while let Some(directory) = directories.pop() {
+        for entry in fs::read_dir(&directory).map_err(|err| format!("检查安装文件失败: {}", err))?
+        {
+            let entry = entry.map_err(|err| format!("检查安装文件失败: {}", err))?;
+            let path = entry.path();
+            if path.is_dir() {
+                directories.push(path);
+                continue;
+            }
+            let name = path
+                .file_name()
+                .and_then(|value| value.to_str())
+                .unwrap_or_default()
+                .to_ascii_lowercase();
+            let valid_name = name == prefix
+                || name == format!("{}.exe", prefix)
+                || name.starts_with(&format!("{}-", prefix));
+            let ignored = name.ends_with(".sigstore")
+                || name.ends_with(".sha256")
+                || name.ends_with(".txt")
+                || name.ends_with(".json");
+            if valid_name && !ignored {
+                return Ok(path);
+            }
+        }
+    }
+    Err(format!("安装包中没有找到 {} 启动文件", client_id))
+}
+
+fn bundled_client_payload_dir(client_id: &str) -> Option<PathBuf> {
+    let platform = env::consts::OS;
+    let exe = env::current_exe().ok()?;
+    let mut roots = Vec::new();
+    if let Some(parent) = exe.parent() {
+        roots.push(parent.join("resources"));
+        roots.push(parent.join("../Resources"));
+        roots.push(parent.join("../../Resources"));
+        roots.push(parent.to_path_buf());
+    }
+
+    roots
+        .into_iter()
+        .map(|root| root.join("installers").join(platform).join(client_id))
+        .find(|candidate| candidate.is_dir())
+}
+
+fn copy_dir_all(from: &Path, to: &Path) -> Result<(), String> {
+    fs::create_dir_all(to).map_err(|err| format!("创建目录失败: {}", err))?;
+    for entry in fs::read_dir(from).map_err(|err| format!("读取 payload 目录失败: {}", err))?
+    {
+        let entry = entry.map_err(|err| format!("读取 payload 项失败: {}", err))?;
+        let file_type = entry
+            .file_type()
+            .map_err(|err| format!("读取 payload 类型失败: {}", err))?;
+        let target = to.join(entry.file_name());
+        if file_type.is_dir() {
+            copy_dir_all(&entry.path(), &target)?;
+        } else if file_type.is_file() {
+            fs::copy(entry.path(), target)
+                .map_err(|err| format!("复制 payload 文件失败: {}", err))?;
+        }
+    }
+    Ok(())
+}
+
+#[cfg(unix)]
+fn make_executable(path: &Path) -> Result<(), String> {
+    use std::os::unix::fs::PermissionsExt;
+    let mut permissions = fs::metadata(path)
+        .map_err(|err| format!("读取启动器权限失败: {}", err))?
+        .permissions();
+    permissions.set_mode(0o755);
+    fs::set_permissions(path, permissions).map_err(|err| format!("设置启动器权限失败: {}", err))
+}
+
+#[cfg(unix)]
+fn make_private_executable(path: &Path) -> Result<(), String> {
+    use std::os::unix::fs::PermissionsExt;
+    let mut permissions = fs::metadata(path)
+        .map_err(|err| format!("读取启动器权限失败: {}", err))?
+        .permissions();
+    permissions.set_mode(0o700);
+    fs::set_permissions(path, permissions).map_err(|err| format!("设置启动器权限失败: {}", err))
+}
+
+#[cfg(not(unix))]
+fn make_executable(_path: &Path) -> Result<(), String> {
+    Ok(())
+}
+
+fn default_providers() -> Vec<ProviderProfile> {
+    Vec::new()
+}
+
+fn supported_provider_apps() -> [&'static str; 8] {
+    [
+        "claude-code",
+        "claude-desktop",
+        "codex",
+        "antigravity",
+        "grok",
+        "opencode",
+        "openclaw",
+        "hermes",
+    ]
+}
+
+fn default_skills() -> Vec<SkillRecord> {
+    let now = now_rfc3339();
+    vec![
+        SkillRecord {
+            id: "review".to_string(),
+            name: "review".to_string(),
+            description: "读取 diff，输出风险、回归和测试建议".to_string(),
+            source: "built-in".to_string(),
+            installed: true,
+            apps: vec!["codex".to_string(), "claude-code".to_string()],
+            updated_at: now.clone(),
+        },
+        SkillRecord {
+            id: "browse".to_string(),
+            name: "browse".to_string(),
+            description: "浏览器 QA、截图、交互和控制台检查".to_string(),
+            source: "built-in".to_string(),
+            installed: false,
+            apps: vec!["codex".to_string()],
+            updated_at: now.clone(),
+        },
+        SkillRecord {
+            id: "design-review".to_string(),
+            name: "design-review".to_string(),
+            description: "设计 QA 后给出可执行修复".to_string(),
+            source: "built-in".to_string(),
+            installed: false,
+            apps: vec!["codex".to_string()],
+            updated_at: now,
+        },
+    ]
+}
+
+fn default_mcp_servers() -> Vec<McpServerRecord> {
+    let mut filesystem_env = BTreeMap::new();
+    filesystem_env.insert("NODE_ENV".to_string(), "production".to_string());
+    vec![
+        McpServerRecord {
+            id: "filesystem".to_string(),
+            name: "filesystem".to_string(),
+            description: "允许 AI 客户端访问指定的本地目录".to_string(),
+            homepage: "https://github.com/modelcontextprotocol/servers".to_string(),
+            docs: String::new(),
+            tags: vec!["文件".to_string(), "官方".to_string()],
+            transport: "stdio".to_string(),
+            command: "npx".to_string(),
+            args: vec![
+                "-y".to_string(),
+                "@modelcontextprotocol/server-filesystem".to_string(),
+                ".".to_string(),
+            ],
+            env: filesystem_env,
+            headers: BTreeMap::new(),
+            cwd: String::new(),
+            extra: BTreeMap::new(),
+            apps: vec!["codex".to_string(), "claude-code".to_string()],
+            enabled: true,
+            updated_at: now_rfc3339(),
+        },
+        McpServerRecord {
+            id: "browser-tools".to_string(),
+            name: "browser-tools".to_string(),
+            description: "连接本机浏览器自动化服务".to_string(),
+            homepage: String::new(),
+            docs: String::new(),
+            tags: vec!["浏览器".to_string()],
+            transport: "http".to_string(),
+            command: "http://127.0.0.1:9321".to_string(),
+            args: Vec::new(),
+            env: BTreeMap::new(),
+            headers: BTreeMap::new(),
+            cwd: String::new(),
+            extra: BTreeMap::new(),
+            apps: vec!["codex".to_string()],
+            enabled: false,
+            updated_at: now_rfc3339(),
+        },
+    ]
+}
+
+fn normalize_base_url(url: &str) -> String {
+    url.trim().trim_end_matches('/').to_string()
+}
+
+fn sanitize_url_for_diagnostics(url: &str) -> String {
+    let Ok(mut parsed) = reqwest::Url::parse(url) else {
+        return "已配置（格式无法解析）".to_string();
+    };
+    let _ = parsed.set_username("");
+    let _ = parsed.set_password(None);
+    parsed.set_query(None);
+    parsed.set_fragment(None);
+    parsed.to_string()
+}
+
+fn ensure_v1_url(url: &str) -> String {
+    let normalized = normalize_base_url(url);
+    let is_origin_only = reqwest::Url::parse(&normalized)
+        .map(|parsed| parsed.path().is_empty() || parsed.path() == "/")
+        .unwrap_or_else(|_| {
+            normalized
+                .split_once("://")
+                .map(|(_, rest)| !rest.contains('/'))
+                .unwrap_or_else(|| !normalized.contains('/'))
+        });
+    if !is_origin_only || normalized.ends_with("/v1") {
+        normalized
+    } else {
+        format!("{}/v1", normalized)
+    }
+}
+
+fn default_gemini_model() -> String {
+    "gemini-3.5-pro".to_string()
+}
+
+fn default_codex_model() -> String {
+    "gpt-5.6-sol".to_string()
+}
+
+fn is_local_url(url: &str) -> bool {
+    reqwest::Url::parse(url)
+        .ok()
+        .and_then(|parsed| parsed.host_str().map(str::to_ascii_lowercase))
+        .map(|host| host == "localhost" || host == "127.0.0.1" || host == "[::1]" || host == "::1")
+        .unwrap_or(false)
+}
+
+#[cfg(unix)]
+fn protect_secret_file(path: &Path) -> Result<(), String> {
+    use std::os::unix::fs::PermissionsExt;
+    let mut permissions = fs::metadata(path)
+        .map_err(|err| format!("读取密钥文件权限失败: {}", err))?
+        .permissions();
+    permissions.set_mode(0o600);
+    fs::set_permissions(path, permissions).map_err(|err| format!("设置密钥文件权限失败: {}", err))
+}
+
+#[cfg(not(unix))]
+fn protect_secret_file(_path: &Path) -> Result<(), String> {
+    Ok(())
+}
+
+fn slugify(value: &str) -> String {
+    let slug = value
+        .trim()
+        .to_lowercase()
+        .chars()
+        .map(|character| {
+            if character.is_ascii_alphanumeric() {
+                character
+            } else {
+                '-'
+            }
+        })
+        .collect::<String>()
+        .split('-')
+        .filter(|part| !part.is_empty())
+        .collect::<Vec<_>>()
+        .join("-");
+
+    if slug.is_empty() {
+        format!("provider-{}", OffsetDateTime::now_utc().unix_timestamp())
+    } else {
+        slug
+    }
+}
+
+fn unique_provider_id(base: &str, providers: &[ProviderProfile]) -> String {
+    if !providers.iter().any(|provider| provider.id == base) {
+        return base.to_string();
+    }
+    for suffix in 2..10_000 {
+        let candidate = format!("{}-{}", base, suffix);
+        if !providers.iter().any(|provider| provider.id == candidate) {
+            return candidate;
+        }
+    }
+    format!("{}-{}", base, OffsetDateTime::now_utc().unix_timestamp())
+}
+
+fn now_rfc3339() -> String {
+    OffsetDateTime::now_utc()
+        .format(&Rfc3339)
+        .unwrap_or_else(|_| "1970-01-01T00:00:00Z".to_string())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn normalizes_provider_urls() {
+        assert_eq!(
+            normalize_base_url(" https://api.example.com/v1/ "),
+            "https://api.example.com/v1"
+        );
+        assert_eq!(
+            ensure_v1_url("https://api.example.com"),
+            "https://api.example.com/v1"
+        );
+        assert_eq!(
+            ensure_v1_url("https://api.example.com/v1/"),
+            "https://api.example.com/v1"
+        );
+        assert_eq!(
+            ensure_v1_url("https://open.bigmodel.cn/api/paas/v4"),
+            "https://open.bigmodel.cn/api/paas/v4"
+        );
+    }
+
+    #[test]
+    fn recognizes_only_loopback_urls_as_local() {
+        assert!(is_local_url("http://127.0.0.1:8080/v1"));
+        assert!(is_local_url("https://localhost/v1"));
+        assert!(!is_local_url("https://localhost.example.com/v1"));
+        assert!(!is_local_url("https://api.example.com/v1"));
+    }
+
+    #[test]
+    fn validates_release_digests() {
+        let bytes = b"hello";
+        assert!(verify_sha256(
+            bytes,
+            "2cf24dba5fb0a30e26e83b2ac5b9e29e1b161e5c1fa7425e73043362938b9824"
+        )
+        .is_ok());
+        assert!(verify_sha256(bytes, "invalid").is_err());
+
+        let integrity = format!("sha512-{}", BASE64_STANDARD.encode(Sha512::digest(bytes)));
+        assert!(verify_npm_integrity(bytes, &integrity).is_ok());
+        assert!(verify_npm_integrity(bytes, "sha512-invalid").is_err());
+    }
+
+    #[test]
+    fn decompresses_grok_platform_binary() {
+        let root = env::temp_dir().join(format!("agentdock-grok-br-test-{}", std::process::id()));
+        let bin = root.join("package/bin");
+        fs::create_dir_all(&bin).unwrap();
+        let payload = b"test-grok-binary";
+        let mut compressor = brotli::CompressorReader::new(Cursor::new(payload), 4096, 5, 22);
+        let mut compressed = Vec::new();
+        compressor.read_to_end(&mut compressed).unwrap();
+        let compressed_name = if cfg!(windows) {
+            "grok.exe.br"
+        } else {
+            "grok.br"
+        };
+        fs::write(bin.join(compressed_name), compressed).unwrap();
+        let output = decompress_grok_binary(&root).expect("decompressed Grok binary");
+        assert_eq!(fs::read(output).unwrap(), payload);
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn diagnostics_remove_url_credentials_and_query_values() {
+        assert_eq!(
+            sanitize_url_for_diagnostics(
+                "https://user:secret@api.example.com/v1?api_key=hidden#private"
+            ),
+            "https://api.example.com/v1"
+        );
+    }
+
+    #[test]
+    fn rejects_legacy_placeholder_launchers() {
+        let root = env::temp_dir().join(format!("agentdock-test-{}", std::process::id()));
+        let launcher = root.join("codex");
+        fs::create_dir_all(&root).unwrap();
+        fs::write(
+            &launcher,
+            "Native client payload will be launched from this managed directory.",
+        )
+        .unwrap();
+        let record = ManagedClientRecord {
+            id: "codex".to_string(),
+            name: "Codex".to_string(),
+            installed: true,
+            version: "managed-0.1.0".to_string(),
+            install_dir: root.display().to_string(),
+            launcher_path: launcher.display().to_string(),
+            config_dir: root.join("config").display().to_string(),
+            installed_at: now_rfc3339(),
+            updated_at: now_rfc3339(),
+        };
+        assert!(!managed_client_is_runnable(&record));
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn quotes_shell_values_without_exposing_commands() {
+        assert_eq!(shell_quote("simple"), "'simple'");
+        assert_eq!(shell_quote("key'with space"), "'key'\"'\"'with space'");
+    }
+
+    #[test]
+    fn allocates_scoped_provider_ids_without_overwriting() {
+        let mut providers = default_providers();
+        providers.push(ProviderProfile {
+            id: "codex-deepseek".to_string(),
+            name: "DeepSeek".to_string(),
+            notes: String::new(),
+            website_url: String::new(),
+            preset_id: "deepseek".to_string(),
+            provider_type: "openai".to_string(),
+            base_url: "https://api.deepseek.com/v1".to_string(),
+            api_format: "chat-completions".to_string(),
+            enabled_apps: vec!["codex".to_string()],
+            codex_model: "deepseek-chat".to_string(),
+            gemini_model: default_gemini_model(),
+            claude_sonnet_model: String::new(),
+            claude_haiku_model: String::new(),
+            claude_opus_model: String::new(),
+            active: false,
+            active_apps: Vec::new(),
+            settings_config: String::new(),
+            api_key_configured: true,
+            created_at: now_rfc3339(),
+            updated_at: now_rfc3339(),
+        });
+        assert_eq!(
+            unique_provider_id("codex-deepseek", &providers),
+            "codex-deepseek-2"
+        );
+        assert_eq!(
+            unique_provider_id("claude-code-deepseek", &providers),
+            "claude-code-deepseek"
+        );
+    }
+
+    #[test]
+    fn validates_codex_json_and_embedded_toml() {
+        let valid = serde_json::json!({
+            "auth": { "OPENAI_API_KEY": "${AGENTDOCK_API_KEY}" },
+            "config": "model = \"gpt-5.5\"\n"
+        });
+        assert!(validate_provider_settings_config("codex", &valid.to_string()).is_ok());
+
+        let invalid = serde_json::json!({
+            "auth": {},
+            "config": "model = [not valid toml"
+        });
+        assert!(validate_provider_settings_config("codex", &invalid.to_string()).is_err());
+        assert!(validate_provider_settings_config("claude-code", "[]").is_err());
+    }
+
+    #[test]
+    fn builds_native_grok_provider_config_without_embedding_secrets() {
+        let provider = ProviderProfile {
+            id: "grok-deepseek".to_string(),
+            name: "DeepSeek".to_string(),
+            notes: String::new(),
+            website_url: String::new(),
+            preset_id: "deepseek".to_string(),
+            provider_type: "openai".to_string(),
+            base_url: "https://api.deepseek.com/v1".to_string(),
+            api_format: "chat-completions".to_string(),
+            settings_config: String::new(),
+            enabled_apps: vec!["grok".to_string()],
+            codex_model: "deepseek-chat".to_string(),
+            gemini_model: default_gemini_model(),
+            claude_sonnet_model: String::new(),
+            claude_haiku_model: String::new(),
+            claude_opus_model: String::new(),
+            active: true,
+            active_apps: vec!["grok".to_string()],
+            api_key_configured: true,
+            created_at: now_rfc3339(),
+            updated_at: now_rfc3339(),
+        };
+        let config = grok_provider_toml(&provider).expect("Grok config");
+        let parsed: toml::Table = config.parse().expect("valid TOML");
+        assert_eq!(parsed["models"]["default"].as_str(), Some("agentdock"));
+        assert_eq!(
+            parsed["model"]["agentdock"]["model"].as_str(),
+            Some("deepseek-chat")
+        );
+        assert_eq!(
+            parsed["model"]["agentdock"]["api_backend"].as_str(),
+            Some("chat_completions")
+        );
+        assert!(!config.contains("api_key ="));
+        let wrapped = serde_json::json!({ "config": config });
+        assert!(validate_provider_settings_config("grok", &wrapped.to_string()).is_ok());
+    }
+
+    #[test]
+    fn grok_mcp_sync_preserves_provider_model_config() {
+        let root = env::temp_dir().join(format!("agentdock-grok-mcp-test-{}", std::process::id()));
+        fs::create_dir_all(&root).unwrap();
+        let path = root.join("config.toml");
+        fs::write(
+            &path,
+            "[models]\ndefault = \"agentdock\"\n\n[model.agentdock]\nmodel = \"deepseek-chat\"\n",
+        )
+        .unwrap();
+        let server = McpServerRecord {
+            id: "memory".to_string(),
+            name: "Memory".to_string(),
+            description: String::new(),
+            homepage: String::new(),
+            docs: String::new(),
+            tags: Vec::new(),
+            transport: "stdio".to_string(),
+            command: "npx".to_string(),
+            args: vec![
+                "-y".to_string(),
+                "@modelcontextprotocol/server-memory".to_string(),
+            ],
+            env: BTreeMap::new(),
+            headers: BTreeMap::new(),
+            cwd: String::new(),
+            extra: BTreeMap::new(),
+            apps: vec!["grok".to_string()],
+            enabled: true,
+            updated_at: now_rfc3339(),
+        };
+        let mut written = Vec::new();
+        let mut errors = Vec::new();
+        sync_toml_mcp_projection(&path, true, "grok", &[server], &mut written, &mut errors);
+        assert!(errors.is_empty());
+        let value: toml::Table = fs::read_to_string(&path).unwrap().parse().unwrap();
+        assert_eq!(value["models"]["default"].as_str(), Some("agentdock"));
+        assert_eq!(
+            value["mcp_servers"]["memory"]["command"].as_str(),
+            Some("npx")
+        );
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn diagnostic_score_penalizes_errors_more_than_warnings() {
+        let report = finalize_diagnostics(vec![
+            diagnostic_check("ok", "系统", "pass", "正常", "", ""),
+            diagnostic_check("warn", "客户端", "warning", "警告", "", ""),
+            diagnostic_check("error", "供应商", "error", "错误", "", ""),
+        ]);
+        assert_eq!(report.passed, 1);
+        assert_eq!(report.warnings, 1);
+        assert_eq!(report.failed, 1);
+        assert_eq!(report.score, 77);
+    }
+
+    #[test]
+    fn materializes_api_key_placeholders_recursively() {
+        let mut value = serde_json::json!({
+            "env": {
+                "TOKEN": "${AGENTDOCK_API_KEY}",
+                "HEADER": "Bearer ${AGENTDOCK_API_KEY}"
+            }
+        });
+        replace_json_placeholder(&mut value, "secret-value");
+        assert_eq!(value["env"]["TOKEN"], "secret-value");
+        assert_eq!(value["env"]["HEADER"], "Bearer secret-value");
+    }
+
+    #[test]
+    fn builds_encoded_npm_registry_urls() {
+        assert_eq!(
+            npm_metadata_url("https://registry.npmmirror.com", "@openai/codex", "latest"),
+            "https://registry.npmmirror.com/@openai%2Fcodex/latest"
+        );
+    }
+
+    #[test]
+    fn imports_opencode_mcp_into_unified_format() {
+        let value = serde_json::json!({
+            "type": "local",
+            "command": ["npx", "-y", "@upstash/context7-mcp"],
+            "environment": { "API_TOKEN": "test" },
+            "timeout": 45
+        });
+        let record = mcp_record_from_value("Context 7", &value, "opencode", "opencode")
+            .expect("valid OpenCode MCP server");
+        assert_eq!(record.id, "Context 7");
+        assert_eq!(record.transport, "stdio");
+        assert_eq!(record.command, "npx");
+        assert_eq!(record.args, vec!["-y", "@upstash/context7-mcp"]);
+        assert_eq!(record.env.get("API_TOKEN"), Some(&"test".to_string()));
+        assert_eq!(record.extra.get("timeout"), Some(&serde_json::json!(45)));
+        assert_eq!(record.apps, vec!["opencode"]);
+    }
+
+    #[tokio::test]
+    async fn discovers_tools_from_stdio_mcp_server() {
+        let node = find_executable("node").expect("Node.js is required by the desktop build");
+        let fixture =
+            Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/mcp-tools-server.mjs");
+        let server = McpServerRecord {
+            id: "test-tools".to_string(),
+            name: "Test tools".to_string(),
+            description: String::new(),
+            homepage: String::new(),
+            docs: String::new(),
+            tags: Vec::new(),
+            transport: "stdio".to_string(),
+            command: node.display().to_string(),
+            args: vec![fixture.display().to_string()],
+            env: BTreeMap::new(),
+            headers: BTreeMap::new(),
+            cwd: String::new(),
+            extra: BTreeMap::new(),
+            apps: vec!["codex".to_string()],
+            enabled: true,
+            updated_at: now_rfc3339(),
+        };
+        let dirs = agentdock_dirs().expect("AgentDock directories");
+        let tools = tokio::time::timeout(
+            std::time::Duration::from_secs(5),
+            discover_mcp_tools(&dirs, &server),
+        )
+        .await
+        .expect("MCP discovery should not time out")
+        .expect("MCP discovery should succeed");
+
+        assert_eq!(tools.len(), 1);
+        assert_eq!(tools[0].name, "search_notes");
+        assert_eq!(tools[0].input_schema["required"][0], "query");
+        assert_eq!(tools[0].input_schema["properties"]["limit"]["default"], 20);
+    }
+
+    #[test]
+    fn projects_remote_mcp_headers_to_codex_toml() {
+        let record = McpServerRecord {
+            id: "remote".to_string(),
+            name: "Remote".to_string(),
+            description: String::new(),
+            homepage: String::new(),
+            docs: String::new(),
+            tags: Vec::new(),
+            transport: "http".to_string(),
+            command: "https://mcp.example.com".to_string(),
+            args: Vec::new(),
+            env: BTreeMap::new(),
+            headers: BTreeMap::from([("Authorization".to_string(), "Bearer key".to_string())]),
+            cwd: String::new(),
+            extra: BTreeMap::from([("timeout".to_string(), serde_json::json!(30))]),
+            apps: vec!["codex".to_string()],
+            enabled: true,
+            updated_at: now_rfc3339(),
+        };
+        let value = mcp_toml_projection(&record);
+        assert_eq!(
+            value.get("url").and_then(toml::Value::as_str),
+            Some("https://mcp.example.com")
+        );
+        assert_eq!(
+            value
+                .get("http_headers")
+                .and_then(toml::Value::as_table)
+                .and_then(|headers| headers.get("Authorization"))
+                .and_then(toml::Value::as_str),
+            Some("Bearer key")
+        );
+        assert_eq!(
+            value.get("timeout").and_then(toml::Value::as_integer),
+            Some(30)
+        );
+    }
+
+    #[test]
+    fn parses_usage_timestamps_and_known_pricing() {
+        let timestamp = parse_json_timestamp(&serde_json::json!(1_750_000_000_000_i64))
+            .expect("millisecond timestamp");
+        assert_eq!(timestamp.unix_timestamp(), 1_750_000_000);
+        let cost = estimate_model_cost("gpt-5.6-sol", 1_000_000, 1_000_000, 1_000_000)
+            .expect("known pricing");
+        assert!((cost - 35.5).abs() < f64::EPSILON);
+        assert!(estimate_model_cost("unknown-model", 10, 10, 0).is_none());
+    }
+
+    #[test]
+    fn mcp_json_sync_preserves_unrelated_client_settings() {
+        let root = env::temp_dir().join(format!("agentdock-mcp-sync-test-{}", std::process::id()));
+        fs::create_dir_all(&root).unwrap();
+        let path = root.join("settings.json");
+        fs::write(
+            &path,
+            r#"{"theme":"dark","mcpServers":{"legacy":{"command":"old"}}}"#,
+        )
+        .unwrap();
+        let server = McpServerRecord {
+            id: "中文服务".to_string(),
+            name: "中文服务".to_string(),
+            description: String::new(),
+            homepage: String::new(),
+            docs: String::new(),
+            tags: Vec::new(),
+            transport: "stdio".to_string(),
+            command: "npx".to_string(),
+            args: vec!["server".to_string()],
+            env: BTreeMap::new(),
+            headers: BTreeMap::new(),
+            cwd: String::new(),
+            extra: BTreeMap::from([("timeout".to_string(), serde_json::json!(30))]),
+            apps: vec!["claude-code".to_string()],
+            enabled: true,
+            updated_at: now_rfc3339(),
+        };
+        let mut written = Vec::new();
+        let mut errors = Vec::new();
+        sync_json_mcp_projection(
+            &path,
+            true,
+            "mcpServers",
+            "claude-code",
+            "standard",
+            &[server],
+            &mut written,
+            &mut errors,
+        );
+        assert!(errors.is_empty());
+        let value: serde_json::Value =
+            serde_json::from_str(&fs::read_to_string(&path).unwrap()).unwrap();
+        assert_eq!(value["mcpServers"]["中文服务"]["timeout"], 30);
+        assert_eq!(value["theme"], "dark");
+        assert_eq!(value["mcpServers"]["中文服务"]["command"], "npx");
+        assert!(value["mcpServers"].get("legacy").is_none());
+        fs::remove_dir_all(root).unwrap();
+    }
+}

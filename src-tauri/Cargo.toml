@@ -1,0 +1,36 @@
+[package]
+name = "agentdock"
+version = "0.1.8"
+description = "AgentDock desktop app"
+authors = ["AgentDock"]
+license = "MIT"
+repository = "https://github.com/Cailiang/AgentDock"
+edition = "2021"
+
+[lib]
+name = "agentdock_lib"
+crate-type = ["staticlib", "cdylib", "rlib"]
+
+[build-dependencies]
+tauri-build = { version = "2.3.0", features = [] }
+
+[dependencies]
+base64 = "0.22"
+brotli = "8.0"
+directories = "6.0.0"
+flate2 = "1.1"
+futures = "0.3"
+reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls"] }
+rmcp = { version = "0.8.5", features = ["client", "transport-child-process", "transport-sse-client-reqwest", "transport-streamable-http-client-reqwest"] }
+serde = { version = "1.0", features = ["derive"] }
+serde_json = "1.0"
+serde_yaml = "0.9"
+sha2 = "0.10"
+tauri = { version = "2.6.2", features = [] }
+tar = "0.4"
+thiserror = "2.0"
+time = { version = "0.3", features = ["formatting", "macros"] }
+tokio = { version = "1", features = ["macros", "process", "rt-multi-thread", "time"] }
+toml = "0.9"
+rusqlite = { version = "0.37", features = ["bundled"] }
+zip = { version = "4.6", default-features = false, features = ["deflate"] }

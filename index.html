@@ -1,0 +1,1532 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <meta name="description" content="AgentDock desktop client and provider manager" />
+  <meta property="og:title" content="AgentDock" />
+  <meta property="og:description" content="Desktop client and provider manager" />
+  <title>AgentDock</title>
+  <style>
+    :root {
+      color-scheme: light;
+      --canvas: #f4f6f4;
+      --surface: #ffffff;
+      --surface-raised: #fbfcfb;
+      --surface-pressed: #edf1ef;
+      --ink: #18201d;
+      --ink-soft: #66716c;
+      --ink-faint: #929b97;
+      --line: #dce2df;
+      --line-strong: #c4cdc9;
+      --accent: #18765e;
+      --accent-hover: #105f4c;
+      --accent-soft: #e4f2ec;
+      --warning: #9a641b;
+      --warning-soft: #fff0d6;
+      --danger: #a33f38;
+      --danger-soft: #fae9e7;
+      --shadow-soft: 0 10px 30px rgba(30, 45, 38, 0.07);
+      --shadow-float: 0 18px 48px rgba(30, 45, 38, 0.13);
+      --font: "Geist Variable", "Avenir Next", "Segoe UI Variable", "Noto Sans SC", system-ui, sans-serif;
+      --mono: "SFMono-Regular", Consolas, "Liberation Mono", monospace;
+      --rail: 196px;
+    }
+
+    * { box-sizing: border-box; }
+    html, body { width: 100%; height: 100%; }
+    html { scroll-behavior: smooth; }
+    body { margin: 0; overflow: hidden; background: var(--canvas); color: var(--ink); font: 14px/1.45 var(--font); letter-spacing: 0; }
+    button, input, select, textarea { font: inherit; letter-spacing: 0; }
+    button { cursor: pointer; }
+    button:disabled { cursor: wait; opacity: .58; }
+    button, .client-tab, .preset-option { transition: background-color 180ms ease, border-color 180ms ease, color 180ms ease, transform 180ms ease, box-shadow 180ms ease; }
+    button:active { transform: translateY(1px); }
+    button:focus-visible, input:focus-visible, select:focus-visible, textarea:focus-visible, summary:focus-visible { outline: 3px solid rgba(24, 118, 94, .2); outline-offset: 2px; }
+    [hidden] { display: none !important; }
+
+    .skip-link { position: fixed; left: 12px; top: 10px; z-index: 40; transform: translateY(-150%); background: var(--ink); color: #fff; padding: 8px 12px; border-radius: 6px; }
+    .skip-link:focus { transform: translateY(0); }
+    .app { display: grid; grid-template-columns: var(--rail) minmax(0, 1fr); width: 100vw; height: 100dvh; }
+
+    .sidebar { display: flex; min-height: 0; flex-direction: column; border-right: 1px solid var(--line); background: rgba(250, 252, 250, .96); }
+    .brand { display: flex; min-height: 72px; align-items: center; gap: 11px; padding: 0 18px; }
+    .brand-mark { display: grid; width: 34px; height: 34px; place-items: center; border-radius: 8px; background: var(--ink); color: #fff; font-weight: 760; }
+    .brand strong { display: block; font-size: 16px; font-weight: 720; }
+    .brand small { display: block; margin-top: 1px; color: var(--ink-faint); font-size: 11px; }
+    .nav { display: grid; gap: 4px; padding: 12px; }
+    .nav button { display: grid; grid-template-columns: 19px minmax(0, 1fr) auto; min-height: 42px; align-items: center; gap: 10px; border: 0; border-radius: 7px; background: transparent; color: var(--ink-soft); padding: 0 11px; text-align: left; font-weight: 580; }
+    .nav button:hover { background: var(--surface-pressed); color: var(--ink); }
+    .nav button.active { background: var(--ink); color: #fff; box-shadow: 0 6px 16px rgba(24, 32, 29, .13); }
+    .nav svg { width: 17px; height: 17px; }
+    .nav-count { color: var(--ink-faint); font: 11px/1 var(--mono); font-variant-numeric: tabular-nums; }
+    .nav button.active .nav-count { color: #bdc8c3; }
+    .sidebar-foot { margin-top: auto; padding: 16px 18px 18px; border-top: 1px solid var(--line); color: var(--ink-faint); font-size: 11px; line-height: 1.65; }
+
+    .workspace { position: relative; display: grid; min-width: 0; min-height: 0; grid-template-rows: 64px minmax(0, 1fr); }
+    .topbar { display: flex; align-items: center; justify-content: space-between; gap: 20px; padding: 0 clamp(20px, 3vw, 36px); border-bottom: 1px solid var(--line); background: rgba(255, 255, 255, .92); }
+    .topbar h1 { margin: 0; font-size: 17px; line-height: 1.2; font-weight: 690; }
+    .topbar p { margin: 3px 0 0; color: var(--ink-soft); font-size: 11px; }
+    .top-actions, .actions, .row-actions { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; }
+    .content { min-width: 0; min-height: 0; overflow: auto; padding: 28px clamp(20px, 3vw, 40px) 48px; }
+    .view { display: none; width: 100%; max-width: 1680px; margin: 0 auto; animation: view-in 220ms ease both; }
+    .view.active { display: block; }
+    @keyframes view-in { from { opacity: 0; transform: translateY(5px); } to { opacity: 1; transform: none; } }
+
+    .page-head { display: flex; align-items: flex-start; justify-content: space-between; gap: 24px; margin-bottom: 22px; }
+    .page-head h2 { margin: 0; font-size: 26px; line-height: 1.18; font-weight: 720; text-wrap: balance; }
+    .page-head p { max-width: 62ch; margin: 6px 0 0; color: var(--ink-soft); text-wrap: pretty; }
+    .btn, .icon-btn { display: inline-flex; min-height: 36px; align-items: center; justify-content: center; gap: 7px; border: 1px solid var(--line-strong); border-radius: 7px; background: var(--surface); color: var(--ink); padding: 0 12px; font-weight: 620; white-space: nowrap; }
+    .btn:hover, .icon-btn:hover { border-color: #9eaaa4; background: var(--surface-raised); box-shadow: 0 4px 12px rgba(30, 45, 38, .06); }
+    .btn.primary { border-color: var(--accent); background: var(--accent); color: #fff; }
+    .btn.primary:hover { border-color: var(--accent-hover); background: var(--accent-hover); }
+    .btn.danger { border-color: #e1b9b5; color: var(--danger); }
+    .btn.danger:hover { background: var(--danger-soft); }
+    .btn.text { min-height: 32px; border-color: transparent; background: transparent; color: var(--ink-soft); padding-inline: 7px; }
+    .btn.text:hover { background: var(--surface-pressed); color: var(--ink); box-shadow: none; }
+    .icon-btn { width: 36px; padding: 0; }
+    .btn svg, .icon-btn svg { width: 16px; height: 16px; }
+    .badge { display: inline-flex; min-height: 25px; align-items: center; justify-content: center; gap: 6px; border: 1px solid var(--line); border-radius: 6px; background: var(--surface-raised); color: var(--ink-soft); padding: 0 8px; font-size: 11px; white-space: nowrap; }
+    .badge.ok { border-color: #badbce; background: var(--accent-soft); color: var(--accent); }
+    .badge.warn { border-color: #ead0a4; background: var(--warning-soft); color: var(--warning); }
+    .badge.danger { border-color: #e8beba; background: var(--danger-soft); color: var(--danger); }
+    .preview-notice { display: none; }
+    .preview-mode .preview-notice { display: inline-flex; }
+
+    .client-switcher-wrap { position: relative; margin-bottom: 24px; }
+    .client-switcher { display: grid; grid-template-columns: repeat(8, minmax(112px, 1fr)); gap: 7px; overflow-x: auto; padding: 6px; border: 1px solid var(--line); border-radius: 8px; background: rgba(255, 255, 255, .7); scrollbar-width: none; }
+    .client-switcher::-webkit-scrollbar { display: none; }
+    .client-tab { position: relative; display: grid; min-width: 112px; min-height: 82px; grid-template-rows: 34px auto auto; justify-items: start; align-content: center; gap: 2px; border: 1px solid transparent; border-radius: 6px; background: transparent; color: var(--ink-soft); padding: 10px 11px; text-align: left; }
+    .client-tab:hover { background: var(--surface); color: var(--ink); }
+    .client-tab.active { border-color: var(--line); background: var(--surface); color: var(--ink); box-shadow: var(--shadow-soft); }
+    .client-tab strong { width: 100%; overflow: hidden; font-size: 12px; font-weight: 650; text-overflow: ellipsis; white-space: nowrap; }
+    .client-tab small { color: var(--ink-faint); font-size: 10px; }
+    .client-logo, .provider-logo { display: grid; place-items: center; border-radius: 7px; color: #fff; font-weight: 750; }
+    .client-logo { width: 29px; height: 29px; object-fit: contain; padding: 3px; border: 1px solid rgba(24, 32, 29, .08); background: #fff; }
+    .client-logo.logo-codex { padding: 5px; }
+    .client-logo.logo-opencode { padding: 5px; }
+    .client-logo.logo-openclaw { padding: 2px; }
+    .client-logo.logo-hermes { padding: 0; }
+    .client-dot { position: absolute; right: 9px; top: 9px; width: 7px; height: 7px; border: 2px solid var(--surface); border-radius: 50%; background: #b8c0bc; }
+    .client-dot.on { background: var(--accent); }
+
+    .client-stage { overflow: hidden; border: 1px solid var(--line); border-radius: 8px; background: var(--surface); box-shadow: var(--shadow-soft); }
+    .client-stage-head { display: flex; min-height: 94px; align-items: center; justify-content: space-between; gap: 20px; padding: 18px 20px 18px 22px; border-bottom: 1px solid var(--line); background: var(--surface-raised); }
+    .client-identity { display: flex; min-width: 0; align-items: center; gap: 14px; }
+    .client-identity .client-logo { width: 46px; height: 46px; font-size: 13px; }
+    .client-identity h3 { margin: 0; font-size: 19px; font-weight: 700; }
+    .client-identity p { margin: 4px 0 0; color: var(--ink-soft); font-size: 12px; overflow-wrap: anywhere; }
+    .client-stage-actions { display: flex; flex-wrap: wrap; justify-content: flex-end; gap: 8px; }
+    .provider-section-head { display: flex; align-items: center; justify-content: space-between; gap: 18px; padding: 20px 22px 14px; }
+    .provider-section-head h3 { margin: 0; font-size: 15px; font-weight: 670; }
+    .provider-section-head p { margin: 3px 0 0; color: var(--ink-soft); font-size: 11px; }
+    .provider-list { display: grid; gap: 10px; padding: 0 14px 16px; }
+    .provider-card { position: relative; display: grid; grid-template-columns: minmax(0, 1fr) auto; align-items: center; gap: 20px; min-height: 88px; border: 1px solid var(--line); border-radius: 7px; background: var(--surface); padding: 15px 16px; }
+    .provider-card:hover { border-color: #bcc8c2; box-shadow: 0 7px 20px rgba(30, 45, 38, .06); }
+    .provider-card.current { border-color: #a9d2c2; background: #fbfefc; }
+    .provider-card.current::before { content: ""; position: absolute; left: -1px; top: 14px; bottom: 14px; width: 3px; border-radius: 0 3px 3px 0; background: var(--accent); }
+    .provider-main { display: flex; min-width: 0; align-items: center; gap: 13px; }
+    .provider-logo { width: 42px; height: 42px; flex: 0 0 42px; background: var(--ink); font-size: 12px; }
+    .provider-copy { min-width: 0; }
+    .provider-name-line { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; }
+    .provider-name-line strong { font-size: 15px; font-weight: 670; }
+    .provider-copy p { max-width: 72ch; margin: 5px 0 0; overflow: hidden; color: var(--ink-soft); font-size: 12px; text-overflow: ellipsis; white-space: nowrap; }
+    .provider-card .row-actions { justify-content: flex-end; }
+    .client-empty { display: grid; min-height: 270px; place-items: center; padding: 36px; text-align: center; }
+    .empty-symbol { display: grid; width: 54px; height: 54px; margin: 0 auto 14px; place-items: center; border-radius: 8px; background: var(--surface-pressed); color: var(--ink-soft); }
+    .empty-symbol svg { width: 24px; height: 24px; }
+    .client-empty h3 { margin: 0; font-size: 18px; }
+    .client-empty p { max-width: 48ch; margin: 7px auto 17px; color: var(--ink-soft); }
+
+    .panel { border: 1px solid var(--line); border-radius: 8px; background: var(--surface); box-shadow: var(--shadow-soft); }
+    .panel + .panel { margin-top: 16px; }
+    .panel-head { display: flex; align-items: center; justify-content: space-between; gap: 18px; padding: 16px 18px; border-bottom: 1px solid var(--line); }
+    .panel-head h3 { margin: 0; font-size: 15px; font-weight: 670; }
+    .panel-head p { margin: 3px 0 0; color: var(--ink-soft); font-size: 11px; }
+    .data-list { display: grid; }
+    .data-row { display: grid; grid-template-columns: minmax(0, 1fr) auto; align-items: center; gap: 18px; min-height: 72px; padding: 13px 18px; border-bottom: 1px solid var(--line); }
+    .data-row:last-child { border-bottom: 0; }
+    .row-main { display: flex; min-width: 0; align-items: center; gap: 12px; }
+    .row-icon { display: grid; width: 36px; height: 36px; flex: 0 0 36px; place-items: center; border-radius: 7px; background: var(--accent-soft); color: var(--accent); }
+    .row-icon svg { width: 17px; height: 17px; }
+    .row-copy { min-width: 0; }
+    .row-copy strong { display: block; font-weight: 650; }
+    .row-copy small { display: block; max-width: 720px; margin-top: 3px; overflow-wrap: anywhere; color: var(--ink-soft); }
+    .software-toolbar { display: flex; align-items: center; justify-content: space-between; gap: 16px; margin-bottom: 14px; }
+    .software-toolbar p { margin: 0; color: var(--ink-soft); }
+    .software-list { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 1px; overflow: hidden; border: 1px solid var(--line); border-radius: 8px; background: var(--line); }
+    .software-item { display: grid; min-height: 156px; grid-template-rows: auto 1fr auto; gap: 12px; background: var(--surface); padding: 18px; }
+    .software-item-head { display: flex; align-items: flex-start; justify-content: space-between; gap: 16px; }
+    .software-identity { display: flex; min-width: 0; align-items: center; gap: 12px; }
+    .software-identity h3 { margin: 0; font-size: 15px; font-weight: 680; }
+    .software-identity p { margin: 3px 0 0; color: var(--ink-faint); font-size: 11px; }
+    .software-description { max-width: 64ch; margin: 0; color: var(--ink-soft); font-size: 12px; text-wrap: pretty; }
+    .software-foot { display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: 10px; }
+    .version-pair { color: var(--ink-faint); font: 11px/1.4 var(--mono); font-variant-numeric: tabular-nums; }
+    .empty { padding: 50px 24px; text-align: center; color: var(--ink-soft); }
+    .empty .btn { margin-top: 14px; }
+    .two-column { display: grid; grid-template-columns: minmax(0, 1.12fr) minmax(340px, .88fr); gap: 16px; align-items: start; }
+    .form-panel { position: sticky; top: 0; }
+    .panel-body { padding: 18px; }
+    .form-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 14px; }
+    .field { display: grid; min-width: 0; gap: 7px; }
+    .field.full { grid-column: 1 / -1; }
+    .field > span, .field-label { color: var(--ink-soft); font-size: 12px; font-weight: 620; }
+    .required { color: var(--danger); }
+    input, select, textarea { width: 100%; min-height: 40px; border: 1px solid var(--line-strong); border-radius: 6px; background: var(--surface); color: var(--ink); padding: 8px 10px; }
+    input:hover, select:hover, textarea:hover { border-color: #aab6b0; }
+    textarea { min-height: 94px; resize: vertical; font: 12px/1.55 var(--mono); }
+    .checkbox-grid { display: flex; flex-wrap: wrap; gap: 8px 14px; }
+    .check-control { display: inline-flex; align-items: center; gap: 7px; color: var(--ink); font-size: 12px; }
+    .check-control input { width: 16px; height: 16px; min-height: 0; padding: 0; accent-color: var(--accent); }
+    .form-actions { display: flex; flex-wrap: wrap; gap: 8px; padding-top: 4px; }
+    .switch { position: relative; width: 38px; height: 22px; flex: 0 0 38px; }
+    .switch input { position: absolute; opacity: 0; pointer-events: none; }
+    .switch span { position: absolute; inset: 0; border-radius: 99px; background: #c6ceca; }
+    .switch span::after { content: ""; position: absolute; left: 3px; top: 3px; width: 16px; height: 16px; border-radius: 50%; background: #fff; box-shadow: 0 1px 3px rgba(0, 0, 0, .2); transition: transform 160ms ease; }
+    .switch input:checked + span { background: var(--accent); }
+    .switch input:checked + span::after { transform: translateX(16px); }
+
+    .mcp-summary { display: flex; min-height: 58px; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: 12px; margin-bottom: 16px; border: 1px solid var(--line); border-radius: 8px; background: rgba(255, 255, 255, .72); padding: 12px 16px; }
+    .mcp-summary-total { min-height: 28px; border: 1px solid var(--line-strong); border-radius: 6px; background: var(--surface); padding: 5px 10px; color: var(--ink); font-weight: 650; }
+    .mcp-counts { display: flex; max-width: 100%; flex-wrap: wrap; justify-content: flex-end; gap: 6px; }
+    .mcp-count { display: inline-flex; min-height: 27px; align-items: center; gap: 5px; border-radius: 6px; background: var(--surface-pressed); padding: 4px 8px; color: var(--ink-soft); font-size: 11px; }
+    .mcp-count strong { color: var(--ink); font: 650 11px var(--mono); }
+    .mcp-list-frame { overflow: hidden; border: 1px solid var(--line); border-radius: 8px; background: var(--surface); }
+    .mcp-row { display: flex; min-height: 60px; align-items: center; gap: 14px; padding: 10px 14px; border-bottom: 1px solid var(--line); transition: background-color 160ms ease; }
+    .mcp-row:last-child { border-bottom: 0; }
+    .mcp-row:hover { background: var(--surface-raised); }
+    .mcp-copy { min-width: 0; flex: 1 1 auto; }
+    .mcp-inspect-trigger { display: flex; min-width: 0; flex: 1 1 auto; align-items: center; gap: 10px; border: 0; background: transparent; color: inherit; padding: 0; text-align: left; }
+    .mcp-inspect-trigger .mcp-copy { min-width: 0; }
+    .mcp-inspect-trigger > svg { width: 15px; height: 15px; flex: 0 0 auto; color: var(--ink-faint); transition: transform 160ms ease, color 160ms ease; }
+    .mcp-inspect-trigger:hover > svg { color: var(--accent); transform: translateX(2px); }
+    .mcp-name-line { display: flex; min-width: 0; align-items: center; gap: 6px; }
+    .mcp-copy strong { overflow: hidden; font-size: 13px; font-weight: 650; text-overflow: ellipsis; white-space: nowrap; }
+    .mcp-copy small { display: block; margin-top: 2px; overflow: hidden; color: var(--ink-soft); font-size: 11px; text-overflow: ellipsis; white-space: nowrap; }
+    .mcp-doc-link { display: inline-flex; border: 0; background: transparent; color: var(--ink-faint); padding: 1px; }
+    .mcp-doc-link:hover { color: var(--ink); }
+    .mcp-doc-link svg { width: 12px; height: 12px; }
+    .mcp-apps { display: flex; min-width: 0; flex: 0 0 auto; align-items: center; gap: 5px; }
+    .mcp-app-toggle { position: relative; display: inline-flex; width: 29px; height: 29px; align-items: center; justify-content: center; border: 0; border-radius: 7px; background: transparent; cursor: pointer; }
+    .mcp-app-toggle:hover { background: var(--surface-pressed); }
+    .mcp-app-toggle input { position: absolute; opacity: 0; pointer-events: none; }
+    .mcp-app-toggle .client-logo { width: 23px; height: 23px; border: 0; filter: grayscale(1); opacity: .32; }
+    .mcp-app-toggle input:checked + .client-logo { filter: none; opacity: 1; }
+    .mcp-app-toggle:has(input:checked) { background: var(--accent-soft); }
+    .mcp-row-actions { display: flex; flex: 0 0 auto; align-items: center; gap: 2px; opacity: 0; transition: opacity 160ms ease; }
+    .mcp-row:hover .mcp-row-actions, .mcp-row:focus-within .mcp-row-actions { opacity: 1; }
+    .mcp-row-actions .icon-btn { width: 30px; min-height: 30px; border-color: transparent; background: transparent; }
+    .mcp-row-actions .icon-btn:hover { background: var(--surface-pressed); box-shadow: none; }
+
+    .mcp-tools-view { position: absolute; z-index: 22; inset: 0; display: grid; grid-template-rows: 70px minmax(0, 1fr); background: var(--canvas); animation: editor-in 200ms ease both; }
+    .mcp-tools-head { display: flex; align-items: center; justify-content: space-between; gap: 18px; padding: 0 clamp(20px, 3vw, 36px); border-bottom: 1px solid var(--line); background: rgba(255, 255, 255, .94); }
+    .mcp-tools-head-main { display: flex; min-width: 0; align-items: center; gap: 14px; }
+    .mcp-tools-head h2 { margin: 0; overflow: hidden; font-size: 19px; font-weight: 700; text-overflow: ellipsis; white-space: nowrap; }
+    .mcp-tools-head-actions { display: flex; align-items: center; gap: 8px; }
+    .mcp-tools-body { display: flex; min-width: 0; min-height: 0; flex-direction: column; gap: 14px; overflow: auto; padding: 22px clamp(20px, 3vw, 40px) 32px; }
+    .mcp-tools-overview { display: flex; min-height: 64px; flex: 0 0 auto; align-items: center; justify-content: space-between; gap: 20px; border: 1px solid var(--line); border-radius: 8px; background: var(--surface); padding: 12px 16px; }
+    .mcp-tools-overview strong { display: block; font-size: 14px; }
+    .mcp-tools-overview p { margin: 3px 0 0; color: var(--ink-soft); font-size: 11px; }
+    .mcp-tools-browser { display: grid; min-width: 0; min-height: 440px; flex: 1 1 auto; grid-template-columns: minmax(245px, .72fr) minmax(0, 1.55fr); gap: 14px; }
+    .mcp-tool-list-panel, .mcp-tool-detail-panel { min-width: 0; min-height: 0; overflow: hidden; border: 1px solid var(--line); border-radius: 8px; background: var(--surface); }
+    .mcp-tool-list-panel { display: grid; grid-template-rows: auto minmax(0, 1fr); }
+    .mcp-tool-panel-head { display: flex; min-height: 50px; align-items: center; justify-content: space-between; gap: 12px; padding: 0 15px; border-bottom: 1px solid var(--line); }
+    .mcp-tool-panel-head h3 { margin: 0; font-size: 13px; font-weight: 670; }
+    .mcp-tool-list { min-height: 0; overflow: auto; }
+    .mcp-tool-item { display: grid; width: 100%; min-height: 64px; grid-template-columns: minmax(0, 1fr) auto; align-items: center; gap: 12px; border: 0; border-bottom: 1px solid var(--line); background: transparent; color: var(--ink); padding: 10px 14px; text-align: left; }
+    .mcp-tool-item:last-child { border-bottom: 0; }
+    .mcp-tool-item:hover { background: var(--surface-raised); }
+    .mcp-tool-item.active { background: var(--accent-soft); }
+    .mcp-tool-item strong { display: block; overflow: hidden; font-size: 12px; font-weight: 670; text-overflow: ellipsis; white-space: nowrap; }
+    .mcp-tool-item small { display: -webkit-box; margin-top: 3px; overflow: hidden; color: var(--ink-soft); font-size: 10px; -webkit-box-orient: vertical; -webkit-line-clamp: 2; }
+    .mcp-tool-item svg { width: 14px; height: 14px; color: var(--ink-faint); }
+    .mcp-tool-detail-panel { overflow: auto; padding: 20px; }
+    .mcp-tool-title-line { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; }
+    .mcp-tool-title-line h3 { margin: 0; overflow-wrap: anywhere; font: 680 17px/1.3 var(--mono); }
+    .mcp-tool-description { max-width: 76ch; margin: 8px 0 0; color: var(--ink-soft); font-size: 12px; line-height: 1.65; white-space: pre-wrap; }
+    .mcp-tool-annotations { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 12px; }
+    .mcp-params { margin-top: 22px; }
+    .mcp-params > h4 { margin: 0 0 9px; font-size: 13px; }
+    .mcp-param-list { overflow: hidden; border-top: 1px solid var(--line); }
+    .mcp-param-row { display: grid; grid-template-columns: minmax(140px, .55fr) minmax(0, 1.45fr); gap: 18px; padding: 13px 2px; border-bottom: 1px solid var(--line); }
+    .mcp-param-name { min-width: 0; }
+    .mcp-param-name code { overflow-wrap: anywhere; color: var(--ink); font-size: 12px; font-weight: 650; }
+    .mcp-param-name span { display: block; margin-top: 5px; color: var(--ink-faint); font: 10px var(--mono); }
+    .mcp-param-copy p { margin: 0; color: var(--ink-soft); font-size: 11px; line-height: 1.55; white-space: pre-wrap; }
+    .mcp-param-meta { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 7px; }
+    .mcp-param-meta code { border-radius: 4px; background: var(--surface-pressed); padding: 3px 5px; color: var(--ink-soft); font-size: 10px; overflow-wrap: anywhere; }
+    .mcp-schema-details { margin-top: 18px; border-top: 1px solid var(--line); padding-top: 14px; }
+    .mcp-schema-details summary { cursor: pointer; color: var(--ink-soft); font-size: 11px; font-weight: 650; }
+    .mcp-schema-details pre { max-height: 320px; overflow: auto; margin: 10px 0 0; border-radius: 6px; background: #151d1a; color: #dce8e2; padding: 13px; font: 11px/1.55 var(--mono); white-space: pre-wrap; overflow-wrap: anywhere; }
+    .mcp-tools-state { display: grid; min-height: 360px; place-items: center; padding: 36px; text-align: center; }
+    .mcp-tools-state svg { width: 24px; height: 24px; color: var(--accent); }
+    .mcp-tools-state .spin { animation: spin 1s linear infinite; }
+    .mcp-tools-state h3 { margin: 12px 0 0; font-size: 15px; }
+    .mcp-tools-state p { max-width: 56ch; margin: 6px auto 0; color: var(--ink-soft); font-size: 11px; }
+    .mcp-tools-state .btn { margin-top: 14px; }
+
+    .mcp-editor { position: absolute; z-index: 22; inset: 0; display: grid; grid-template-rows: 70px minmax(0, 1fr) 72px; background: var(--canvas); animation: editor-in 200ms ease both; }
+    .mcp-editor-body { min-height: 0; overflow: auto; padding: 22px clamp(20px, 3vw, 40px) 34px; }
+    .mcp-editor-sheet { display: flex; width: 100%; min-height: 100%; flex-direction: column; gap: 18px; }
+    .mcp-form-panel, .mcp-config-panel { border: 1px solid var(--line); border-radius: 8px; background: var(--surface); padding: 20px; box-shadow: var(--shadow-soft); }
+    .mcp-form-stack { display: grid; gap: 18px; }
+    .mcp-form-stack .field { gap: 8px; }
+    .mcp-preset-block { display: grid; gap: 10px; }
+    .mcp-preset-chips { display: flex; flex-wrap: wrap; gap: 7px; }
+    .mcp-preset-chip { min-height: 36px; border: 0; border-radius: 7px; background: var(--surface-pressed); color: var(--ink-soft); padding: 0 13px; font-size: 12px; font-weight: 620; }
+    .mcp-preset-chip:hover { background: #e3e9e6; color: var(--ink); }
+    .mcp-preset-chip.active { background: var(--accent); color: #fff; }
+    .mcp-enabled-apps { display: flex; flex-wrap: wrap; gap: 10px 18px; }
+    .mcp-enabled-apps .check-control { min-height: 30px; }
+    .mcp-additional-toggle { justify-self: start; }
+    .mcp-metadata { display: grid; gap: 16px; padding-top: 2px; }
+    .mcp-config-panel { display: flex; min-height: 360px; flex: 1 1 auto; flex-direction: column; }
+    .mcp-config-head { display: flex; flex: 0 0 auto; align-items: center; justify-content: space-between; gap: 16px; margin-bottom: 12px; }
+    .mcp-config-head strong { font-size: 12px; font-weight: 650; }
+    .mcp-config-head button { border: 0; background: transparent; color: var(--accent); padding: 4px 0; font-size: 12px; font-weight: 620; }
+    .mcp-config-head button:hover { color: var(--accent-hover); }
+    .mcp-json-editor { min-height: 280px; flex: 1 1 auto; resize: vertical; background: #151d1a; color: #dce8e2; font: 12px/1.6 var(--mono); tab-size: 2; }
+    .mcp-json-error { display: flex; align-items: center; gap: 7px; margin-top: 9px; color: var(--danger); font-size: 12px; }
+    .mcp-json-error svg { width: 15px; height: 15px; }
+    .mcp-editor-foot { justify-content: flex-end; }
+
+    .mcp-wizard-layer { position: fixed; z-index: 35; inset: 0; display: grid; place-items: center; background: rgba(17, 24, 21, .36); padding: 22px; backdrop-filter: blur(5px); }
+    .mcp-wizard { display: grid; width: min(690px, 100%); max-height: min(780px, calc(100dvh - 44px)); grid-template-rows: auto minmax(0, 1fr) auto; overflow: hidden; border: 1px solid var(--line); border-radius: 8px; background: var(--surface); box-shadow: var(--shadow-float); }
+    .mcp-wizard-head { display: flex; align-items: center; justify-content: space-between; gap: 18px; padding: 18px 20px; border-bottom: 1px solid var(--line); }
+    .mcp-wizard-head h3 { margin: 0; font-size: 18px; }
+    .mcp-wizard-body { display: grid; gap: 16px; overflow: auto; padding: 18px 20px 24px; }
+    .mcp-wizard-hint { margin: 0; border: 1px solid var(--line); border-radius: 7px; background: var(--surface-raised); color: var(--ink-soft); padding: 11px 12px; font-size: 12px; }
+    .mcp-type-options { display: flex; flex-wrap: wrap; gap: 18px; }
+    .mcp-type-options .check-control input { accent-color: var(--accent); }
+    .mcp-wizard-preview { min-height: 150px; background: #151d1a; color: #dce8e2; }
+    .mcp-wizard-foot { display: flex; justify-content: flex-end; gap: 8px; padding: 14px 20px; border-top: 1px solid var(--line); }
+
+    .stats-toolbar { display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: 14px; margin-bottom: 16px; }
+    .segmented { display: inline-flex; gap: 2px; border: 1px solid var(--line); border-radius: 7px; background: var(--surface-pressed); padding: 3px; }
+    .segmented button { min-height: 30px; border: 0; border-radius: 5px; background: transparent; color: var(--ink-soft); padding: 0 10px; font-size: 12px; font-weight: 620; }
+    .segmented button:hover { color: var(--ink); }
+    .segmented button.active { background: var(--surface); color: var(--ink); box-shadow: 0 2px 7px rgba(30, 45, 38, .08); }
+    .stats-kpis { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 10px; margin-bottom: 16px; }
+    .stat-kpi { min-width: 0; border: 1px solid var(--line); border-radius: 8px; background: var(--surface); padding: 17px 18px 18px; }
+    .stat-kpi span { color: var(--ink-soft); font-size: 11px; font-weight: 620; }
+    .stat-kpi strong { display: block; margin-top: 8px; font: 680 28px/1.1 var(--font); font-variant-numeric: tabular-nums; }
+    .stat-kpi small { display: block; margin-top: 6px; color: var(--ink-faint); font-size: 10px; }
+    .stats-grid { display: grid; grid-template-columns: minmax(0, 1.55fr) minmax(340px, .75fr); gap: 16px; align-items: stretch; }
+    .chart-panel, .breakdown-panel { min-width: 0; border: 1px solid var(--line); border-radius: 8px; background: var(--surface); }
+    .chart-head { display: flex; flex-wrap: wrap; align-items: flex-start; justify-content: space-between; gap: 14px; padding: 16px 18px 0; }
+    .chart-head h3 { margin: 0; font-size: 15px; }
+    .chart-head p { margin: 3px 0 0; color: var(--ink-soft); font-size: 11px; }
+    .trend-chart { min-height: 300px; padding: 16px 12px 10px; }
+    .trend-chart svg { display: block; width: 100%; height: 270px; overflow: visible; }
+    .chart-grid-line { stroke: var(--line); stroke-width: 1; }
+    .chart-axis-label { fill: var(--ink-faint); font: 10px var(--font); }
+    .chart-area { fill: rgba(24, 118, 94, .09); }
+    .chart-line { fill: none; stroke: var(--accent); stroke-width: 3; stroke-linejoin: round; stroke-linecap: round; }
+    .chart-point { fill: #fff; stroke: var(--accent); stroke-width: 2; }
+    .breakdown-list { display: grid; padding: 8px 18px 18px; }
+    .breakdown-item { display: grid; gap: 7px; padding: 11px 0; border-bottom: 1px solid var(--line); }
+    .breakdown-item:last-child { border-bottom: 0; }
+    .breakdown-line { display: flex; min-width: 0; align-items: center; justify-content: space-between; gap: 12px; }
+    .breakdown-name { display: flex; min-width: 0; align-items: center; gap: 8px; font-weight: 620; }
+    .breakdown-name .client-logo { width: 22px; height: 22px; }
+    .breakdown-name span { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+    .breakdown-value { flex: 0 0 auto; color: var(--ink-soft); font: 11px var(--mono); font-variant-numeric: tabular-nums; }
+    .breakdown-track { height: 5px; overflow: hidden; border-radius: 3px; background: var(--surface-pressed); }
+    .breakdown-fill { height: 100%; min-width: 2px; border-radius: inherit; background: var(--accent); }
+    .stats-note { margin: 14px 0 0; color: var(--ink-faint); font-size: 11px; }
+
+    .provider-editor { position: absolute; z-index: 20; inset: 0; display: grid; grid-template-rows: 70px minmax(0, 1fr) 72px; background: var(--canvas); animation: editor-in 220ms ease both; }
+    @keyframes editor-in { from { opacity: 0; transform: translateX(12px); } to { opacity: 1; transform: none; } }
+    .editor-head { display: flex; align-items: center; gap: 14px; padding: 0 clamp(20px, 3vw, 36px); border-bottom: 1px solid var(--line); background: var(--surface); }
+    .editor-head h2 { margin: 0; font-size: 19px; font-weight: 700; }
+    .editor-body { overflow: auto; padding: 24px clamp(20px, 4vw, 56px) 46px; }
+    .editor-sheet { width: 100%; max-width: 1600px; margin: 0 auto; }
+    .preset-block { border: 1px solid var(--line); border-radius: 8px; background: var(--surface); padding: 20px; box-shadow: var(--shadow-soft); }
+    .preset-head { display: flex; align-items: center; justify-content: space-between; gap: 16px; margin-bottom: 14px; }
+    .preset-head h3 { margin: 0; font-size: 15px; }
+    .preset-search { position: relative; width: min(260px, 42%); }
+    .preset-search svg { position: absolute; left: 10px; top: 50%; width: 15px; height: 15px; transform: translateY(-50%); color: var(--ink-faint); }
+    .preset-search input { min-height: 34px; padding-left: 32px; }
+    .preset-grid { display: grid; grid-template-columns: repeat(6, minmax(0, 1fr)); gap: 8px; }
+    .preset-option { position: relative; display: flex; min-width: 0; min-height: 46px; align-items: center; gap: 8px; border: 1px solid transparent; border-radius: 7px; background: var(--surface-pressed); color: var(--ink-soft); padding: 8px 10px; text-align: left; }
+    .preset-option:hover { border-color: var(--line-strong); background: var(--surface-raised); color: var(--ink); }
+    .preset-option.active { border-color: var(--accent); background: var(--accent-soft); color: var(--accent); box-shadow: 0 0 0 1px rgba(24, 118, 94, .06); }
+    .preset-option .mini-logo { display: grid; width: 24px; height: 24px; flex: 0 0 24px; place-items: center; border-radius: 5px; background: var(--surface); color: var(--ink); font-size: 9px; font-weight: 750; }
+    .preset-option span:last-child { overflow: hidden; font-size: 12px; font-weight: 620; text-overflow: ellipsis; white-space: nowrap; }
+    .preset-hint { display: flex; align-items: center; gap: 7px; margin: 14px 0 0; color: var(--ink-soft); font-size: 12px; }
+    .preset-hint svg { width: 15px; height: 15px; color: var(--warning); }
+    .provider-form-shell { margin-top: 16px; border: 1px solid var(--line); border-radius: 8px; background: var(--surface); box-shadow: var(--shadow-soft); }
+    .provider-form-intro { display: flex; align-items: center; gap: 14px; padding: 18px 20px; border-bottom: 1px solid var(--line); }
+    .provider-form-intro .provider-logo { width: 50px; height: 50px; flex-basis: 50px; }
+    .provider-form-intro h3 { margin: 0; font-size: 16px; }
+    .provider-form-intro p { margin: 4px 0 0; color: var(--ink-soft); font-size: 12px; }
+    .provider-fields { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 18px; padding: 22px 20px 26px; }
+    .key-field { position: relative; }
+    .key-field input { padding-right: 42px; }
+    .key-field .icon-btn { position: absolute; right: 3px; bottom: 3px; min-height: 34px; width: 34px; border: 0; background: transparent; color: var(--ink-soft); }
+    .model-control { display: grid; grid-template-columns: minmax(0, 1fr) 40px; gap: 7px; }
+    .model-control .icon-btn { width: 40px; height: 40px; }
+    .model-source { min-height: 16px; color: var(--ink-faint); font-size: 10px; }
+    .provider-control-pair { grid-template-rows: 17px 40px 16px; align-content: start; }
+    .provider-control-pair > select, .provider-control-pair > .model-control { height: 40px; }
+    .provider-control-pair > select { align-self: start; }
+    .advanced-config { grid-column: 1 / -1; border-top: 1px solid var(--line); padding-top: 16px; }
+    .advanced-config summary { cursor: pointer; color: var(--ink-soft); font-weight: 620; }
+    .advanced-config .form-grid { margin-top: 16px; }
+    .config-content { grid-column: 1 / -1; display: grid; gap: 14px; border-top: 1px solid var(--line); padding-top: 20px; }
+    .config-content-head { display: flex; align-items: flex-start; justify-content: space-between; gap: 16px; }
+    .config-content-head h4 { margin: 0; font-size: 14px; font-weight: 680; }
+    .config-content-head p { margin: 4px 0 0; color: var(--ink-soft); font-size: 11px; }
+    .config-content-actions { display: flex; flex-wrap: wrap; align-items: center; justify-content: flex-end; gap: 8px; }
+    .config-files { display: grid; gap: 14px; }
+    .config-files.codex { grid-template-columns: minmax(260px, .72fr) minmax(420px, 1.28fr); }
+    .config-file { display: grid; min-width: 0; gap: 7px; }
+    .config-file > span { display: flex; align-items: center; justify-content: space-between; gap: 10px; color: var(--ink-soft); font-size: 12px; font-weight: 620; }
+    .config-file code { color: var(--ink-faint); font: 10px/1.3 var(--mono); font-weight: 500; overflow-wrap: anywhere; }
+    .config-file textarea { min-height: 250px; resize: vertical; tab-size: 2; white-space: pre; }
+    .config-file.auth textarea { min-height: 250px; }
+    .editor-foot { display: flex; align-items: center; justify-content: flex-end; gap: 10px; padding: 0 clamp(20px, 4vw, 56px); border-top: 1px solid var(--line); background: rgba(255, 255, 255, .95); box-shadow: 0 -8px 26px rgba(30, 45, 38, .05); }
+    .editor-foot .btn { min-width: 96px; min-height: 40px; }
+    .editor-foot .btn.primary { min-width: 132px; }
+    .inline-error { grid-column: 1 / -1; display: none; border: 1px solid #e8beba; border-radius: 6px; background: var(--danger-soft); color: var(--danger); padding: 10px 12px; }
+    .inline-error.visible { display: block; }
+
+    .log-panel { border-color: #1b2722; background: #141d19; color: #dce8e2; }
+    .log-panel .panel-head { border-color: #2c3933; }
+    .log-panel .panel-head h3 { color: #fff; }
+    .log-output { min-height: 330px; max-height: 540px; overflow: auto; margin: 0; padding: 18px; font: 12px/1.72 var(--mono); white-space: pre-wrap; overflow-wrap: anywhere; }
+    .log-line { display: block; }
+    .log-line.ok { color: #8bd4b8; }
+    .log-line.warn { color: #efc474; }
+    .log-line.error { color: #efa19a; }
+    .log-line.info { color: #a9c9bb; }
+    .toast-region { position: fixed; z-index: 30; right: 22px; bottom: 22px; display: grid; width: min(380px, calc(100vw - 44px)); gap: 8px; }
+    .toast { display: grid; grid-template-columns: 20px minmax(0, 1fr); gap: 10px; align-items: start; border: 1px solid var(--line); border-left: 4px solid var(--accent); border-radius: 7px; background: var(--surface); padding: 13px 14px; box-shadow: var(--shadow-float); }
+    .toast.error { border-left-color: var(--danger); }
+    .toast svg { width: 18px; height: 18px; }
+    .toast p { margin: 0; overflow-wrap: anywhere; }
+    .confirm-layer { position: fixed; z-index: 40; inset: 0; display: grid; place-items: center; background: rgba(17, 24, 21, .34); padding: 20px; backdrop-filter: blur(5px); }
+    .confirm-dialog { width: min(420px, 100%); border: 1px solid var(--line); border-radius: 8px; background: var(--surface); box-shadow: var(--shadow-float); padding: 22px; }
+    .confirm-icon { display: grid; width: 38px; height: 38px; margin-bottom: 15px; place-items: center; border-radius: 7px; background: var(--danger-soft); color: var(--danger); }
+    .confirm-icon svg { width: 19px; height: 19px; }
+    .confirm-dialog h3 { margin: 0; font-size: 18px; }
+    .confirm-dialog p { margin: 8px 0 20px; color: var(--ink-soft); line-height: 1.65; }
+    .confirm-actions { display: flex; justify-content: flex-end; gap: 8px; }
+
+    @media (max-width: 1080px) {
+      :root { --rail: 76px; }
+      .brand { justify-content: center; padding: 0; }
+      .brand-copy, .nav .label, .nav-count, .sidebar-foot { display: none; }
+      .nav button { grid-template-columns: 1fr; justify-items: center; padding: 0; }
+      .preset-grid { grid-template-columns: repeat(4, minmax(0, 1fr)); }
+      .config-files.codex { grid-template-columns: 1fr; }
+      .software-list { grid-template-columns: 1fr; }
+      .stats-grid { grid-template-columns: 1fr; }
+    }
+    @media (max-width: 760px) {
+      :root { --rail: 64px; }
+      .content { padding-inline: 16px; }
+      .topbar { padding-inline: 16px; }
+      .page-head, .client-stage-head, .provider-section-head { align-items: stretch; flex-direction: column; }
+      .client-stage-actions, .provider-card .row-actions { justify-content: flex-start; }
+      .provider-card, .data-row { grid-template-columns: 1fr; }
+      .two-column, .provider-fields, .form-grid { grid-template-columns: 1fr; }
+      .field.full, .advanced-config { grid-column: auto; }
+      .preset-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+      .preset-head { align-items: stretch; flex-direction: column; }
+      .preset-search { width: 100%; }
+      .software-toolbar, .software-foot { align-items: stretch; flex-direction: column; }
+      .stats-kpis { grid-template-columns: 1fr; }
+      .mcp-summary { align-items: flex-start; flex-direction: column; }
+      .mcp-counts { justify-content: flex-start; }
+      .mcp-row { flex-wrap: wrap; }
+      .mcp-copy { flex-basis: calc(100% - 80px); }
+      .mcp-apps { order: 3; width: 100%; }
+      .mcp-row-actions { margin-left: auto; opacity: 1; }
+      .mcp-tools-browser { grid-template-columns: 1fr; }
+      .mcp-tool-list-panel { min-height: 240px; }
+      .mcp-param-row { grid-template-columns: 1fr; gap: 7px; }
+      .mcp-form-panel, .mcp-config-panel { padding: 16px; }
+      .mcp-wizard-layer { padding: 10px; }
+    }
+    @media (hover: none) { .mcp-row-actions { opacity: 1; } }
+  </style>
+  <link rel="stylesheet" href="/app.css" />
+</head>
+<body>
+  <a class="skip-link" href="#main-content">跳到主要内容</a>
+  <div class="app">
+    <aside class="sidebar" aria-label="主导航">
+      <div class="brand"><img class="brand-mark" src="/agentdock-logo.svg" alt="AgentDock" /><div class="brand-copy"><strong>AgentDock</strong><small>Desktop</small></div></div>
+      <nav class="nav">
+        <button class="active" data-view-button="clients" title="客户端"><i data-lucide="square-terminal"></i><span class="label">客户端</span><span class="nav-count" id="nav-client-count">--</span></button>
+        <button data-view-button="software" title="推荐软件"><i data-lucide="package-open"></i><span class="label">推荐软件</span><span class="nav-count" id="nav-software-count">--</span></button>
+        <button data-view-button="skills" title="Skills"><i data-lucide="wand-sparkles"></i><span class="label">Skills</span><span class="nav-count" id="nav-skill-count">--</span></button>
+        <button data-view-button="mcp" title="MCP"><i data-lucide="blocks"></i><span class="label">MCP</span><span class="nav-count" id="nav-mcp-count">--</span></button>
+        <button data-view-button="stats" title="统计"><i data-lucide="chart-no-axes-combined"></i><span class="label">统计</span><span class="nav-count"></span></button>
+        <button data-view-button="logs" title="诊断"><i data-lucide="scan-heart"></i><span class="label">诊断</span><span class="nav-count"></span></button>
+      </nav>
+      <div class="rail-bottom"><span class="rail-user" title="本机用户"><i data-lucide="user-round"></i></span></div>
+    </aside>
+
+    <aside class="source-sidebar" aria-label="当前功能列表">
+      <header class="source-head">
+        <div><strong id="source-title">客户端</strong><small id="source-summary">正在检测本机</small></div>
+        <button class="icon-btn" id="source-action" data-action="context-action" title="刷新" aria-label="刷新当前列表"><i data-lucide="refresh-cw"></i></button>
+      </header>
+      <div class="source-list" id="source-list" aria-live="polite"></div>
+      <footer class="source-footer">
+        <span class="source-footer-dot"></span>
+        <div><strong id="platform-label">正在连接本机服务</strong><small id="version-label">AgentDock</small></div>
+      </footer>
+    </aside>
+
+    <div class="workspace">
+      <header class="topbar">
+        <div class="topbar-title"><h1 id="top-title">客户端</h1><p id="top-subtitle">安装并配置 AI 编程客户端</p></div>
+        <label class="command-search"><i data-lucide="search"></i><input id="command-search" type="search" placeholder="筛选当前列表" aria-label="筛选当前列表" /><kbd>Ctrl K</kbd></label>
+        <div class="top-actions">
+          <span class="badge preview-notice">预览模式</span>
+          <span class="badge" id="backend-state"><i data-lucide="loader-circle"></i>正在检测</span>
+          <button class="icon-btn" data-action="refresh-all" title="刷新全部状态" aria-label="刷新全部状态"><i data-lucide="refresh-cw"></i></button>
+        </div>
+      </header>
+
+      <main class="content" id="main-content">
+        <section class="view active" data-view="clients">
+          <div class="page-head">
+            <div><h2>选择客户端</h2><p id="client-page-summary">正在检测本机客户端</p></div>
+            <div class="actions">
+              <span class="badge" id="ready-inline">Ready --</span>
+              <button class="btn" data-action="refresh-all"><i data-lucide="scan-line"></i>扫描本机</button>
+            </div>
+          </div>
+          <div class="client-switcher-wrap"><div class="client-switcher" id="client-switcher" aria-label="支持的客户端"></div></div>
+          <section class="client-stage" id="client-stage"></section>
+        </section>
+
+        <section class="view" data-view="software">
+          <div class="page-head">
+            <div><h2>推荐软件</h2><p>由 AgentDock 维护的软件目录，安装过程自动选择可用下载源并校验文件。</p></div>
+            <button class="btn" data-action="refresh-catalog"><i data-lucide="refresh-cw"></i>检查新版本</button>
+          </div>
+          <div class="software-toolbar"><p id="software-summary">正在读取软件目录</p><span class="badge" id="software-source">内置目录</span></div>
+          <section class="software-list" id="software-list" aria-live="polite"></section>
+        </section>
+
+        <section class="view" data-view="skills">
+          <div class="page-head"><div><h2>Skills</h2><p>按客户端启用已安装技能</p></div><button class="btn primary" data-action="sync-skills"><i data-lucide="refresh-cw"></i>同步到客户端</button></div>
+          <section class="panel"><div class="data-list" id="skill-list"></div></section>
+        </section>
+
+        <section class="view" data-view="mcp">
+          <div class="page-head">
+            <div><h2>MCP 服务器</h2><p>统一管理服务器，并同步到各客户端的真实配置文件</p></div>
+            <div class="actions"><button class="btn primary" data-action="new-mcp"><i data-lucide="plus"></i>新增服务器</button><button class="btn" data-action="import-mcp"><i data-lucide="import"></i>导入已有</button><button class="icon-btn" data-action="sync-mcp" title="同步到客户端" aria-label="同步到客户端"><i data-lucide="refresh-cw"></i></button></div>
+          </div>
+          <div class="mcp-summary" id="mcp-summary"></div>
+          <section class="mcp-list-frame"><div id="mcp-list"></div></section>
+        </section>
+
+        <section class="view" data-view="stats">
+          <div class="page-head">
+            <div><h2>用量统计</h2><p>汇总本机客户端会话中的 Token、请求和可计算成本</p></div>
+            <button class="icon-btn" data-action="refresh-stats" title="刷新统计" aria-label="刷新统计"><i data-lucide="refresh-cw"></i></button>
+          </div>
+          <div class="stats-toolbar">
+            <div class="segmented" aria-label="统计时间范围"><button class="active" data-action="set-stats-days" data-id="7">近 7 天</button><button data-action="set-stats-days" data-id="30">近 30 天</button><button data-action="set-stats-days" data-id="90">近 90 天</button></div>
+            <span class="badge" id="stats-range">正在读取</span>
+          </div>
+          <section class="stats-kpis" id="stats-kpis"></section>
+          <div class="stats-grid">
+            <section class="chart-panel">
+              <div class="chart-head"><div><h3>使用趋势</h3><p id="trend-caption">按天统计 Token</p></div><div class="segmented" aria-label="趋势指标"><button class="active" data-action="set-trend-metric" data-id="totalTokens">Token</button><button data-action="set-trend-metric" data-id="requests">请求</button><button data-action="set-trend-metric" data-id="costUsd">成本</button></div></div>
+              <div class="trend-chart" id="trend-chart"></div>
+            </section>
+            <section class="breakdown-panel">
+              <div class="chart-head"><div><h3>用量构成</h3><p>按 Token 总量排序</p></div><div class="segmented" aria-label="统计维度"><button class="active" data-action="set-breakdown" data-id="client">客户端</button><button data-action="set-breakdown" data-id="provider">供应商</button><button data-action="set-breakdown" data-id="model">模型</button></div></div>
+              <div class="breakdown-list" id="breakdown-list"></div>
+            </section>
+          </div>
+          <p class="stats-note" id="stats-note"></p>
+        </section>
+
+        <section class="view" data-view="logs">
+          <div class="page-head">
+            <div><h2>诊断中心</h2><p>检查本机目录、客户端、供应商连接、MCP 和统计数据，不读取或展示密钥</p></div>
+            <div class="actions"><button class="btn primary" data-action="run-diagnostics"><i data-lucide="scan-heart"></i>重新检测</button><button class="btn" data-action="export-diagnostics"><i data-lucide="download"></i>导出诊断包</button><button class="icon-btn" data-action="open-data-dir" title="打开数据目录" aria-label="打开数据目录"><i data-lucide="folder-open"></i></button></div>
+          </div>
+          <section class="diagnostic-overview" aria-live="polite">
+            <div class="diagnostic-score"><span>健康分</span><strong id="diagnostic-score">--</strong><small id="diagnostic-state">等待检测</small></div>
+            <div class="diagnostic-counts">
+              <div><span class="diagnostic-count-icon pass"><i data-lucide="circle-check"></i></span><span><strong id="diagnostic-passed">--</strong><small>通过</small></span></div>
+              <div><span class="diagnostic-count-icon warning"><i data-lucide="triangle-alert"></i></span><span><strong id="diagnostic-warnings">--</strong><small>警告</small></span></div>
+              <div><span class="diagnostic-count-icon error"><i data-lucide="circle-x"></i></span><span><strong id="diagnostic-failed">--</strong><small>错误</small></span></div>
+            </div>
+            <div class="diagnostic-timestamp"><i data-lucide="clock-3"></i><span id="diagnostic-time">尚未运行主动检查</span></div>
+          </section>
+          <section class="diagnostic-results">
+            <header><div><h3>检查结果</h3><p id="diagnostic-result-count">0 项</p></div><span class="badge" id="diagnostic-safety"><i data-lucide="shield-check"></i>密钥已排除</span></header>
+            <div class="diagnostic-list" id="diagnostic-list"></div>
+          </section>
+          <details class="operation-logs">
+            <summary><span><i data-lucide="square-terminal"></i>本机操作记录</span><small id="log-count">0 条</small></summary>
+            <div class="operation-log-head"><span>仅保留本次运行期间的操作</span><button class="btn text" data-action="clear-logs"><i data-lucide="trash-2"></i>清空</button></div>
+            <pre class="log-output" id="log-output" aria-live="polite"></pre>
+          </details>
+        </section>
+      </main>
+
+      <section class="provider-editor" id="provider-editor" hidden aria-label="供应商编辑器">
+        <header class="editor-head"><button class="icon-btn" data-action="close-provider-editor" title="返回" aria-label="返回客户端"><i data-lucide="arrow-left"></i></button><h2 id="provider-editor-title">添加供应商</h2></header>
+        <div class="editor-body">
+          <div class="editor-sheet">
+            <section class="preset-block">
+              <div class="preset-head"><h3>预设供应商</h3><label class="preset-search"><i data-lucide="search"></i><input id="preset-search" type="search" placeholder="搜索预设" aria-label="搜索供应商预设" /></label></div>
+              <div class="preset-grid" id="preset-grid"></div>
+              <p class="preset-hint" id="preset-hint"><i data-lucide="lightbulb"></i><span>选择预设后继续填写 API Key</span></p>
+            </section>
+
+            <form class="provider-form-shell" id="provider-form">
+              <input type="hidden" name="provider-id" />
+              <input type="hidden" name="provider-preset-id" />
+              <input type="hidden" name="provider-type" />
+              <div class="provider-form-intro"><div class="provider-logo" id="provider-form-logo">CU</div><div><h3 id="provider-form-heading">自定义配置</h3><p id="provider-form-app">Codex 供应商</p></div></div>
+              <div class="provider-fields">
+                <div class="inline-error" id="provider-form-error"></div>
+                <label class="field"><span>供应商名称</span><input name="provider-name" required placeholder="例如：公司专用账号" /></label>
+                <label class="field"><span>备注</span><input name="provider-notes" placeholder="例如：公司专用账号" /></label>
+                <label class="field full" id="base-url-field"><span>请求地址</span><input name="provider-base-url" type="url" placeholder="https://api.example.com/v1" /></label>
+                <label class="field full key-field" id="api-key-field"><span>API Key</span><input name="provider-api-key" type="password" autocomplete="off" placeholder="编辑时留空会保留已有密钥" /><button class="icon-btn" type="button" data-action="toggle-api-key" title="显示或隐藏 API Key" aria-label="显示或隐藏 API Key"><i data-lucide="eye"></i></button></label>
+                <label class="field provider-control-pair"><span>默认模型</span><div class="model-control"><select name="provider-model" aria-label="默认模型"><option value="">正在读取模型</option></select><button class="icon-btn" type="button" data-action="refresh-models" title="刷新模型列表" aria-label="刷新模型列表"><i data-lucide="refresh-cw"></i></button></div><small class="model-source" id="model-source">按客户端读取推荐模型</small></label>
+                <label class="field provider-control-pair"><span>API 协议</span><select name="provider-api-format"><option value="auto">自动识别</option><option value="responses">OpenAI Responses</option><option value="chat-completions">Chat Completions</option><option value="anthropic">Anthropic Messages</option><option value="gemini">Gemini Native</option></select><small class="model-source" aria-hidden="true">&nbsp;</small></label>
+                <details class="advanced-config"><summary>高级模型映射</summary><div class="form-grid">
+                  <label class="field full"><span>Codex 模型</span><input name="advanced-codex-model" /></label>
+                  <label class="field"><span>Claude Sonnet</span><input name="advanced-claude-sonnet" /></label>
+                  <label class="field"><span>Claude Haiku</span><input name="advanced-claude-haiku" /></label>
+                  <label class="field full"><span>Claude Opus</span><input name="advanced-claude-opus" /></label>
+                </div></details>
+                <section class="config-content" aria-labelledby="config-content-title">
+                  <div class="config-content-head"><div><h4 id="config-content-title">配置文件内容</h4><p>保存后将按此内容生成客户端配置，密钥占位符会在本机安全替换</p></div><div class="config-content-actions"><span class="badge" id="config-edit-state">自动生成</span><button class="btn text" type="button" data-action="reset-provider-config"><i data-lucide="rotate-ccw"></i>从表单重新生成</button></div></div>
+                  <div class="config-files" id="config-files">
+                    <label class="config-file auth" id="provider-auth-config-field"><span><b>认证配置</b><code id="provider-auth-filename">auth.json</code></span><textarea name="provider-auth-config" spellcheck="false" aria-label="认证配置内容"></textarea></label>
+                    <label class="config-file"><span><b>客户端配置</b><code id="provider-main-filename">config.toml</code></span><textarea name="provider-main-config" spellcheck="false" aria-label="客户端配置内容"></textarea></label>
+                  </div>
+                </section>
+              </div>
+            </form>
+          </div>
+        </div>
+        <footer class="editor-foot"><button class="btn" data-action="close-provider-editor">取消</button><button class="btn primary" data-action="save-provider"><i data-lucide="plus"></i><span id="provider-submit-label">添加并使用</span></button></footer>
+      </section>
+
+      <section class="mcp-tools-view" id="mcp-tools-view" hidden aria-label="MCP 工具浏览器">
+        <header class="mcp-tools-head">
+          <div class="mcp-tools-head-main"><button class="icon-btn" data-action="close-mcp-tools" title="返回" aria-label="返回 MCP 列表"><i data-lucide="arrow-left"></i></button><h2 id="mcp-tools-title">MCP 工具</h2></div>
+          <div class="mcp-tools-head-actions"><span class="badge" id="mcp-tools-connection">等待连接</span><button class="icon-btn" data-action="refresh-mcp-tools" title="重新读取工具" aria-label="重新读取工具"><i data-lucide="refresh-cw"></i></button></div>
+        </header>
+        <div class="mcp-tools-body">
+          <section class="mcp-tools-overview"><div><strong id="mcp-tools-server-name">MCP 服务器</strong><p id="mcp-tools-summary">正在读取工具信息</p></div><span class="badge" id="mcp-tools-transport">MCP</span></section>
+          <div class="mcp-tools-browser">
+            <section class="mcp-tool-list-panel"><div class="mcp-tool-panel-head"><h3>工具列表</h3><span class="badge" id="mcp-tool-count">--</span></div><div class="mcp-tool-list" id="mcp-tool-list"></div></section>
+            <section class="mcp-tool-detail-panel" id="mcp-tool-detail"></section>
+          </div>
+        </div>
+      </section>
+
+      <section class="mcp-editor" id="mcp-editor" hidden aria-label="MCP 服务器编辑器">
+        <header class="editor-head"><button class="icon-btn" data-action="cancel-mcp" title="返回" aria-label="返回 MCP 列表"><i data-lucide="arrow-left"></i></button><h2 id="mcp-form-title">新增 MCP 服务器</h2></header>
+        <div class="mcp-editor-body">
+          <form class="mcp-editor-sheet" id="mcp-form">
+            <section class="mcp-form-panel">
+              <div class="mcp-form-stack">
+                <div class="mcp-preset-block" id="mcp-preset-block"><span class="field-label">预设配置</span><div class="mcp-preset-chips" id="mcp-preset-chips"></div></div>
+                <label class="field"><span>标题 <b class="required">*</b></span><input name="mcp-id" required placeholder="例如：context7" /></label>
+                <label class="field"><span>名称</span><input name="mcp-name" placeholder="留空时使用标题" /></label>
+                <div class="field"><span>启用客户端</span><div class="mcp-enabled-apps" id="mcp-apps"></div></div>
+                <button class="btn text mcp-additional-toggle" type="button" data-action="toggle-mcp-metadata"><i data-lucide="chevron-down"></i><span>附加信息</span></button>
+                <div class="mcp-metadata" id="mcp-metadata" hidden>
+                  <label class="field"><span>介绍</span><input name="mcp-description" placeholder="这个服务器能做什么" /></label>
+                  <label class="field"><span>标签</span><input name="mcp-tags" placeholder="stdio, docs, search" /></label>
+                  <label class="field"><span>主页</span><input name="mcp-homepage" type="url" placeholder="https://" /></label>
+                  <label class="field"><span>文档</span><input name="mcp-docs" type="url" placeholder="https://" /></label>
+                </div>
+              </div>
+            </section>
+            <section class="mcp-config-panel">
+              <div class="mcp-config-head"><strong>JSON 配置</strong><button type="button" data-action="open-mcp-wizard">使用配置向导</button></div>
+              <textarea class="mcp-json-editor" name="mcp-json" spellcheck="false" aria-label="MCP JSON 配置" placeholder="{&#10;  &quot;type&quot;: &quot;stdio&quot;,&#10;  &quot;command&quot;: &quot;npx&quot;,&#10;  &quot;args&quot;: []&#10;}"></textarea>
+              <div class="mcp-json-error" id="mcp-json-error" hidden><i data-lucide="circle-alert"></i><span></span></div>
+            </section>
+          </form>
+        </div>
+        <footer class="editor-foot mcp-editor-foot"><button class="btn primary" data-action="save-mcp"><i data-lucide="plus"></i><span id="mcp-submit-label">添加</span></button></footer>
+      </section>
+    </div>
+  </div>
+  <div class="toast-region" id="toast-region" aria-live="polite"></div>
+  <div class="confirm-layer" id="confirm-layer" hidden role="dialog" aria-modal="true" aria-labelledby="confirm-title">
+    <div class="confirm-dialog"><div class="confirm-icon"><i data-lucide="triangle-alert"></i></div><h3 id="confirm-title">确认操作</h3><p id="confirm-message"></p><div class="confirm-actions"><button class="btn" data-action="confirm-cancel">取消</button><button class="btn danger" id="confirm-accept" data-action="confirm-accept">确认删除</button></div></div>
+  </div>
+  <div class="mcp-wizard-layer" id="mcp-wizard-layer" hidden role="dialog" aria-modal="true" aria-labelledby="mcp-wizard-title">
+    <section class="mcp-wizard">
+      <header class="mcp-wizard-head"><h3 id="mcp-wizard-title">MCP 配置向导</h3><button class="icon-btn" data-action="close-mcp-wizard" title="关闭" aria-label="关闭配置向导"><i data-lucide="x"></i></button></header>
+      <div class="mcp-wizard-body">
+        <p class="mcp-wizard-hint">填写服务器信息后生成标准 MCP JSON 配置。</p>
+        <div class="field"><span>传输类型 <b class="required">*</b></span><div class="mcp-type-options"><label class="check-control"><input type="radio" name="mcp-wizard-type" value="stdio" checked />stdio</label><label class="check-control"><input type="radio" name="mcp-wizard-type" value="http" />HTTP</label><label class="check-control"><input type="radio" name="mcp-wizard-type" value="sse" />SSE</label></div></div>
+        <label class="field"><span>标题 <b class="required">*</b></span><input name="mcp-wizard-id" placeholder="例如：my-server" /></label>
+        <div id="mcp-wizard-stdio-fields">
+          <div class="mcp-form-stack"><label class="field"><span>Command <b class="required">*</b></span><input name="mcp-wizard-command" placeholder="npx" /></label><label class="field"><span>Args，每行一个参数</span><textarea name="mcp-wizard-args" rows="3"></textarea></label><label class="field"><span>Env，每行 KEY=VALUE</span><textarea name="mcp-wizard-env" rows="3"></textarea></label></div>
+        </div>
+        <div id="mcp-wizard-remote-fields" hidden>
+          <div class="mcp-form-stack"><label class="field"><span>URL <b class="required">*</b></span><input name="mcp-wizard-url" type="url" placeholder="https://example.com/mcp" /></label><label class="field"><span>Headers，每行 KEY: VALUE</span><textarea name="mcp-wizard-headers" rows="3"></textarea></label></div>
+        </div>
+        <label class="field"><span>配置预览</span><textarea class="mcp-wizard-preview" name="mcp-wizard-preview" readonly></textarea></label>
+      </div>
+      <footer class="mcp-wizard-foot"><button class="btn" data-action="close-mcp-wizard">取消</button><button class="btn primary" data-action="apply-mcp-wizard"><i data-lucide="check"></i>应用配置</button></footer>
+    </section>
+  </div>
+
+  <script type="module">
+    import "@fontsource-variable/geist";
+    import { invoke } from "@tauri-apps/api/core";
+    import { createIcons, icons } from "lucide";
+
+    const APP_META = {
+      "claude-code": { name: "Claude Code", short: "CC", logo: "/client-logos/claude-code.svg", autoInstall: true },
+      "claude-desktop": { name: "Claude Desktop", short: "CD", logo: "/client-logos/claude-desktop.svg", autoInstall: false },
+      codex: { name: "Codex", short: "CX", logo: "/client-logos/codex.svg", autoInstall: true },
+      antigravity: { name: "Antigravity", short: "AG", logo: "/client-logos/antigravity.svg", autoInstall: true },
+      grok: { name: "Grok", short: "GK", logo: "/client-logos/grok.png", autoInstall: true },
+      opencode: { name: "OpenCode", short: "OC", logo: "/client-logos/opencode.svg", autoInstall: true },
+      openclaw: { name: "OpenClaw", short: "OW", logo: "/client-logos/openclaw.svg", autoInstall: true },
+      hermes: { name: "Hermes", short: "HM", logo: "/client-logos/hermes.png", autoInstall: true }
+    };
+    const APP_ORDER = Object.keys(APP_META);
+    const VIEW_META = {
+      clients: ["客户端", "安装并配置 AI 编程客户端"],
+      software: ["推荐软件", "安装和更新 AgentDock 推荐工具"],
+      skills: ["Skills", "安装和按客户端启用"],
+      mcp: ["MCP", "服务器和客户端配置"],
+      stats: ["统计", "Token、请求和成本趋势"],
+      logs: ["诊断", "主动检查客户端、供应商和本机配置"]
+    };
+
+    const COMMON_PRESETS = [
+      { id: "custom", name: "自定义配置", short: "CU", type: "custom", baseUrl: "", model: "", website: "", format: "auto", category: "custom" }
+    ];
+    const PRESETS = {
+      "claude-code": [
+        ...COMMON_PRESETS,
+        { id: "claude-official", name: "Claude Official", short: "CL", type: "official", baseUrl: "", model: "claude-sonnet-5", website: "https://www.anthropic.com/claude-code", format: "anthropic", category: "official" },
+        { id: "deepseek", name: "DeepSeek", short: "DS", type: "anthropic", baseUrl: "https://api.deepseek.com/anthropic", model: "deepseek-chat", website: "https://platform.deepseek.com", format: "anthropic", category: "third_party" },
+        { id: "zhipu-glm", name: "Zhipu GLM", short: "GL", type: "anthropic", baseUrl: "https://open.bigmodel.cn/api/anthropic", model: "glm-5.2", website: "https://open.bigmodel.cn", format: "anthropic", category: "cn_official" },
+        { id: "zai-glm", name: "Z.ai GLM", short: "ZA", type: "anthropic", baseUrl: "https://api.z.ai/api/anthropic", model: "glm-5.2", website: "https://z.ai", format: "anthropic", category: "cn_official" },
+        { id: "qwen-coder", name: "Qwen Coder", short: "QW", type: "anthropic", baseUrl: "https://dashscope.aliyuncs.com/api/v2/apps/claude-code-proxy", model: "qwen3-coder-plus", website: "https://bailian.console.aliyun.com", format: "anthropic", category: "cn_official" },
+        { id: "bailian", name: "Bailian", short: "BL", type: "anthropic", baseUrl: "https://dashscope.aliyuncs.com/apps/anthropic", model: "qwen3-coder-plus", website: "https://bailian.console.aliyun.com", format: "anthropic", category: "cn_official" },
+        { id: "bailian-coding", name: "Bailian For Coding", short: "BC", type: "anthropic", baseUrl: "https://coding.dashscope.aliyuncs.com/apps/anthropic", model: "qwen3-coder-plus", website: "https://bailian.console.aliyun.com", format: "anthropic", category: "cn_official" },
+        { id: "kimi-k2", name: "Kimi K2", short: "KM", type: "anthropic", baseUrl: "https://api.moonshot.cn/anthropic", model: "kimi-k2.7-code", website: "https://platform.kimi.com", format: "anthropic", category: "cn_official" },
+        { id: "kimi-coding", name: "Kimi For Coding", short: "KC", type: "anthropic", baseUrl: "https://api.kimi.com/coding/", model: "kimi-for-coding", website: "https://www.kimi.com/code", format: "anthropic", category: "cn_official" },
+        { id: "stepfun", name: "StepFun", short: "SF", type: "anthropic", baseUrl: "https://api.stepfun.com/step_plan", model: "step-3.5-flash-2603", website: "https://platform.stepfun.com/step-plan", format: "anthropic", category: "cn_official" },
+        { id: "modelscope", name: "ModelScope", short: "MS", type: "anthropic", baseUrl: "https://api-inference.modelscope.cn", model: "ZhipuAI/GLM-5.1", website: "https://modelscope.cn", format: "anthropic", category: "aggregator" },
+        { id: "longcat", name: "Longcat", short: "LC", type: "anthropic", baseUrl: "https://api.longcat.chat/anthropic", model: "LongCat-2.0", website: "https://longcat.chat/platform", format: "anthropic", category: "cn_official" },
+        { id: "minimax", name: "MiniMax", short: "MM", type: "anthropic", baseUrl: "https://api.minimaxi.com/anthropic", model: "MiniMax-M2.7", website: "https://platform.minimaxi.com", format: "anthropic", category: "cn_official" },
+        { id: "minimax-en", name: "MiniMax en", short: "ME", type: "anthropic", baseUrl: "https://api.minimax.io/anthropic", model: "MiniMax-M2.7", website: "https://platform.minimax.io", format: "anthropic", category: "cn_official" },
+        { id: "doubao", name: "DouBaoSeed", short: "DB", type: "anthropic", baseUrl: "https://ark.cn-beijing.volces.com/api/coding", model: "ark-code-latest", website: "https://console.volcengine.com/ark", format: "anthropic", category: "cn_official" },
+        { id: "bailing", name: "BaiLing", short: "BA", type: "anthropic", baseUrl: "https://api.tbox.cn/api/anthropic", model: "Ling-2.5-1T", website: "https://alipaytbox.yuque.com/sxs0ba/ling/get_started", format: "anthropic", category: "cn_official" },
+        { id: "aihubmix", name: "AiHubMix", short: "AH", type: "anthropic", baseUrl: "https://aihubmix.com", model: "claude-sonnet-5", website: "https://aihubmix.com", format: "anthropic", category: "aggregator" },
+        { id: "dmxapi", name: "DMXAPI", short: "DX", type: "anthropic", baseUrl: "https://www.dmxapi.cn", model: "claude-sonnet-5", website: "https://www.dmxapi.cn", format: "anthropic", category: "aggregator" },
+        { id: "packycode", name: "PackyCode", short: "PK", type: "anthropic", baseUrl: "https://www.packyapi.com", model: "claude-sonnet-5", website: "https://www.packyapi.com", format: "anthropic", category: "aggregator" }
+      ],
+      codex: [
+        ...COMMON_PRESETS,
+        { id: "openai-official", name: "OpenAI Official", short: "OA", type: "official", baseUrl: "", model: "gpt-5.6-sol", website: "https://chatgpt.com/codex", format: "responses", category: "official" },
+        { id: "deepseek", name: "DeepSeek", short: "DS", type: "openai", baseUrl: "https://api.deepseek.com/v1", model: "deepseek-chat", website: "https://platform.deepseek.com", format: "chat-completions", category: "third_party" },
+        { id: "zhipu-glm", name: "Zhipu GLM", short: "GL", type: "openai", baseUrl: "https://open.bigmodel.cn/api/paas/v4", model: "glm-4.7", website: "https://open.bigmodel.cn", format: "chat-completions", category: "cn_official" },
+        { id: "zai-glm", name: "Z.ai GLM", short: "ZA", type: "openai", baseUrl: "https://api.z.ai/api/coding/paas/v4", model: "glm-5.2", website: "https://z.ai", format: "chat-completions", category: "cn_official" },
+        { id: "qwen-coder", name: "Qwen Coder", short: "QW", type: "openai", baseUrl: "https://dashscope.aliyuncs.com/compatible-mode/v1", model: "qwen3-coder-plus", website: "https://bailian.console.aliyun.com", format: "responses", category: "cn_official" },
+        { id: "kimi-k2", name: "Kimi K2", short: "KM", type: "openai", baseUrl: "https://api.moonshot.cn/v1", model: "kimi-k2.5", website: "https://platform.moonshot.cn", format: "chat-completions", category: "cn_official" },
+        { id: "kimi-coding", name: "Kimi For Coding", short: "KC", type: "openai", baseUrl: "https://api.kimi.com/coding/v1", model: "kimi-for-coding", website: "https://www.kimi.com/code", format: "chat-completions", category: "cn_official" },
+        { id: "stepfun", name: "StepFun", short: "SF", type: "openai", baseUrl: "https://api.stepfun.com/step_plan/v1", model: "step-3.7-flash", website: "https://platform.stepfun.com/step-plan", format: "chat-completions", category: "cn_official" },
+        { id: "modelscope", name: "ModelScope", short: "MS", type: "openai", baseUrl: "https://api-inference.modelscope.cn/v1", model: "ZhipuAI/GLM-5.1", website: "https://modelscope.cn", format: "chat-completions", category: "aggregator" },
+        { id: "longcat", name: "Longcat", short: "LC", type: "openai", baseUrl: "https://api.longcat.chat/openai/v1", model: "LongCat-2.0", website: "https://longcat.chat/platform", format: "responses", category: "cn_official" },
+        { id: "doubao", name: "DouBaoSeed", short: "DB", type: "openai", baseUrl: "https://ark.cn-beijing.volces.com/api/v3", model: "doubao-seed-code-preview-latest", website: "https://console.volcengine.com/ark", format: "responses", category: "cn_official" },
+        { id: "minimax", name: "MiniMax", short: "MM", type: "openai", baseUrl: "https://api.minimaxi.com/v1", model: "MiniMax-M3", website: "https://platform.minimaxi.com", format: "responses", category: "cn_official" },
+        { id: "minimax-en", name: "MiniMax en", short: "ME", type: "openai", baseUrl: "https://api.minimax.io/v1", model: "MiniMax-M3", website: "https://platform.minimax.io", format: "responses", category: "cn_official" },
+        { id: "bailing", name: "BaiLing", short: "BA", type: "openai", baseUrl: "https://api.tbox.cn/api/llm/v1", model: "Ling-2.6-1T", website: "https://alipaytbox.yuque.com/sxs0ba/ling/get_started", format: "chat-completions", category: "cn_official" },
+        { id: "xiaomi-mimo", name: "Xiaomi MiMo", short: "XM", type: "openai", baseUrl: "https://api.xiaomimimo.com/v1", model: "mimo-v2.5-pro", website: "https://platform.xiaomimimo.com", format: "responses", category: "cn_official" },
+        { id: "siliconflow", name: "SiliconFlow", short: "SI", type: "openai", baseUrl: "https://api.siliconflow.cn/v1", model: "Pro/MiniMaxAI/MiniMax-M2.7", website: "https://siliconflow.cn", format: "chat-completions", category: "aggregator" },
+        { id: "aihubmix", name: "AiHubMix", short: "AH", type: "openai", baseUrl: "https://aihubmix.com/v1", model: "gpt-5.5", website: "https://aihubmix.com", format: "responses", category: "aggregator" },
+        { id: "dmxapi", name: "DMXAPI", short: "DX", type: "openai", baseUrl: "https://www.dmxapi.cn/v1", model: "gpt-5.5", website: "https://www.dmxapi.cn", format: "responses", category: "aggregator" },
+        { id: "packycode", name: "PackyCode", short: "PK", type: "openai", baseUrl: "https://www.packyapi.com/v1", model: "gpt-5.5", website: "https://www.packyapi.com", format: "responses", category: "aggregator" }
+      ],
+      antigravity: [
+        ...COMMON_PRESETS,
+        { id: "google-official", name: "Google Official", short: "GO", type: "official", baseUrl: "", model: "gemini-3.1-pro", website: "https://ai.google.dev", format: "gemini", category: "official" },
+        { id: "shengsuanyun", name: "Shengsuanyun", short: "SS", type: "gemini", baseUrl: "https://router.shengsuanyun.com/api", model: "google/gemini-3.5-flash", website: "https://www.shengsuanyun.com", format: "gemini", category: "aggregator" },
+        { id: "unity2", name: "Unity2.ai", short: "U2", type: "gemini", baseUrl: "https://api.unity2.ai", model: "gemini-3.1-pro", website: "https://unity2.ai", format: "gemini", category: "aggregator" },
+        { id: "subrouter", name: "SubRouter", short: "SR", type: "gemini", baseUrl: "https://subrouter.ai/v1beta", model: "gemini-3.5-flash", website: "https://subrouter.ai", format: "gemini", category: "aggregator" },
+        { id: "qiniu", name: "Qiniu", short: "QN", type: "gemini", baseUrl: "https://api.qnaigc.com/bypass/vertex", model: "gemini-3.1-pro-preview", website: "https://s.qiniu.com/nMvAvy", format: "gemini", category: "aggregator" },
+        { id: "code0", name: "Code0", short: "C0", type: "gemini", baseUrl: "https://code0.ai", model: "gemini-3.1-pro-preview", website: "https://code0.ai", format: "gemini", category: "aggregator" },
+        { id: "packycode", name: "PackyCode", short: "PK", type: "gemini", baseUrl: "https://www.packyapi.com", model: "gemini-3.5-flash", website: "https://www.packyapi.com", format: "gemini", category: "third_party" },
+        { id: "apikey-fun", name: "APIKEY.FUN", short: "AF", type: "gemini", baseUrl: "https://api.apikey.fun", model: "gemini-3.5-flash", website: "https://apikey.fun", format: "gemini", category: "third_party" },
+        { id: "apinebula", name: "APINebula", short: "AN", type: "gemini", baseUrl: "https://apinebula.com", model: "gemini-3.5-flash", website: "https://apinebula.com", format: "gemini", category: "third_party" },
+        { id: "cubence", name: "Cubence", short: "CU", type: "gemini", baseUrl: "https://api.cubence.com", model: "gemini-3.5-flash", website: "https://cubence.com", format: "gemini", category: "third_party" },
+        { id: "aigocode", name: "AIGoCode", short: "AG", type: "gemini", baseUrl: "https://api.aigocode.com", model: "gemini-3.5-flash", website: "https://aigocode.com", format: "gemini", category: "third_party" },
+        { id: "aicodemirror", name: "AICodeMirror", short: "AM", type: "gemini", baseUrl: "https://api.aicodemirror.com/api/gemini", model: "gemini-3.5-flash", website: "https://www.aicodemirror.com", format: "gemini", category: "third_party" },
+        { id: "openrouter", name: "OpenRouter", short: "OR", type: "gemini", baseUrl: "https://openrouter.ai/api", model: "gemini-3.5-flash", website: "https://openrouter.ai", format: "gemini", category: "aggregator" }
+      ],
+      "claude-desktop": COMMON_PRESETS,
+      opencode: COMMON_PRESETS,
+      openclaw: COMMON_PRESETS,
+      hermes: COMMON_PRESETS
+    };
+    PRESETS.grok = [
+      ...COMMON_PRESETS,
+      { id: "xai-official", name: "xAI Official", short: "xAI", type: "official", baseUrl: "", model: "grok-build", website: "https://x.ai/cli", format: "responses", category: "official" },
+      ...PRESETS.codex.filter((preset) => !["custom", "openai-official"].includes(preset.id))
+    ];
+
+    const state = {
+      desktop: Boolean(window.__TAURI_INTERNALS__), status: null, ready: null, providers: [], skills: [], mcpServers: [], softwareCatalog: [],
+      usageStats: null, usageDays: 7, trendMetric: "totalTokens", breakdown: "client",
+      activeView: "clients", activeClient: "codex", contextQuery: "", softwareFilter: "all", skillFilter: "all", diagnosticFilter: "all",
+      busy: false, logs: [], diagnostics: null, diagnosticRunning: false, editingProviderId: null, selectedPresetId: "custom", editingMcpId: null, selectedMcpPreset: "custom", inspectingMcpId: null, mcpToolsResult: null, mcpToolsError: "", activeMcpToolName: "", mcpToolsRequest: 0, configManuallyEdited: false, confirmResolve: null
+    };
+
+    const mock = {
+      status: {
+        appVersion: "0.1.8", platform: "browser-preview", dataDir: "/AgentDock/data", configDir: "/AgentDock/config", managedRuntimeReady: true,
+        clients: APP_ORDER.map((id) => ({ id, name: APP_META[id].name, installed: id === "claude-desktop", version: id === "claude-desktop" ? "detected" : null, executable: id === "claude-desktop" ? "/Applications/Claude.app" : null, configPath: id === "claude-desktop" ? "/Claude/config.json" : null, managedByAgentdock: false }))
+      },
+      providers: [{ id: "packycode-preview", name: "PackyCode", notes: "主力线路", websiteUrl: "https://www.packyapi.com", presetId: "packycode", providerType: "openai", baseUrl: "https://www.packyapi.com/v1", apiFormat: "responses", enabledApps: ["codex"], activeApps: ["codex"], codexModel: "gpt-5.6-sol", geminiModel: "gemini-3.5-pro", claudeSonnetModel: "claude-sonnet-5", claudeHaikuModel: "claude-haiku-4-5", claudeOpusModel: "claude-opus-4-8", active: true, apiKeyConfigured: true, createdAt: new Date().toISOString(), updatedAt: new Date().toISOString() }],
+      skills: [
+        { id: "review", name: "review", description: "代码变更风险审查", source: "built-in", installed: true, apps: ["codex", "claude-code"], updatedAt: new Date().toISOString() },
+        { id: "browse", name: "browse", description: "浏览器交互和页面检查", source: "built-in", installed: false, apps: ["codex"], updatedAt: new Date().toISOString() },
+        { id: "design-review", name: "design-review", description: "界面视觉检查", source: "built-in", installed: false, apps: ["codex"], updatedAt: new Date().toISOString() }
+      ],
+      mcpServers: [{ id: "filesystem", name: "Filesystem", description: "访问指定的本地目录", homepage: "https://github.com/modelcontextprotocol/servers", docs: "", tags: ["文件", "官方"], transport: "stdio", command: "npx", args: ["-y", "@modelcontextprotocol/server-filesystem", "."], env: {}, headers: {}, cwd: "", apps: ["codex", "claude-code"], enabled: true }],
+      softwareCatalog: APP_ORDER.map((id, index) => ({ id, clientId: id, name: APP_META[id].name, description: `安装和管理 ${APP_META[id].name} 客户端`, publisher: index % 2 ? "Community" : "Official", websiteUrl: "", category: "AI 编程客户端", recommended: ["codex", "claude-code"].includes(id), installed: id === "claude-desktop", currentVersion: id === "claude-desktop" ? "1.0.2" : null, latestVersion: "1.1.0", updateAvailable: id === "claude-desktop", installSupported: APP_META[id].autoInstall, managedByAgentdock: false }))
+    };
+    if (!state.desktop) document.body.classList.add("preview-mode");
+
+    const escapeHtml = (value) => String(value ?? "").replaceAll("&", "&amp;").replaceAll("<", "&lt;").replaceAll(">", "&gt;").replaceAll('"', "&quot;").replaceAll("'", "&#039;");
+    const refreshIcons = () => createIcons({ icons, attrs: { "stroke-width": 1.8 } });
+    const nowLabel = () => new Intl.DateTimeFormat("zh-CN", { hour: "2-digit", minute: "2-digit", second: "2-digit" }).format(new Date());
+    const errorText = (error) => typeof error === "string" ? error : error?.message || String(error);
+    const clientMeta = (id) => APP_META[id] || { name: id, short: id.slice(0, 2).toUpperCase(), logo: "/client-logos/codex.svg", autoInstall: false };
+    const selectedClient = () => state.status?.clients.find((client) => client.id === state.activeClient);
+    const clientLogo = (id, extra = "") => { const meta = clientMeta(id); return `<img class="client-logo logo-${escapeHtml(id)} ${extra}" src="${meta.logo}" alt="${escapeHtml(meta.name)} Logo" />`; };
+    const formatNumber = (value) => new Intl.NumberFormat("zh-CN", { notation: Number(value) >= 100000 ? "compact" : "standard", maximumFractionDigits: 1 }).format(Number(value) || 0);
+    const formatCost = (value) => `$${Number(value || 0).toLocaleString("en-US", { minimumFractionDigits: 2, maximumFractionDigits: Number(value) < 1 ? 4 : 2 })}`;
+
+    function addLog(level, message) { state.logs.push({ level, message: String(message), time: nowLabel() }); if (state.logs.length > 300) state.logs.shift(); renderLogs(); if (state.activeView === "logs" && document.getElementById("source-list")) { renderSourceSidebar(); refreshIcons(); } }
+    function notify(message, type = "ok") {
+      const toast = document.createElement("div"); toast.className = `toast ${type}`;
+      toast.innerHTML = `<i data-lucide="${type === "error" ? "circle-alert" : "circle-check"}"></i><p>${escapeHtml(message)}</p>`;
+      document.getElementById("toast-region").appendChild(toast); refreshIcons(); setTimeout(() => toast.remove(), 4200);
+    }
+    function confirmAction(title, message, confirmLabel = "确认删除") {
+      if (state.confirmResolve) state.confirmResolve(false);
+      document.getElementById("confirm-title").textContent = title;
+      document.getElementById("confirm-message").textContent = message;
+      document.getElementById("confirm-accept").textContent = confirmLabel;
+      document.getElementById("confirm-layer").hidden = false;
+      refreshIcons();
+      return new Promise((resolve) => { state.confirmResolve = resolve; setTimeout(() => document.getElementById("confirm-accept").focus(), 40); });
+    }
+    function closeConfirm(result) {
+      document.getElementById("confirm-layer").hidden = true;
+      const resolve = state.confirmResolve; state.confirmResolve = null; resolve?.(result);
+    }
+
+    async function mockInvoke(command, args = {}) {
+      await new Promise((resolve) => setTimeout(resolve, 70));
+      if (command === "get_desktop_status") return structuredClone(mock.status);
+      if (command === "list_software_catalog") return structuredClone(mock.softwareCatalog);
+      if (command === "fetch_provider_models") {
+        const models = args.appId === "codex" ? ["gpt-5.6-sol", "gpt-5.5", "glm-5.2"] : args.appId === "grok" ? ["grok-build", "grok-code-fast-1", "grok-4.1-fast"] : args.appId.startsWith("claude") ? ["claude-sonnet-5", "claude-opus-4-8", "glm-5.2"] : args.appId === "antigravity" ? ["gemini-3.5-pro", "gemini-3.5-flash"] : ["gpt-5.6-sol", "deepseek-chat", "glm-5.2"];
+        return { models, source: args.baseUrl ? "供应商模型接口" : "客户端推荐" };
+      }
+      if (command === "run_ready_check") {
+        const clientsReady = mock.status.clients.filter((item) => item.installed).length;
+        const providersReady = mock.providers.filter((item) => item.providerType === "official" || item.apiKeyConfigured).length;
+        const blockers = [];
+        if (!mock.status.clients.some((item) => item.id === "codex" && item.installed)) blockers.push("Codex 尚未安装");
+        if (!providersReady) blockers.push("还没有可用供应商");
+        return { score: blockers.length ? 48 : 100, blockers, warnings: [], clientsReady, providersReady };
+      }
+      if (command === "run_diagnostics") return {
+        generatedAt: new Date().toISOString(), score: 90, passed: 6, warnings: 2, failed: 0,
+        checks: [
+          { id: "system-platform", category: "系统", status: "pass", title: "桌面运行环境", detail: "AgentDock 0.1.8 · macOS arm64", action: "" },
+          { id: "system-data-dir", category: "系统", status: "pass", title: "数据目录可写", detail: "/AgentDock/data", action: "" },
+          { id: "client-claude", category: "客户端", status: "pass", title: "Claude Desktop 可正常启动", detail: "1.0.2 · 系统安装", action: "" },
+          { id: "client-codex", category: "客户端", status: "warning", title: "Codex 尚未安装", detail: "这是推荐客户端，可由 AgentDock 自动安装", action: "前往客户端页面点击一键安装" },
+          { id: "provider-packy", category: "供应商", status: "pass", title: "PackyCode 连接正常", detail: "Codex · 86 ms · 连接测试通过", action: "" },
+          { id: "provider-active-claude", category: "供应商", status: "warning", title: "Claude Desktop 没有当前供应商", detail: "启动时将使用客户端自身的登录状态", action: "在客户端页面选择一个供应商" },
+          { id: "mcp-filesystem", category: "MCP", status: "pass", title: "Filesystem 配置有效", detail: "STDIO · 已启用到 2 个客户端", action: "" },
+          { id: "usage-data", category: "统计", status: "pass", title: "本地统计数据可读取", detail: "已识别：Codex 会话、Claude Code 会话", action: "" }
+        ]
+      };
+      if (command === "list_providers") return structuredClone(mock.providers);
+      if (command === "save_provider") {
+        const input = args.input; const baseId = `${input.enabledApps?.[0] || "provider"}-${input.name.toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/^-|-$/g, "") || "custom"}`; let id = input.id || baseId;
+        if (!input.id) { let suffix = 2; while (mock.providers.some((item) => item.id === id)) id = `${baseId}-${suffix++}`; }
+        const old = mock.providers.find((item) => item.id === id);
+        for (const app of input.activeApps || []) mock.providers.forEach((item) => { item.activeApps = (item.activeApps || []).filter((value) => value !== app); item.active = item.activeApps.length > 0; });
+        const record = { ...input, id, apiKeyConfigured: input.providerType === "official" || Boolean(input.apiKey) || Boolean(old?.apiKeyConfigured), active: (input.activeApps || []).length > 0, createdAt: old?.createdAt || new Date().toISOString(), updatedAt: new Date().toISOString() };
+        mock.providers = [record, ...mock.providers.filter((item) => item.id !== id)]; return structuredClone(record);
+      }
+      if (command === "activate_provider") { mock.providers.forEach((item) => { item.activeApps = (item.activeApps || []).filter((app) => app !== args.appId); if (item.id === args.providerId) item.activeApps.push(args.appId); item.active = item.activeApps.length > 0; }); return structuredClone(mock.providers.find((item) => item.id === args.providerId)); }
+      if (command === "delete_provider") { mock.providers = mock.providers.filter((item) => item.id !== args.providerId); return { ok: true, message: "供应商已删除" }; }
+      if (command === "test_provider") return { ok: true, latencyMs: 86, message: "连接测试通过" };
+      if (command === "apply_provider_config" || command === "apply_active_provider_configs") return { providerId: args.providerId || "active", backupDir: "/backup", writtenFiles: ["provider.json", "provider.env"] };
+      if (command === "install_client") { const client = mock.status.clients.find((item) => item.id === args.clientId); if (!client) throw new Error("未找到客户端"); client.installed = true; client.version = "managed-preview"; client.managedByAgentdock = true; client.executable = `/AgentDock/${client.id}`; client.configPath = `/AgentDock/${client.id}/config`; return { client, message: `${client.name} 已安装` }; }
+      if (command === "uninstall_client") { const client = mock.status.clients.find((item) => item.id === args.clientId); client.installed = false; client.version = null; client.managedByAgentdock = false; client.executable = null; client.configPath = null; return { ok: true, message: `${client.name} 已卸载` }; }
+      if (command === "launch_client") return { launched: true, message: "客户端已启动" };
+      if (command === "open_path") return { ok: true, message: `已打开 ${args.path}` };
+      if (command === "open_external") return { ok: true, message: `已打开 ${args.url}` };
+      if (command === "list_skills") return structuredClone(mock.skills);
+      if (command === "install_skill") { const skill = mock.skills.find((item) => item.id === args.input.id); skill.installed = true; return structuredClone(skill); }
+      if (command === "uninstall_skill") { const skill = mock.skills.find((item) => item.id === args.skillId); skill.installed = false; return structuredClone(skill); }
+      if (command === "toggle_skill_app") { const skill = mock.skills.find((item) => item.id === args.skillId); skill.apps = args.enabled ? [...new Set([...skill.apps, args.app])] : skill.apps.filter((item) => item !== args.app); return structuredClone(skill); }
+      if (command === "sync_skills") return { writtenFiles: [], message: "Skills 已同步" };
+      if (command === "list_mcp_servers") return structuredClone(mock.mcpServers);
+      if (command === "upsert_mcp_server") { const record = { ...args.input, updatedAt: new Date().toISOString() }; mock.mcpServers = [record, ...mock.mcpServers.filter((item) => item.id !== record.id)]; return structuredClone(record); }
+      if (command === "toggle_mcp_app") { const server = mock.mcpServers.find((item) => item.id === args.serverId); server.apps = args.enabled ? [...new Set([...server.apps, args.app])] : server.apps.filter((item) => item !== args.app); if (args.enabled) server.enabled = true; return structuredClone(server); }
+      if (command === "toggle_mcp_server") { const server = mock.mcpServers.find((item) => item.id === args.serverId); server.enabled = args.enabled; return structuredClone(server); }
+      if (command === "list_mcp_tools") {
+        const server = mock.mcpServers.find((item) => item.id === args.serverId); if (!server) throw new Error("未找到 MCP 服务器");
+        return { serverId: server.id, serverName: server.name, transport: server.transport, latencyMs: 86, tools: [
+          { name: "read_file", title: "读取文件", description: "读取指定路径的文本文件内容。", inputSchema: { type: "object", properties: { path: { type: "string", description: "需要读取的文件绝对路径" }, encoding: { type: "string", description: "文本编码", enum: ["utf-8", "utf-16"], default: "utf-8" } }, required: ["path"] }, outputSchema: { type: "object", properties: { content: { type: "string" } } }, annotations: { readOnlyHint: true } },
+          { name: "search_files", title: "搜索文件", description: "按照关键词和文件类型搜索目录。", inputSchema: { type: "object", properties: { directory: { type: "string", description: "搜索目录" }, query: { type: "string", description: "搜索关键词" }, extensions: { type: "array", description: "限定文件扩展名", items: { type: "string" } }, maxResults: { type: "integer", description: "最多返回结果数", minimum: 1, maximum: 200, default: 50 } }, required: ["directory", "query"] }, outputSchema: null, annotations: { readOnlyHint: true, openWorldHint: false } }
+        ] };
+      }
+      if (command === "delete_mcp_server") { mock.mcpServers = mock.mcpServers.filter((item) => item.id !== args.serverId); return { ok: true, message: "MCP 服务器已删除" }; }
+      if (command === "import_mcp_from_apps") return { imported: 1, linked: 1, scannedApps: ["codex", "claude-code"], errors: [] };
+      if (command === "sync_mcp_servers") return { writtenFiles: [], message: "MCP 配置已同步" };
+      if (command === "get_usage_stats") {
+        const days = args.days || 7; const trend = Array.from({ length: days }, (_, index) => { const date = new Date(); date.setDate(date.getDate() - days + index + 1); return { date: date.toISOString().slice(0, 10), totalTokens: 180000 + ((index * 137000) % 620000), requests: 9 + ((index * 7) % 26), costUsd: 1.2 + ((index * 0.87) % 4.8) }; });
+        const totalTokens = trend.reduce((sum, item) => sum + item.totalTokens, 0); const requests = trend.reduce((sum, item) => sum + item.requests, 0); const costUsd = trend.reduce((sum, item) => sum + item.costUsd, 0);
+        return { days, from: trend[0].date, to: trend.at(-1).date, summary: { totalTokens, inputTokens: Math.round(totalTokens * .62), outputTokens: Math.round(totalTokens * .25), cachedTokens: Math.round(totalTokens * .13), requests, costUsd, unpricedRequests: 3 }, trend, byClient: [{ id: "codex", name: "Codex", totalTokens: Math.round(totalTokens * .58), requests: Math.round(requests * .58), costUsd: costUsd * .58, share: .58 }, { id: "claude-code", name: "Claude Code", totalTokens: Math.round(totalTokens * .31), requests: Math.round(requests * .31), costUsd: costUsd * .31, share: .31 }, { id: "opencode", name: "OpenCode", totalTokens: Math.round(totalTokens * .11), requests: Math.round(requests * .11), costUsd: costUsd * .11, share: .11 }], byProvider: [{ id: "PackyCode", name: "PackyCode", totalTokens: Math.round(totalTokens * .67), requests: Math.round(requests * .67), costUsd: costUsd * .67, share: .67 }, { id: "未识别供应商", name: "未识别供应商", totalTokens: Math.round(totalTokens * .33), requests: Math.round(requests * .33), costUsd: costUsd * .33, share: .33 }], byModel: [{ id: "gpt-5.6-sol", name: "gpt-5.6-sol", totalTokens: Math.round(totalTokens * .61), requests: Math.round(requests * .61), costUsd: costUsd * .61, share: .61 }, { id: "claude-sonnet-5", name: "claude-sonnet-5", totalTokens: Math.round(totalTokens * .39), requests: Math.round(requests * .39), costUsd: costUsd * .39, share: .39 }], sources: ["Codex 会话", "Claude Code 会话", "OpenCode 会话"], errors: [] };
+      }
+      if (command === "export_diagnostics") return { path: "/AgentDock/data/diagnostics-preview.json" };
+      throw new Error(`预览模式未实现命令: ${command}`);
+    }
+    const call = (command, args) => state.desktop ? invoke(command, args) : mockInvoke(command, args);
+
+    async function withBusy(button, task) {
+      if (state.busy) return;
+      state.busy = true; const original = button?.innerHTML;
+      if (button) { button.disabled = true; button.innerHTML = `<i data-lucide="loader-circle"></i><span>处理中</span>`; refreshIcons(); }
+      try { await task(); }
+      catch (error) { const message = errorText(error); addLog("error", message); notify(message, "error"); showProviderError(message); }
+      finally { state.busy = false; if (button && document.body.contains(button)) { button.disabled = false; button.innerHTML = original; refreshIcons(); } }
+    }
+
+    async function loadAll({ quiet = false } = {}) {
+      const [status, ready, providers, skills, mcpServers, softwareCatalog, usageStats] = await Promise.all([call("get_desktop_status"), call("run_ready_check"), call("list_providers"), call("list_skills"), call("list_mcp_servers"), call("list_software_catalog"), call("get_usage_stats", { days: state.usageDays })]);
+      Object.assign(state, { status, ready, providers, skills, mcpServers, softwareCatalog, usageStats });
+      if (!status.clients.some((client) => client.id === state.activeClient)) state.activeClient = "codex";
+      renderAll(); if (!quiet) addLog("ok", `状态已刷新：${ready.clientsReady} 个客户端，${ready.providersReady} 个供应商`);
+    }
+
+    const contextMatches = (...values) => {
+      const query = state.contextQuery.trim().toLowerCase();
+      return !query || values.some((value) => String(value || "").toLowerCase().includes(query));
+    };
+    const providerDefaultModel = (provider, app = state.activeClient) => app === "antigravity" ? provider.geminiModel : app.startsWith("claude") ? provider.claudeSonnetModel : provider.codexModel || provider.defaultModel;
+    function sourceFilterButton(id, label, iconName, count, active, action) {
+      return `<button class="source-filter ${active ? "active" : ""}" data-action="${action}" data-id="${id}"><i data-lucide="${iconName}"></i><span>${label}</span>${count === undefined ? "" : `<b>${count}</b>`}</button>`;
+    }
+    function renderSourceSidebar() {
+      const title = document.getElementById("source-title"); const summary = document.getElementById("source-summary"); const list = document.getElementById("source-list"); const action = document.getElementById("source-action"); const search = document.getElementById("command-search"); const searchShell = search.closest(".command-search");
+      const installedClients = state.status?.clients?.filter((client) => client.installed).length || 0;
+      const sourceAction = {
+        clients: ["客户端", `${installedClients}/${state.status?.clients?.length || APP_ORDER.length} 已安装`, "refresh-cw", "重新检测客户端"],
+        software: ["推荐软件", `${state.softwareCatalog.length} 个工具`, "refresh-cw", "检查软件更新"],
+        skills: ["Skills", `${state.skills.filter((skill) => skill.installed).length} 个已安装`, "refresh-cw", "同步 Skills"],
+        mcp: ["MCP 服务器", `${state.mcpServers.filter((server) => server.enabled).length} 个已启用`, "plus", "添加 MCP 服务器"],
+        stats: ["统计视图", `近 ${state.usageDays} 天`, "refresh-cw", "刷新统计"],
+        logs: ["诊断", state.diagnostics ? `${state.diagnostics.checks.length} 项检查` : "尚未检测", "scan-heart", "重新运行诊断"]
+      }[state.activeView];
+      title.textContent = sourceAction[0]; summary.textContent = sourceAction[1]; action.title = sourceAction[3]; action.setAttribute("aria-label", sourceAction[3]); action.innerHTML = `<i data-lucide="${sourceAction[2]}"></i>`;
+      const searchEnabled = state.activeView !== "stats"; search.disabled = !searchEnabled; searchShell.classList.toggle("disabled", !searchEnabled); search.placeholder = state.activeView === "logs" ? "搜索诊断项" : state.activeView === "mcp" ? "搜索服务器" : "筛选当前列表";
+      if (state.activeView === "clients") {
+        const clients = APP_ORDER.map((id) => ({ id, meta: clientMeta(id), client: state.status?.clients.find((item) => item.id === id), catalog: state.softwareCatalog.find((item) => item.clientId === id) })).filter(({ id, meta }) => contextMatches(id, meta.name));
+        const rows = clients.map(({ id, meta, client, catalog }) => {
+          const installed = Boolean(client?.installed); const update = Boolean(catalog?.updateAvailable); const status = installed ? `${escapeHtml(client.version || "已安装")}${update ? " · 可更新" : ""}` : meta.autoInstall ? "可一键安装" : "未检测到";
+          return `<button class="source-item ${state.activeClient === id ? "active" : ""}" data-action="select-client" data-id="${id}" aria-pressed="${state.activeClient === id}">${clientLogo(id)}<span class="source-copy"><strong>${escapeHtml(meta.name)}</strong><small>${status}</small></span><i class="source-state ${update ? "warn" : installed ? "ok" : ""}"></i></button>`;
+        }).join("");
+        list.innerHTML = `<div class="source-group-label"><span>支持的客户端</span><b>${clients.length}</b></div>${rows || `<div class="source-empty"><i data-lucide="search-x"></i>没有匹配的客户端</div>`}`;
+      } else if (state.activeView === "software") {
+        const items = state.softwareCatalog.filter((item) => contextMatches(item.name, item.description, item.publisher, item.category)); const updates = state.softwareCatalog.filter((item) => item.updateAvailable).length;
+        list.innerHTML = `<div class="source-group-label">筛选</div>${sourceFilterButton("all", "全部软件", "layout-list", state.softwareCatalog.length, state.softwareFilter === "all", "set-software-filter")}${sourceFilterButton("installed", "已安装", "circle-check", state.softwareCatalog.filter((item) => item.installed).length, state.softwareFilter === "installed", "set-software-filter")}${sourceFilterButton("updates", "可更新", "arrow-up-circle", updates, state.softwareFilter === "updates", "set-software-filter")}${sourceFilterButton("recommended", "推荐", "sparkles", state.softwareCatalog.filter((item) => item.recommended).length, state.softwareFilter === "recommended", "set-software-filter")}<div class="source-rule"></div><div class="source-group-label"><span>软件目录</span><b>${items.length}</b></div>${items.map((item) => `<button class="source-item" data-action="focus-software" data-id="${escapeHtml(item.id)}">${clientLogo(item.clientId)}<span class="source-copy"><strong>${escapeHtml(item.name)}</strong><small>${item.updateAvailable ? "可更新" : item.installed ? `已安装 ${escapeHtml(item.currentVersion || "")}` : "未安装"}</small></span><i class="source-state ${item.updateAvailable ? "warn" : item.installed ? "ok" : ""}"></i></button>`).join("")}`;
+      } else if (state.activeView === "skills") {
+        const items = state.skills.filter((skill) => contextMatches(skill.name, skill.description, skill.source));
+        list.innerHTML = `<div class="source-group-label">筛选</div>${sourceFilterButton("all", "全部 Skills", "layout-list", state.skills.length, state.skillFilter === "all", "set-skill-filter")}${sourceFilterButton("installed", "已安装", "circle-check", state.skills.filter((skill) => skill.installed).length, state.skillFilter === "installed", "set-skill-filter")}${sourceFilterButton("available", "可安装", "download", state.skills.filter((skill) => !skill.installed).length, state.skillFilter === "available", "set-skill-filter")}<div class="source-rule"></div><div class="source-group-label"><span>Skill 列表</span><b>${items.length}</b></div>${items.map((skill) => `<button class="source-item" data-action="focus-skill" data-id="${escapeHtml(skill.id)}"><span class="source-symbol"><i data-lucide="wand-sparkles"></i></span><span class="source-copy"><strong>${escapeHtml(skill.name)}</strong><small>${escapeHtml(skill.source)}</small></span><i class="source-state ${skill.installed ? "ok" : ""}"></i></button>`).join("")}`;
+      } else if (state.activeView === "mcp") {
+        const servers = state.mcpServers.filter((server) => contextMatches(server.name, server.id, server.description, server.tags?.join(" ")));
+        const rows = servers.map((server) => `<button class="source-item ${state.inspectingMcpId === server.id ? "active" : ""}" data-action="inspect-mcp" data-id="${escapeHtml(server.id)}"><span class="source-symbol"><i data-lucide="blocks"></i></span><span class="source-copy"><strong>${escapeHtml(server.name || server.id)}</strong><small>${escapeHtml(server.description || server.transport?.toUpperCase() || "MCP")}</small></span><b class="source-count">${server.apps?.length || 0}</b></button>`).join("");
+        list.innerHTML = `<div class="source-group-label"><span>已添加</span><b>${servers.length}</b></div>${rows || `<div class="source-empty"><i data-lucide="blocks"></i>还没有 MCP 服务器</div>`}`;
+      } else if (state.activeView === "stats") {
+        list.innerHTML = `<div class="source-group-label">时间范围</div>${[7, 30, 90].map((days) => sourceFilterButton(String(days), `近 ${days} 天`, days === 7 ? "calendar-days" : days === 30 ? "calendar-range" : "calendar", undefined, state.usageDays === days, "set-stats-days")).join("")}<div class="source-rule"></div><div class="source-group-label">分组方式</div>${sourceFilterButton("client", "按客户端", "monitor", undefined, state.breakdown === "client", "set-breakdown")}${sourceFilterButton("provider", "按供应商", "network", undefined, state.breakdown === "provider", "set-breakdown")}${sourceFilterButton("model", "按模型", "box", undefined, state.breakdown === "model", "set-breakdown")}`;
+      } else {
+        const checks = state.diagnostics?.checks || []; const counts = Object.fromEntries(["pass", "warning", "error"].map((status) => [status, checks.filter((item) => item.status === status).length]));
+        list.innerHTML = `<div class="source-group-label">检查状态</div>${sourceFilterButton("all", "全部项目", "list-checks", checks.length, state.diagnosticFilter === "all", "set-diagnostic-filter")}${sourceFilterButton("pass", "通过", "circle-check", counts.pass, state.diagnosticFilter === "pass", "set-diagnostic-filter")}${sourceFilterButton("warning", "警告", "triangle-alert", counts.warning, state.diagnosticFilter === "warning", "set-diagnostic-filter")}${sourceFilterButton("error", "错误", "circle-x", counts.error, state.diagnosticFilter === "error", "set-diagnostic-filter")}<div class="source-rule"></div><div class="source-empty"><i data-lucide="shield-check"></i>诊断报告不包含 API Key、MCP 环境变量值或请求头内容</div>`;
+      }
+    }
+
+    function renderAll() { renderHeader(); renderClients(); renderSoftware(); renderSkills(); renderMcp(); renderStats(); renderLogs(); renderSourceSidebar(); refreshIcons(); }
+    function renderHeader() {
+      const installed = state.status?.clients?.filter((client) => client.installed).length || 0;
+      const total = state.status?.clients?.length || APP_ORDER.length;
+      document.getElementById("backend-state").className = "badge ok";
+      document.getElementById("backend-state").innerHTML = `<i data-lucide="circle-check"></i>本机服务已连接`;
+      document.getElementById("platform-label").textContent = `${state.status?.platform || "本机"} · 已连接`;
+      document.getElementById("version-label").textContent = `AgentDock ${state.status?.appVersion || ""}`;
+      document.getElementById("nav-client-count").textContent = `${installed}/${total}`;
+      document.getElementById("nav-software-count").textContent = state.softwareCatalog.filter((item) => item.installed).length;
+      document.getElementById("nav-skill-count").textContent = state.skills.filter((skill) => skill.installed).length;
+      document.getElementById("nav-mcp-count").textContent = state.mcpServers.filter((server) => server.enabled).length;
+      document.getElementById("ready-inline").className = `badge ${state.ready?.blockers?.length ? "warn" : "ok"}`;
+      document.getElementById("ready-inline").textContent = `Ready ${state.ready?.score ?? "--"}`;
+      document.getElementById("client-page-summary").textContent = `已安装 ${installed}/${total}，选择客户端后配置供应商`;
+    }
+
+    function renderClients() {
+      const switcher = document.getElementById("client-switcher");
+      switcher.innerHTML = APP_ORDER.map((id) => {
+        const meta = clientMeta(id); const client = state.status?.clients.find((item) => item.id === id); const installed = Boolean(client?.installed);
+        return `<button class="client-tab ${state.activeClient === id ? "active" : ""}" data-action="select-client" data-id="${id}" aria-pressed="${state.activeClient === id}">
+          ${clientLogo(id)}<span class="client-dot ${installed ? "on" : ""}"></span><strong>${meta.name}</strong><small>${installed ? "已安装" : meta.autoInstall ? "可一键安装" : "未检测到"}</small>
+        </button>`;
+      }).join("");
+      renderClientStage();
+    }
+
+    function renderClientStage() {
+      const stage = document.getElementById("client-stage"); const client = selectedClient(); const meta = clientMeta(state.activeClient);
+      if (!client) { stage.innerHTML = `<div class="client-empty">正在检测客户端</div>`; return; }
+      const providers = state.providers.filter((provider) => provider.enabledApps?.includes(state.activeClient));
+      const catalog = state.softwareCatalog.find((item) => item.clientId === client.id);
+      const currentProvider = providers.find((provider) => provider.activeApps?.includes(state.activeClient));
+      const enabledMcp = state.mcpServers.filter((server) => server.enabled && server.apps?.includes(state.activeClient)).length;
+      const currentModel = currentProvider ? providerDefaultModel(currentProvider) || "跟随客户端" : "尚未配置";
+      const clientActions = client.installed ? `
+        ${client.configPath ? `<button class="icon-btn" data-action="open-path" data-path="${escapeHtml(client.configPath)}" title="打开配置位置" aria-label="打开配置位置"><i data-lucide="folder-open"></i></button>` : ""}
+        ${catalog?.updateAvailable && catalog.installSupported ? `<button class="btn" data-action="install-client" data-id="${client.id}"><i data-lucide="arrow-up-circle"></i>更新到 ${escapeHtml(catalog.latestVersion || "最新版")}</button>` : ""}
+        <button class="icon-btn" data-action="refresh-catalog" title="检查 ${meta.name} 更新" aria-label="检查 ${meta.name} 更新"><i data-lucide="refresh-cw"></i></button>
+        ${client.managedByAgentdock ? `<button class="icon-btn" data-action="uninstall-client" data-id="${client.id}" title="卸载" aria-label="卸载 ${meta.name}"><i data-lucide="trash-2"></i></button>` : ""}
+        <button class="btn primary" data-action="launch-client" data-id="${client.id}"><i data-lucide="play"></i>启动 ${meta.name}</button>` : meta.autoInstall ? `<button class="btn primary" data-action="install-client" data-id="${client.id}"><i data-lucide="download"></i>一键安装 ${meta.name}</button>` : `<span class="badge">当前仅支持本机检测</span>`;
+      stage.innerHTML = `
+        <div class="client-stage-head"><div class="client-identity">${clientLogo(client.id)}<div><h3>${meta.name}</h3><p>${client.installed ? `${escapeHtml(client.version || "已安装")}${client.managedByAgentdock ? " · AgentDock 托管" : " · 本机安装"}` : "未检测到可执行程序"}</p></div></div><div class="client-stage-actions">${clientActions}</div></div>
+        <section class="client-readiness" aria-label="客户端就绪状态">
+          <div class="readiness-item"><span class="readiness-icon ${client.installed ? "" : "muted"}"><i data-lucide="${client.installed ? "circle-check" : "circle-dashed"}"></i></span><div><strong>${client.installed ? "客户端可用" : "等待安装"}</strong><small>${client.installed ? "可执行文件与配置目录已检测" : "安装时会自动处理下载源和依赖"}</small></div></div>
+          <div class="readiness-item"><span class="readiness-icon ${providers.length ? "" : "warn"}"><i data-lucide="key-round"></i></span><div><strong>${providers.length} 个供应商</strong><small>${currentProvider ? `当前使用 ${escapeHtml(currentProvider.name)}` : "添加供应商后即可调用模型"}</small></div></div>
+          <div class="readiness-item"><span class="readiness-icon ${enabledMcp ? "" : "muted"}"><i data-lucide="blocks"></i></span><div><strong>${enabledMcp} 个 MCP</strong><small>${enabledMcp ? `已同步到 ${escapeHtml(meta.name)}` : "可在 MCP 页面启用扩展工具"}</small></div></div>
+        </section>
+        ${client.installed ? `<section class="client-section"><div class="provider-section-head"><div><h3>供应商</h3><p>${providers.length ? `已配置 ${providers.length} 个，使用操作会立即写入 ${escapeHtml(meta.name)}` : "还没有配置供应商"}</p></div><button class="btn primary" data-action="open-provider-editor"><i data-lucide="plus"></i>添加供应商</button></div><div class="provider-list" id="provider-list">${providerCards(providers)}</div></section><section class="client-config-summary"><header><div><h3>配置摘要</h3><p>由 AgentDock 管理并写入真实客户端配置</p></div>${client.configPath ? `<button class="btn text" data-action="open-path" data-path="${escapeHtml(client.configPath)}"><i data-lucide="external-link"></i>查看完整文件</button>` : `<span class="badge">等待生成</span>`}</header><div class="client-config-values"><span><small>配置位置</small><code>${escapeHtml(client.configPath || "安装后自动创建")}</code></span><span><small>默认模型</small><code>${escapeHtml(currentModel)}</code></span><span><small>API 协议</small><code>${escapeHtml(currentProvider?.apiFormat || "跟随供应商")}</code></span></div></section>` : `<div class="client-empty"><div><span class="empty-symbol"><i data-lucide="download"></i></span><h3>${meta.name} 尚未安装</h3><p>${meta.autoInstall ? "AgentDock 会优先使用国内可用镜像，自动回退备用源并校验官方包完整性。" : "安装后重新扫描即可配置供应商。"}</p>${meta.autoInstall ? `<button class="btn primary" data-action="install-client" data-id="${client.id}"><i data-lucide="download"></i>一键安装</button>` : ""}</div></div>`}
+      `;
+    }
+
+    function renderSoftware() {
+      const list = document.getElementById("software-list");
+      const installed = state.softwareCatalog.filter((item) => item.installed).length;
+      const updates = state.softwareCatalog.filter((item) => item.updateAvailable).length;
+      const items = state.softwareCatalog.filter((item) => contextMatches(item.name, item.description, item.publisher, item.category)).filter((item) => state.softwareFilter === "all" || state.softwareFilter === "installed" && item.installed || state.softwareFilter === "updates" && item.updateAvailable || state.softwareFilter === "recommended" && item.recommended);
+      document.getElementById("software-summary").textContent = `${state.softwareCatalog.length} 个工具，已安装 ${installed} 个${updates ? `，${updates} 个可更新` : ""}${items.length !== state.softwareCatalog.length ? ` · 当前显示 ${items.length} 个` : ""}`;
+      list.innerHTML = items.length ? items.map((item) => {
+        const status = item.updateAvailable ? `<span class="badge warn">可更新</span>` : item.installed ? `<span class="badge ok">已安装</span>` : item.recommended ? `<span class="badge">推荐</span>` : "";
+        const action = item.updateAvailable && item.installSupported ? `<button class="btn primary" data-action="install-client" data-id="${item.clientId}"><i data-lucide="arrow-up-circle"></i>更新</button>` : item.installed ? `<button class="btn" data-action="select-software-client" data-id="${item.clientId}">管理</button>` : item.installSupported ? `<button class="btn primary" data-action="install-client" data-id="${item.clientId}"><i data-lucide="download"></i>安装</button>` : `<span class="badge">仅检测</span>`;
+        return `<article class="software-item" data-software-id="${escapeHtml(item.id)}"><div class="software-item-head"><div class="software-identity">${clientLogo(item.clientId)}<div><h3>${escapeHtml(item.name)}</h3><p>${escapeHtml(item.publisher)} · ${escapeHtml(item.category)}</p></div></div>${status}</div><p class="software-description">${escapeHtml(item.description)}</p><div class="software-foot"><span class="version-pair">${escapeHtml(item.currentVersion || "未安装")} → ${escapeHtml(item.latestVersion || "等待检查")}</span>${action}</div></article>`;
+      }).join("") : `<div class="empty">当前筛选条件下没有软件</div>`;
+    }
+
+    function providerCards(providers) {
+      if (!providers.length) return `<div class="empty"><div>还没有为 ${clientMeta(state.activeClient).name} 配置供应商</div><button class="btn primary" data-action="open-provider-editor"><i data-lucide="plus"></i>添加供应商</button></div>`;
+      return providers.map((provider) => {
+        const current = provider.activeApps?.includes(state.activeClient); const preset = findPreset(provider.presetId); const short = preset?.short || provider.name.slice(0, 2).toUpperCase(); const model = providerDefaultModel(provider) || "跟随客户端";
+        return `<article class="provider-card ${current ? "current" : ""}"><div class="provider-main"><span class="provider-logo">${escapeHtml(short)}</span><div class="provider-copy"><div class="provider-name-line"><strong>${escapeHtml(provider.name)}</strong>${current ? `<span class="badge ok">当前使用</span>` : ""}<span class="badge ${provider.providerType === "official" || provider.apiKeyConfigured ? "" : "warn"}">${provider.providerType === "official" ? "客户端登录" : provider.apiKeyConfigured ? "密钥已保存" : "缺少密钥"}</span></div><p>${escapeHtml(provider.notes || provider.baseUrl || "官方直连")}</p></div></div><div class="provider-model"><small>默认模型</small><code title="${escapeHtml(model)}">${escapeHtml(model)}</code></div><div class="row-actions">${current ? `<button class="btn text" data-action="activate-provider" data-id="${provider.id}"><i data-lucide="refresh-cw"></i>重新应用</button>` : `<button class="btn primary" data-action="activate-provider" data-id="${provider.id}">使用</button>`}<button class="icon-btn" data-action="test-provider" data-id="${provider.id}" title="测试连接" aria-label="测试 ${escapeHtml(provider.name)}"><i data-lucide="activity"></i></button><button class="icon-btn" data-action="edit-provider" data-id="${provider.id}" title="编辑" aria-label="编辑 ${escapeHtml(provider.name)}"><i data-lucide="pencil"></i></button><button class="icon-btn" data-action="delete-provider" data-id="${provider.id}" title="删除" aria-label="删除 ${escapeHtml(provider.name)}"><i data-lucide="trash-2"></i></button></div></article>`;
+      }).join("");
+    }
+
+    function renderSkills() {
+      const list = document.getElementById("skill-list");
+      const items = state.skills.filter((skill) => contextMatches(skill.name, skill.description, skill.source)).filter((skill) => state.skillFilter === "all" || state.skillFilter === "installed" && skill.installed || state.skillFilter === "available" && !skill.installed);
+      list.innerHTML = items.length ? items.map((skill) => `<article class="data-row" data-skill-id="${escapeHtml(skill.id)}"><div class="row-main"><span class="row-icon"><i data-lucide="wand-sparkles"></i></span><div class="row-copy"><strong>${escapeHtml(skill.name)}</strong><small>${escapeHtml(skill.description)} · ${escapeHtml(skill.source)}</small></div></div><div class="row-actions">${skill.installed ? ["codex", "claude-code", "antigravity", "grok"].map((app) => `<label class="check-control"><input type="checkbox" data-change="skill-app" data-id="${skill.id}" data-app="${app}" ${skill.apps.includes(app) ? "checked" : ""}>${clientMeta(app).name}</label>`).join("") : ""}<span class="badge ${skill.installed ? "ok" : ""}">${skill.installed ? "已安装" : "未安装"}</span>${skill.installed ? `<button class="btn danger" data-action="uninstall-skill" data-id="${skill.id}">卸载</button>` : `<button class="btn primary" data-action="install-skill" data-id="${skill.id}">安装</button>`}</div></article>`).join("") : `<div class="empty">当前筛选条件下没有 Skill</div>`;
+    }
+
+    function renderMcp() {
+      const list = document.getElementById("mcp-list");
+      const counts = Object.fromEntries(APP_ORDER.map((app) => [app, state.mcpServers.filter((server) => server.enabled && server.apps.includes(app)).length]));
+      document.getElementById("mcp-summary").innerHTML = `<span class="mcp-summary-total">${state.mcpServers.length} 个服务器</span><div class="mcp-counts">${APP_ORDER.map((app) => `<span class="mcp-count">${clientMeta(app).name}<strong>${counts[app]}</strong></span>`).join("")}</div>`;
+      const servers = state.mcpServers.filter((server) => contextMatches(server.name, server.id, server.description, server.tags?.join(" ")));
+      list.innerHTML = servers.length ? servers.map((server) => {
+        const detail = server.description || server.tags?.join(", ") || ""; const docs = server.docs || server.homepage || "";
+        return `<article class="mcp-row"><button class="mcp-inspect-trigger" data-action="inspect-mcp" data-id="${escapeHtml(server.id)}" aria-label="查看 ${escapeHtml(server.name || server.id)} 的工具列表"><div class="mcp-copy"><div class="mcp-name-line"><strong>${escapeHtml(server.name || server.id)}</strong></div>${detail ? `<small title="${escapeHtml(detail)}">${escapeHtml(detail)}</small>` : ""}</div><i data-lucide="chevron-right"></i></button><div class="mcp-apps">${APP_ORDER.map((app) => { const active = server.enabled && server.apps.includes(app); return `<label class="mcp-app-toggle" title="${active ? "停用" : "启用"} ${clientMeta(app).name}"><input type="checkbox" data-change="mcp-app" data-id="${escapeHtml(server.id)}" data-app="${app}" ${active ? "checked" : ""}>${clientLogo(app)}</label>`; }).join("")}</div><div class="mcp-row-actions">${docs ? `<button class="icon-btn" data-action="open-external" data-url="${escapeHtml(docs)}" title="打开文档" aria-label="打开 ${escapeHtml(server.name || server.id)} 文档"><i data-lucide="external-link"></i></button>` : ""}<button class="icon-btn" data-action="edit-mcp" data-id="${escapeHtml(server.id)}" title="编辑" aria-label="编辑 ${escapeHtml(server.name || server.id)}"><i data-lucide="pencil"></i></button><button class="icon-btn" data-action="delete-mcp" data-id="${escapeHtml(server.id)}" title="删除" aria-label="删除 ${escapeHtml(server.name || server.id)}"><i data-lucide="trash-2"></i></button></div></article>`;
+      }).join("") : `<div class="empty"><div>${state.mcpServers.length ? "没有匹配的 MCP 服务器" : "还没有 MCP 服务器"}</div><button class="btn primary" data-action="import-mcp"><i data-lucide="import"></i>导入已有配置</button></div>`;
+    }
+    function renderStats() {
+      const stats = state.usageStats; if (!stats) return;
+      document.getElementById("stats-range").textContent = `${stats.from} 至 ${stats.to}`;
+      document.querySelectorAll('[data-action="set-stats-days"]').forEach((button) => button.classList.toggle("active", Number(button.dataset.id) === state.usageDays));
+      document.querySelectorAll('[data-action="set-trend-metric"]').forEach((button) => button.classList.toggle("active", button.dataset.id === state.trendMetric));
+      document.querySelectorAll('[data-action="set-breakdown"]').forEach((button) => button.classList.toggle("active", button.dataset.id === state.breakdown));
+      document.getElementById("stats-kpis").innerHTML = `<article class="stat-kpi"><span>Token 总量</span><strong>${formatNumber(stats.summary.totalTokens)}</strong><small>输入 ${formatNumber(stats.summary.inputTokens)} · 输出 ${formatNumber(stats.summary.outputTokens)} · 缓存 ${formatNumber(stats.summary.cachedTokens)}</small></article><article class="stat-kpi"><span>请求次数</span><strong>${formatNumber(stats.summary.requests)}</strong><small>本机可识别的完整响应</small></article><article class="stat-kpi"><span>成本</span><strong>${formatCost(stats.summary.costUsd)}</strong><small>${stats.summary.unpricedRequests ? `${stats.summary.unpricedRequests} 次请求缺少公开价格，未计入` : "已识别请求均已计价"}</small></article>`;
+      renderTrendChart(); renderBreakdown();
+      const sourceText = stats.sources.length ? `数据源：${stats.sources.join("、")}` : "暂未发现本地会话记录";
+      document.getElementById("stats-note").textContent = `${sourceText}${stats.errors.length ? `；${stats.errors.length} 个文件读取失败，详见诊断日志` : ""}。成本基于客户端记录或内置公开单价估算。`;
+    }
+    function renderTrendChart() {
+      const stats = state.usageStats; const values = stats.trend.map((item) => Number(item[state.trendMetric]) || 0); const max = Math.max(...values, 1);
+      const labels = { totalTokens: ["Token", formatNumber], requests: ["请求", formatNumber], costUsd: ["成本", formatCost] }; const [caption, formatter] = labels[state.trendMetric];
+      document.getElementById("trend-caption").textContent = `按天统计${caption}`;
+      const width = 900, height = 260, left = 52, right = 18, top = 16, bottom = 38, innerWidth = width - left - right, innerHeight = height - top - bottom;
+      const points = values.map((value, index) => ({ x: left + (values.length === 1 ? innerWidth / 2 : index * innerWidth / (values.length - 1)), y: top + innerHeight - value / max * innerHeight, value, date: stats.trend[index].date }));
+      const line = points.map((point, index) => `${index ? "L" : "M"}${point.x.toFixed(1)},${point.y.toFixed(1)}`).join(" ");
+      const area = points.length ? `${line} L${points.at(-1).x.toFixed(1)},${(top + innerHeight).toFixed(1)} L${points[0].x.toFixed(1)},${(top + innerHeight).toFixed(1)} Z` : "";
+      const grid = [0, .25, .5, .75, 1].map((ratio) => { const y = top + innerHeight - ratio * innerHeight; return `<line class="chart-grid-line" x1="${left}" y1="${y}" x2="${width - right}" y2="${y}"/><text class="chart-axis-label" x="${left - 8}" y="${y + 3}" text-anchor="end">${escapeHtml(formatter(max * ratio))}</text>`; }).join("");
+      const labelStep = Math.max(1, Math.ceil(stats.trend.length / 6));
+      const xLabels = points.map((point, index) => index % labelStep === 0 || index === points.length - 1 ? `<text class="chart-axis-label" x="${point.x}" y="${height - 10}" text-anchor="middle">${point.date.slice(5)}</text>` : "").join("");
+      const dots = points.map((point) => `<circle class="chart-point" cx="${point.x}" cy="${point.y}" r="4"><title>${point.date} · ${formatter(point.value)}</title></circle>`).join("");
+      document.getElementById("trend-chart").innerHTML = `<svg viewBox="0 0 ${width} ${height}" role="img" aria-label="${stats.days} 天${caption}趋势">${grid}<path class="chart-area" d="${area}"/><path class="chart-line" d="${line}"/>${dots}${xLabels}</svg>`;
+    }
+    function renderBreakdown() {
+      const key = state.breakdown === "client" ? "byClient" : state.breakdown === "provider" ? "byProvider" : "byModel"; const values = state.usageStats[key] || [];
+      document.getElementById("breakdown-list").innerHTML = values.length ? values.slice(0, 8).map((item) => `<article class="breakdown-item"><div class="breakdown-line"><div class="breakdown-name">${state.breakdown === "client" ? clientLogo(item.id) : ""}<span>${escapeHtml(item.name)}</span></div><span class="breakdown-value">${formatNumber(item.totalTokens)} · ${formatCost(item.costUsd)}</span></div><div class="breakdown-track"><div class="breakdown-fill" style="width:${Math.max(1, item.share * 100).toFixed(1)}%"></div></div></article>`).join("") : `<div class="empty">当前范围没有用量数据</div>`;
+    }
+    function renderLogs() {
+      const output = document.getElementById("log-output"); const logs = state.logs.filter((item) => contextMatches(item.message, item.level, item.time));
+      document.getElementById("log-count").textContent = `${logs.length}/${state.logs.length} 条`; output.innerHTML = logs.length ? logs.map((item) => `<span class="log-line ${item.level}">[${item.time}] [${item.level}] ${escapeHtml(item.message)}</span>`).join("") : `<span class="log-line info">本次运行还没有操作记录</span>`; output.scrollTop = output.scrollHeight;
+      renderDiagnostics();
+    }
+    function renderDiagnostics() {
+      const report = state.diagnostics; const list = document.getElementById("diagnostic-list");
+      if (!report) {
+        document.getElementById("diagnostic-score").textContent = state.diagnosticRunning ? "..." : "--"; document.getElementById("diagnostic-state").textContent = state.diagnosticRunning ? "正在检测" : "等待检测";
+        document.getElementById("diagnostic-passed").textContent = "--"; document.getElementById("diagnostic-warnings").textContent = "--"; document.getElementById("diagnostic-failed").textContent = "--"; document.getElementById("diagnostic-time").textContent = state.diagnosticRunning ? "正在连接供应商并检查本机配置" : "尚未运行主动检查"; document.getElementById("diagnostic-result-count").textContent = "0 项";
+        list.innerHTML = `<div class="diagnostic-empty"><i class="${state.diagnosticRunning ? "spin" : ""}" data-lucide="${state.diagnosticRunning ? "loader-circle" : "scan-heart"}"></i><strong>${state.diagnosticRunning ? "正在执行完整诊断" : "运行一次诊断以查看本机状态"}</strong><small>${state.diagnosticRunning ? "供应商连接检查可能需要几秒钟" : "将检查目录、客户端、供应商、MCP 和统计数据"}</small></div>`; refreshIcons(); return;
+      }
+      document.getElementById("diagnostic-score").textContent = report.score; document.getElementById("diagnostic-state").textContent = report.failed ? "需要处理" : report.warnings ? "基本正常" : "运行良好";
+      document.getElementById("diagnostic-passed").textContent = report.passed; document.getElementById("diagnostic-warnings").textContent = report.warnings; document.getElementById("diagnostic-failed").textContent = report.failed;
+      const generated = new Date(report.generatedAt); document.getElementById("diagnostic-time").textContent = Number.isNaN(generated.getTime()) ? report.generatedAt : `检测于 ${generated.toLocaleString("zh-CN", { hour12: false })}`;
+      const checks = report.checks.filter((check) => (state.diagnosticFilter === "all" || check.status === state.diagnosticFilter) && contextMatches(check.title, check.detail, check.category, check.action));
+      document.getElementById("diagnostic-result-count").textContent = `${checks.length}/${report.checks.length} 项`;
+      const meta = { pass: ["circle-check", "通过"], warning: ["triangle-alert", "警告"], error: ["circle-x", "错误"] };
+      list.innerHTML = checks.length ? checks.map((check) => { const [icon, label] = meta[check.status] || ["circle-help", check.status]; return `<article class="diagnostic-row ${check.status}"><span class="diagnostic-row-icon"><i data-lucide="${icon}"></i></span><div class="diagnostic-row-copy"><div><span class="diagnostic-category">${escapeHtml(check.category)}</span><strong>${escapeHtml(check.title)}</strong></div><p>${escapeHtml(check.detail)}</p>${check.action ? `<small><i data-lucide="wrench"></i>${escapeHtml(check.action)}</small>` : ""}</div><span class="diagnostic-status">${label}</span></article>`; }).join("") : `<div class="diagnostic-empty"><i data-lucide="search-x"></i><strong>没有匹配的检查项</strong><small>调整左侧状态筛选或搜索内容</small></div>`;
+      refreshIcons();
+    }
+    async function refreshDiagnostics() {
+      if (state.diagnosticRunning) return; state.diagnosticRunning = true; state.diagnostics = null; renderLogs(); renderSourceSidebar(); refreshIcons();
+      try { state.diagnostics = await call("run_diagnostics"); addLog(state.diagnostics.failed ? "error" : state.diagnostics.warnings ? "warn" : "ok", `诊断完成：${state.diagnostics.passed} 项通过，${state.diagnostics.warnings} 项警告，${state.diagnostics.failed} 项错误`); }
+      finally { state.diagnosticRunning = false; renderLogs(); renderSourceSidebar(); refreshIcons(); }
+    }
+
+    function showView(name) {
+      closeProviderEditor();
+      closeMcpForm();
+      closeMcpTools();
+      state.activeView = name; state.contextQuery = ""; document.getElementById("command-search").value = "";
+      document.querySelectorAll("[data-view-button]").forEach((button) => button.classList.toggle("active", button.dataset.viewButton === name));
+      document.querySelectorAll("[data-view]").forEach((view) => view.classList.toggle("active", view.dataset.view === name));
+      const [title, subtitle] = VIEW_META[name]; document.getElementById("top-title").textContent = title; document.getElementById("top-subtitle").textContent = subtitle;
+      if (name === "clients") renderClients();
+      if (name === "software") renderSoftware();
+      if (name === "skills") renderSkills();
+      if (name === "mcp") renderMcp();
+      if (name === "stats") renderStats();
+      if (name === "logs") renderLogs();
+      renderSourceSidebar(); refreshIcons();
+      if (name === "logs" && !state.diagnostics && !state.diagnosticRunning) refreshDiagnostics().catch((error) => { addLog("error", errorText(error)); notify(errorText(error), "error"); });
+    }
+    function findPreset(id) { return (PRESETS[state.activeClient] || COMMON_PRESETS).find((preset) => preset.id === id); }
+    function visiblePresets() { const query = document.getElementById("preset-search")?.value.trim().toLowerCase() || ""; return (PRESETS[state.activeClient] || COMMON_PRESETS).filter((preset) => !query || preset.name.toLowerCase().includes(query)); }
+    function renderPresetGrid() { document.getElementById("preset-grid").innerHTML = visiblePresets().map((preset) => `<button type="button" class="preset-option ${state.selectedPresetId === preset.id ? "active" : ""}" data-action="select-provider-preset" data-id="${preset.id}"><span class="mini-logo">${preset.short}</span><span>${escapeHtml(preset.name)}</span></button>`).join(""); refreshIcons(); }
+
+    const CONFIG_FILENAMES = {
+      codex: ["auth.json", "config.toml"], "claude-code": ["", "settings.json"], "claude-desktop": ["", "settings.json"],
+      antigravity: ["", "settings.json"], grok: ["", "config.toml"], opencode: ["", "opencode.json"], openclaw: ["", "openclaw.json"], hermes: ["", "provider.json"]
+    };
+    const configKeyPlaceholder = "${AGENTDOCK_API_KEY}";
+    const configValue = (form, name, fallback = "") => form.elements[name]?.value.trim() || fallback;
+    function generatedProviderConfig() {
+      const form = document.getElementById("provider-form"); const app = state.activeClient; const official = configValue(form, "provider-type") === "official";
+      const name = configValue(form, "provider-name", "custom"); const baseUrl = configValue(form, "provider-base-url"); const model = configValue(form, "provider-model", app === "antigravity" ? "gemini-3.5-pro" : app === "grok" ? "grok-build" : app.startsWith("claude") ? "claude-sonnet-5" : "gpt-5.6-sol");
+      if (app === "codex") {
+        const auth = official ? {} : { OPENAI_API_KEY: configKeyPlaceholder };
+        const config = official ? `model = ${JSON.stringify(model)}\n` : `model_provider = "custom"\nmodel = ${JSON.stringify(model)}\nmodel_reasoning_effort = "high"\n\n[model_providers.custom]\nname = ${JSON.stringify(name)}\nbase_url = ${JSON.stringify(baseUrl)}\nwire_api = "responses"\nenv_key = "OPENAI_API_KEY"\n`;
+        return { auth: JSON.stringify(auth, null, 2), main: config };
+      }
+      if (app.startsWith("claude")) return { auth: "", main: JSON.stringify({ env: official ? {} : { ANTHROPIC_BASE_URL: baseUrl, ANTHROPIC_AUTH_TOKEN: configKeyPlaceholder, ANTHROPIC_MODEL: model, ANTHROPIC_DEFAULT_SONNET_MODEL: configValue(form, "advanced-claude-sonnet", model), ANTHROPIC_DEFAULT_HAIKU_MODEL: configValue(form, "advanced-claude-haiku", "claude-haiku-4-5"), ANTHROPIC_DEFAULT_OPUS_MODEL: configValue(form, "advanced-claude-opus", "claude-opus-4-8") } }, null, 2) };
+      if (app === "antigravity") return { auth: "", main: JSON.stringify({ env: official ? {} : { GOOGLE_GEMINI_BASE_URL: baseUrl, GEMINI_API_KEY: configKeyPlaceholder, GEMINI_MODEL: model } }, null, 2) };
+      if (app === "grok") {
+        const backend = { responses: "responses", anthropic: "messages", "chat-completions": "chat_completions", auto: "chat_completions" }[configValue(form, "provider-api-format", "auto")];
+        const main = official ? `[models]\ndefault = ${JSON.stringify(model)}\n` : `[models]\ndefault = "agentdock"\n\n[model.agentdock]\nmodel = ${JSON.stringify(model)}\nbase_url = ${JSON.stringify(baseUrl)}\nname = ${JSON.stringify(name)}\nenv_key = "XAI_API_KEY"\napi_backend = ${JSON.stringify(backend)}\n`;
+        return { auth: "", main };
+      }
+      if (app === "opencode") return { auth: "", main: JSON.stringify({ $schema: "https://opencode.ai/config.json", provider: { custom: { npm: "@ai-sdk/openai-compatible", name, options: { baseURL: baseUrl, apiKey: configKeyPlaceholder }, models: { [model]: { name: model } } } }, model: `custom/${model}` }, null, 2) };
+      if (app === "openclaw") return { auth: "", main: JSON.stringify({ baseUrl, apiKey: configKeyPlaceholder, api: configValue(form, "provider-api-format", "chat-completions"), models: [{ id: model, name: model }] }, null, 2) };
+      return { auth: "", main: JSON.stringify({ name, base_url: baseUrl, api_key: configKeyPlaceholder, model }, null, 2) };
+    }
+    function updateConfigEditorLayout() {
+      const [authFile, mainFile] = CONFIG_FILENAMES[state.activeClient] || ["", "provider.json"];
+      const authField = document.getElementById("provider-auth-config-field"); const files = document.getElementById("config-files");
+      authField.hidden = !authFile; files.classList.toggle("codex", Boolean(authFile));
+      document.getElementById("provider-auth-filename").textContent = authFile;
+      document.getElementById("provider-main-filename").textContent = mainFile;
+    }
+    function setConfigEditState(manual) {
+      state.configManuallyEdited = manual; const badge = document.getElementById("config-edit-state");
+      badge.className = `badge ${manual ? "warn" : "ok"}`; badge.textContent = manual ? "已手动修改" : "自动生成";
+    }
+    function regenerateProviderConfig() {
+      const form = document.getElementById("provider-form"); const generated = generatedProviderConfig(); updateConfigEditorLayout();
+      form.elements["provider-auth-config"].value = generated.auth; form.elements["provider-main-config"].value = generated.main; setConfigEditState(false);
+    }
+    function loadProviderConfig(provider) {
+      const form = document.getElementById("provider-form"); updateConfigEditorLayout();
+      if (!provider?.settingsConfig) return regenerateProviderConfig();
+      try {
+        const stored = JSON.parse(provider.settingsConfig);
+        if (state.activeClient === "codex") { form.elements["provider-auth-config"].value = JSON.stringify(stored.auth || {}, null, 2); form.elements["provider-main-config"].value = typeof stored.config === "string" ? stored.config : ""; }
+        else if (state.activeClient === "grok") { form.elements["provider-auth-config"].value = ""; form.elements["provider-main-config"].value = typeof stored.config === "string" ? stored.config : ""; }
+        else { form.elements["provider-auth-config"].value = ""; form.elements["provider-main-config"].value = JSON.stringify(stored, null, 2); }
+        setConfigEditState(true);
+      } catch { form.elements["provider-main-config"].value = provider.settingsConfig; setConfigEditState(true); }
+    }
+    function collectProviderSettingsConfig() {
+      const form = document.getElementById("provider-form"); const main = form.elements["provider-main-config"].value.trim();
+      if (state.activeClient === "codex") {
+        let auth; try { auth = JSON.parse(form.elements["provider-auth-config"].value || "{}"); } catch { throw new Error("auth.json 不是有效 JSON"); }
+        if (!auth || Array.isArray(auth) || typeof auth !== "object") throw new Error("auth.json 必须是 JSON 对象");
+        if (!main) throw new Error("config.toml 不能为空");
+        return JSON.stringify({ auth, config: main }, null, 2);
+      }
+      if (state.activeClient === "grok") {
+        if (!main) throw new Error("config.toml 不能为空");
+        return JSON.stringify({ config: main, env: { XAI_API_KEY: configKeyPlaceholder, GROK_DEFAULT_MODEL: "agentdock" } }, null, 2);
+      }
+      let settings; try { settings = JSON.parse(main || "{}"); } catch { throw new Error(`${document.getElementById("provider-main-filename").textContent} 不是有效 JSON`); }
+      if (!settings || Array.isArray(settings) || typeof settings !== "object") throw new Error("配置文件内容必须是 JSON 对象");
+      return JSON.stringify(settings, null, 2);
+    }
+
+    function openProviderEditor(provider = null) {
+      state.editingProviderId = provider?.id || null; state.selectedPresetId = provider?.presetId || "custom";
+      const form = document.getElementById("provider-form"); const meta = clientMeta(state.activeClient);
+      document.getElementById("provider-editor").hidden = false;
+      document.getElementById("provider-editor-title").textContent = `${provider ? "编辑" : "添加"} ${meta.name} 供应商`;
+      document.getElementById("provider-submit-label").textContent = provider ? "保存并使用" : "添加并使用";
+      document.getElementById("provider-form-app").textContent = `${meta.name} 供应商`;
+      form.elements["provider-id"].value = provider?.id || "";
+      form.elements["provider-preset-id"].value = state.selectedPresetId;
+      form.elements["provider-type"].value = provider?.providerType || "custom";
+      form.elements["provider-name"].value = provider?.name || "";
+      form.elements["provider-notes"].value = provider?.notes || "";
+      form.elements["provider-base-url"].value = provider?.baseUrl || "";
+      form.elements["provider-api-key"].value = "";
+      const selectedModel = state.activeClient === "antigravity" ? provider?.geminiModel || "" : state.activeClient.startsWith("claude") ? provider?.claudeSonnetModel || "" : provider?.codexModel || "";
+      setModelOptions(selectedModel ? [selectedModel] : [], selectedModel, "正在读取客户端模型");
+      form.elements["provider-api-format"].value = provider?.apiFormat || "auto";
+      form.elements["advanced-codex-model"].value = provider?.codexModel || "gpt-5.6-sol";
+      form.elements["advanced-claude-sonnet"].value = provider?.claudeSonnetModel || "claude-sonnet-5";
+      form.elements["advanced-claude-haiku"].value = provider?.claudeHaikuModel || "claude-haiku-4-5";
+      form.elements["advanced-claude-opus"].value = provider?.claudeOpusModel || "claude-opus-4-8";
+      document.getElementById("preset-search").value = ""; hideProviderError(); renderPresetGrid(); updateProviderFormPresentation(provider ? findPreset(state.selectedPresetId) : findPreset("custom"));
+      if (!provider) applyPreset(findPreset("custom")); else loadProviderConfig(provider);
+      loadProviderModels().catch((error) => { document.getElementById("model-source").textContent = errorText(error); });
+      setTimeout(() => form.elements["provider-name"].focus(), 120);
+    }
+    function closeProviderEditor() { state.editingProviderId = null; const editor = document.getElementById("provider-editor"); if (editor) editor.hidden = true; hideProviderError(); }
+    function applyPreset(preset) {
+      if (!preset) return; state.selectedPresetId = preset.id; const form = document.getElementById("provider-form");
+      form.elements["provider-preset-id"].value = preset.id; form.elements["provider-type"].value = preset.type;
+      form.elements["provider-name"].value = preset.id === "custom" ? "" : preset.name;
+      form.elements["provider-base-url"].value = preset.baseUrl;
+      setModelOptions(preset.model ? [preset.model] : [], preset.model, "正在读取供应商模型"); form.elements["provider-api-format"].value = preset.format;
+      if (["codex", "grok"].includes(state.activeClient)) form.elements["advanced-codex-model"].value = preset.model || (state.activeClient === "grok" ? "grok-build" : "gpt-5.6-sol");
+      if (state.activeClient.startsWith("claude")) form.elements["advanced-claude-sonnet"].value = preset.model || "claude-sonnet-5";
+      updateProviderFormPresentation(preset); renderPresetGrid(); regenerateProviderConfig();
+    }
+    function setModelOptions(models, selected, source) {
+      const select = document.querySelector('[name="provider-model"]'); const values = [...new Set([selected, ...models].filter(Boolean))];
+      select.innerHTML = values.length ? values.map((model) => `<option value="${escapeHtml(model)}">${escapeHtml(model)}</option>`).join("") : `<option value="">暂无可用模型</option>`;
+      if (selected && values.includes(selected)) select.value = selected;
+      document.getElementById("model-source").textContent = source;
+    }
+    async function loadProviderModels() {
+      const form = document.getElementById("provider-form"); const selected = form.elements["provider-model"].value;
+      document.getElementById("model-source").textContent = "正在读取模型列表";
+      const result = await call("fetch_provider_models", { appId: state.activeClient, baseUrl: form.elements["provider-base-url"].value.trim(), apiKey: form.elements["provider-api-key"].value.trim() || null, apiFormat: form.elements["provider-api-format"].value });
+      const preferred = selected || result.models[0] || ""; setModelOptions(result.models, preferred, `${result.source} · ${result.models.length} 个模型`); if (!state.configManuallyEdited) regenerateProviderConfig();
+    }
+    function updateProviderFormPresentation(preset) {
+      const form = document.getElementById("provider-form"); const official = (preset?.type || form.elements["provider-type"].value) === "official";
+      const short = preset?.short || form.elements["provider-name"].value.slice(0, 2).toUpperCase() || "CU";
+      document.getElementById("provider-form-logo").textContent = short; document.getElementById("provider-form-heading").textContent = preset?.name || form.elements["provider-name"].value || "自定义配置";
+      document.getElementById("base-url-field").hidden = official; document.getElementById("api-key-field").hidden = official;
+      form.elements["provider-base-url"].required = !official; form.elements["provider-api-key"].required = !official && !state.editingProviderId;
+      const hints = { official: "官方供应商使用客户端登录，无需填写 API Key", cn_official: "请求地址已预设，只需填写 API Key", aggregator: "请求地址已预设，只需填写 API Key", third_party: "确认请求地址后填写 API Key", custom: "填写供应商提供的请求地址和 API Key" };
+      document.querySelector("#preset-hint span").textContent = hints[preset?.category || "custom"];
+    }
+    function showProviderError(message) { const editor = document.getElementById("provider-editor"); if (editor?.hidden) return; const error = document.getElementById("provider-form-error"); error.textContent = message; error.classList.add("visible"); }
+    function hideProviderError() { const error = document.getElementById("provider-form-error"); if (error) { error.textContent = ""; error.classList.remove("visible"); } }
+    function providerInput() {
+      const form = document.getElementById("provider-form"); const official = form.elements["provider-type"].value === "official";
+      if (!form.reportValidity()) throw new Error(official ? "请填写供应商名称" : "请完整填写供应商名称、请求地址和 API Key");
+      const old = state.providers.find((provider) => provider.id === state.editingProviderId); const model = form.elements["provider-model"].value.trim();
+      return { id: form.elements["provider-id"].value || null, name: form.elements["provider-name"].value.trim(), notes: form.elements["provider-notes"].value.trim(), websiteUrl: old?.websiteUrl || "", presetId: form.elements["provider-preset-id"].value, providerType: form.elements["provider-type"].value, baseUrl: form.elements["provider-base-url"].value.trim(), apiKey: form.elements["provider-api-key"].value.trim() || null, apiFormat: form.elements["provider-api-format"].value, settingsConfig: collectProviderSettingsConfig(), enabledApps: [state.activeClient], activeApps: [...new Set([...(old?.activeApps || []).filter((app) => app !== state.activeClient), state.activeClient])], codexModel: !state.activeClient.startsWith("claude") && state.activeClient !== "antigravity" ? model : form.elements["advanced-codex-model"].value.trim(), geminiModel: state.activeClient === "antigravity" ? model : old?.geminiModel || "gemini-3.5-pro", claudeSonnetModel: state.activeClient.startsWith("claude") ? model : form.elements["advanced-claude-sonnet"].value.trim(), claudeHaikuModel: form.elements["advanced-claude-haiku"].value.trim(), claudeOpusModel: form.elements["advanced-claude-opus"].value.trim(), active: true };
+    }
+    async function saveProvider() {
+      hideProviderError(); const provider = await call("save_provider", { input: providerInput() });
+      await call("activate_provider", { providerId: provider.id, appId: state.activeClient });
+      const applied = await call("apply_provider_config", { providerId: provider.id, appId: state.activeClient });
+      addLog("ok", `${clientMeta(state.activeClient).name} 已使用供应商 ${provider.name}，写入 ${applied.writtenFiles.length} 个配置文件`);
+      notify(`${provider.name} 已添加并启用`); closeProviderEditor(); await loadAll({ quiet: true });
+    }
+
+    function mcpSchemaType(schema = {}) {
+      const raw = Array.isArray(schema.type) ? schema.type.join(" | ") : schema.type;
+      let type = raw || (schema.enum ? "enum" : schema.oneOf || schema.anyOf ? "union" : "any");
+      if (raw === "array" && schema.items) type += `<${mcpSchemaType(schema.items)}>`;
+      if (schema.format) type += ` · ${schema.format}`;
+      return type;
+    }
+    function mcpSchemaValue(value) { try { return JSON.stringify(value); } catch { return String(value); } }
+    function mcpAnnotationBadges(annotations = {}) {
+      const badges = [];
+      if (annotations.readOnlyHint) badges.push(["只读", "ok"]);
+      if (annotations.destructiveHint) badges.push(["会修改数据", "warn"]);
+      if (annotations.idempotentHint) badges.push(["可重复调用", ""]);
+      if (annotations.openWorldHint) badges.push(["可访问外部服务", ""]);
+      return badges.map(([label, kind]) => `<span class="badge ${kind}">${label}</span>`).join("");
+    }
+    function renderMcpToolDetail() {
+      const detail = document.getElementById("mcp-tool-detail"); const tools = state.mcpToolsResult?.tools || [];
+      const tool = tools.find((item) => item.name === state.activeMcpToolName) || tools[0];
+      if (!tool) { detail.innerHTML = `<div class="mcp-tools-state"><div><i data-lucide="wrench"></i><h3>没有可展示的工具</h3><p>服务器已连接，但没有返回工具定义。</p></div></div>`; refreshIcons(); return; }
+      state.activeMcpToolName = tool.name; const schema = tool.inputSchema || {}; const properties = Object.entries(schema.properties || {}); const required = new Set(schema.required || []);
+      const params = properties.length ? properties.map(([name, value]) => {
+        const meta = [];
+        if (Object.hasOwn(value, "default")) meta.push(`默认值 ${mcpSchemaValue(value.default)}`);
+        if (Array.isArray(value.enum)) meta.push(`可选值 ${value.enum.map(mcpSchemaValue).join(" / ")}`);
+        if (value.minimum !== undefined) meta.push(`最小 ${value.minimum}`);
+        if (value.maximum !== undefined) meta.push(`最大 ${value.maximum}`);
+        if (value.pattern) meta.push(`格式 ${value.pattern}`);
+        return `<article class="mcp-param-row"><div class="mcp-param-name"><code>${escapeHtml(name)}</code><span>${escapeHtml(mcpSchemaType(value))}${required.has(name) ? " · 必填" : " · 可选"}</span></div><div class="mcp-param-copy"><p>${escapeHtml(value.description || "暂无参数说明")}</p>${meta.length ? `<div class="mcp-param-meta">${meta.map((item) => `<code>${escapeHtml(item)}</code>`).join("")}</div>` : ""}</div></article>`;
+      }).join("") : `<div class="empty">此工具不需要参数</div>`;
+      detail.innerHTML = `<div class="mcp-tool-title-line"><h3>${escapeHtml(tool.name)}</h3>${tool.title && tool.title !== tool.name ? `<span class="badge">${escapeHtml(tool.title)}</span>` : ""}</div><p class="mcp-tool-description">${escapeHtml(tool.description || "服务器没有提供工具说明")}</p>${tool.annotations ? `<div class="mcp-tool-annotations">${mcpAnnotationBadges(tool.annotations)}</div>` : ""}<section class="mcp-params"><h4>参数</h4><div class="mcp-param-list">${params}</div></section><details class="mcp-schema-details"><summary>完整输入参数 Schema</summary><pre>${escapeHtml(JSON.stringify(schema, null, 2))}</pre></details>${tool.outputSchema ? `<details class="mcp-schema-details"><summary>输出结果 Schema</summary><pre>${escapeHtml(JSON.stringify(tool.outputSchema, null, 2))}</pre></details>` : ""}`;
+      refreshIcons();
+    }
+    function renderMcpTools() {
+      const server = state.mcpServers.find((item) => item.id === state.inspectingMcpId); const result = state.mcpToolsResult; const error = state.mcpToolsError;
+      document.getElementById("mcp-tools-title").textContent = server ? `${server.name || server.id} 的工具` : "MCP 工具";
+      document.getElementById("mcp-tools-server-name").textContent = server?.name || server?.id || "MCP 服务器";
+      document.getElementById("mcp-tools-transport").textContent = (result?.transport || server?.transport || "MCP").toUpperCase();
+      const connection = document.getElementById("mcp-tools-connection"); const list = document.getElementById("mcp-tool-list"); const detail = document.getElementById("mcp-tool-detail");
+      connection.className = `badge ${error ? "danger" : result ? "ok" : ""}`; connection.textContent = error ? "连接失败" : result ? "已连接" : "正在连接";
+      if (error) {
+        document.getElementById("mcp-tools-summary").textContent = "未能读取工具列表"; document.getElementById("mcp-tool-count").textContent = "--"; list.innerHTML = "";
+        detail.innerHTML = `<div class="mcp-tools-state"><div><i data-lucide="circle-alert"></i><h3>无法读取工具</h3><p>${escapeHtml(error)}</p><button class="btn primary" data-action="refresh-mcp-tools"><i data-lucide="refresh-cw"></i>重新连接</button></div></div>`; refreshIcons(); return;
+      }
+      if (!result) {
+        document.getElementById("mcp-tools-summary").textContent = "正在初始化服务器并读取工具"; document.getElementById("mcp-tool-count").textContent = "--";
+        list.innerHTML = `<div class="mcp-tools-state"><i class="spin" data-lucide="loader-circle"></i></div>`; detail.innerHTML = `<div class="mcp-tools-state"><div><i class="spin" data-lucide="loader-circle"></i><h3>正在读取工具</h3><p>首次连接时，服务器可能需要准备运行依赖。</p></div></div>`; refreshIcons(); return;
+      }
+      const tools = result.tools || []; if (!tools.some((item) => item.name === state.activeMcpToolName)) state.activeMcpToolName = tools[0]?.name || "";
+      document.getElementById("mcp-tools-summary").textContent = `${tools.length} 个工具 · ${result.latencyMs} ms`;
+      document.getElementById("mcp-tool-count").textContent = tools.length;
+      list.innerHTML = tools.length ? tools.map((tool) => `<button class="mcp-tool-item ${state.activeMcpToolName === tool.name ? "active" : ""}" data-action="select-mcp-tool" data-id="${escapeHtml(tool.name)}"><span><strong>${escapeHtml(tool.title || tool.name)}</strong><small>${escapeHtml(tool.description || tool.name)}</small></span><i data-lucide="chevron-right"></i></button>`).join("") : `<div class="empty">服务器没有返回工具</div>`;
+      renderMcpToolDetail(); refreshIcons();
+    }
+    async function refreshMcpTools() {
+      const id = state.inspectingMcpId; if (!id) return; const request = ++state.mcpToolsRequest;
+      state.mcpToolsResult = null; state.mcpToolsError = ""; renderMcpTools();
+      try {
+        const result = await call("list_mcp_tools", { serverId: id }); if (request !== state.mcpToolsRequest || id !== state.inspectingMcpId) return;
+        state.mcpToolsResult = result; state.activeMcpToolName = result.tools?.[0]?.name || ""; addLog("ok", `${result.serverName} 返回 ${result.tools.length} 个工具`);
+      } catch (error) {
+        if (request !== state.mcpToolsRequest || id !== state.inspectingMcpId) return; state.mcpToolsError = errorText(error); addLog("error", `${id} 工具读取失败：${state.mcpToolsError}`);
+      }
+      renderMcpTools();
+    }
+    function openMcpTools(id) {
+      state.inspectingMcpId = id; state.mcpToolsResult = null; state.mcpToolsError = ""; state.activeMcpToolName = "";
+      document.getElementById("mcp-tools-view").hidden = false; renderMcpTools(); renderSourceSidebar(); refreshIcons(); return refreshMcpTools();
+    }
+    function closeMcpTools() {
+      state.mcpToolsRequest += 1; state.inspectingMcpId = null; state.mcpToolsResult = null; state.mcpToolsError = ""; state.activeMcpToolName = ""; document.getElementById("mcp-tools-view").hidden = true; if (document.getElementById("source-list")) { renderSourceSidebar(); refreshIcons(); }
+    }
+
+    const npxMcpSpec = (packageName) => state.status?.platform === "windows" ? { type: "stdio", command: "cmd", args: ["/c", "npx", "-y", packageName] } : { type: "stdio", command: "npx", args: ["-y", packageName] };
+    const MCP_PRESETS = {
+      fetch: { id: "fetch", name: "mcp-server-fetch", description: "读取网页并转换为适合模型处理的内容", tags: ["stdio", "http", "web"], homepage: "https://github.com/modelcontextprotocol/servers", docs: "https://github.com/modelcontextprotocol/servers/tree/main/src/fetch", spec: { type: "stdio", command: "uvx", args: ["mcp-server-fetch"] } },
+      time: { id: "time", name: "@modelcontextprotocol/server-time", description: "获取时区时间并进行时间转换", tags: ["stdio", "time", "utility"], homepage: "https://github.com/modelcontextprotocol/servers", docs: "https://github.com/modelcontextprotocol/servers/tree/main/src/time", spec: npxMcpSpec("@modelcontextprotocol/server-time") },
+      memory: { id: "memory", name: "@modelcontextprotocol/server-memory", description: "使用知识图谱保存跨会话记忆", tags: ["stdio", "memory", "graph"], homepage: "https://github.com/modelcontextprotocol/servers", docs: "https://github.com/modelcontextprotocol/servers/tree/main/src/memory", spec: npxMcpSpec("@modelcontextprotocol/server-memory") },
+      "sequential-thinking": { id: "sequential-thinking", name: "@modelcontextprotocol/server-sequential-thinking", description: "为复杂问题提供分步骤推理工具", tags: ["stdio", "thinking", "reasoning"], homepage: "https://github.com/modelcontextprotocol/servers", docs: "https://github.com/modelcontextprotocol/servers/tree/main/src/sequentialthinking", spec: npxMcpSpec("@modelcontextprotocol/server-sequential-thinking") },
+      context7: { id: "context7", name: "@upstash/context7-mcp", description: "查询开发库的最新文档和代码示例", tags: ["stdio", "docs", "search"], homepage: "https://context7.com", docs: "https://github.com/upstash/context7/blob/master/README.md", spec: npxMcpSpec("@upstash/context7-mcp") }
+    };
+    function appCheckboxes(containerId, selected = []) { document.getElementById(containerId).innerHTML = APP_ORDER.map((id) => `<label class="check-control"><input type="checkbox" value="${id}" ${selected.includes(id) ? "checked" : ""}>${clientMeta(id).name}</label>`).join(""); }
+    function renderMcpPresetChips() {
+      document.getElementById("mcp-preset-chips").innerHTML = `<button type="button" class="mcp-preset-chip ${state.selectedMcpPreset === "custom" ? "active" : ""}" data-action="select-mcp-preset" data-id="custom">自定义</button>${Object.values(MCP_PRESETS).map((preset) => `<button type="button" class="mcp-preset-chip ${state.selectedMcpPreset === preset.id ? "active" : ""}" data-action="select-mcp-preset" data-id="${preset.id}" title="${escapeHtml(preset.description)}">${escapeHtml(preset.id)}</button>`).join("")}`;
+    }
+    function serverMcpSpec(server) {
+      const spec = { ...(server?.extra || {}), type: server?.transport || "stdio" };
+      if (spec.type === "stdio") { spec.command = server?.command || ""; if (server?.args?.length) spec.args = server.args; if (Object.keys(server?.env || {}).length) spec.env = server.env; if (server?.cwd) spec.cwd = server.cwd; }
+      else { spec.url = server?.command || ""; if (Object.keys(server?.headers || {}).length) spec.headers = server.headers; }
+      return spec;
+    }
+    function setMcpMetadataVisible(visible) {
+      document.getElementById("mcp-metadata").hidden = !visible; const button = document.querySelector('[data-action="toggle-mcp-metadata"]');
+      button.innerHTML = `<i data-lucide="chevron-${visible ? "up" : "down"}"></i><span>附加信息</span>`; refreshIcons();
+    }
+    function openMcpForm(server = null) {
+      state.editingMcpId = server?.id || null; state.selectedMcpPreset = server ? null : "custom"; const form = document.getElementById("mcp-form");
+      document.getElementById("mcp-editor").hidden = false; document.getElementById("mcp-form-title").textContent = server ? "编辑 MCP 服务器" : "新增 MCP 服务器"; document.getElementById("mcp-submit-label").textContent = server ? "保存" : "添加"; document.getElementById("mcp-preset-block").hidden = Boolean(server);
+      form.elements["mcp-id"].value = server?.id || ""; form.elements["mcp-id"].readOnly = Boolean(server); form.elements["mcp-name"].value = server?.name || ""; form.elements["mcp-description"].value = server?.description || ""; form.elements["mcp-homepage"].value = server?.homepage || ""; form.elements["mcp-docs"].value = server?.docs || ""; form.elements["mcp-tags"].value = server?.tags?.join(", ") || ""; form.elements["mcp-json"].value = server ? JSON.stringify(serverMcpSpec(server), null, 2) : ""; appCheckboxes("mcp-apps", server?.apps || ["codex", "claude-code", "antigravity", "grok"]);
+      setMcpMetadataVisible(Boolean(server?.description || server?.homepage || server?.docs || server?.tags?.length)); showMcpJsonError(""); renderMcpPresetChips(); setTimeout(() => form.elements["mcp-id"].focus(), 70);
+    }
+    function closeMcpForm() { state.editingMcpId = null; state.selectedMcpPreset = "custom"; document.getElementById("mcp-editor").hidden = true; closeMcpWizard(); }
+    function uniqueMcpId(base) { const ids = state.mcpServers.map((server) => server.id); if (!ids.includes(base)) return base; let suffix = 1; while (ids.includes(`${base}-${suffix}`)) suffix += 1; return `${base}-${suffix}`; }
+    function applyMcpPreset(id) {
+      state.selectedMcpPreset = id; renderMcpPresetChips(); const form = document.getElementById("mcp-form");
+      if (id === "custom") { form.elements["mcp-id"].value = ""; form.elements["mcp-name"].value = ""; form.elements["mcp-description"].value = ""; form.elements["mcp-homepage"].value = ""; form.elements["mcp-docs"].value = ""; form.elements["mcp-tags"].value = ""; form.elements["mcp-json"].value = ""; setMcpMetadataVisible(false); showMcpJsonError(""); return; }
+      const preset = MCP_PRESETS[id]; if (!preset) return; form.elements["mcp-id"].value = uniqueMcpId(preset.id); form.elements["mcp-name"].value = preset.name; form.elements["mcp-description"].value = preset.description; form.elements["mcp-homepage"].value = preset.homepage; form.elements["mcp-docs"].value = preset.docs; form.elements["mcp-tags"].value = preset.tags.join(", "); form.elements["mcp-json"].value = JSON.stringify(preset.spec, null, 2); setMcpMetadataVisible(true); validateMcpJsonEditor();
+    }
+    function parseJsonObject(raw, label) { let value; try { value = JSON.parse(raw || "{}"); } catch (error) { throw new Error(`${label} 格式错误：${error.message}`); } if (!value || Array.isArray(value) || typeof value !== "object") throw new Error(`${label} 必须是 JSON 对象`); return value; }
+    function parseMcpJson(raw) {
+      let value = parseJsonObject(raw, "JSON 配置"); let inferredId = "";
+      for (const key of ["mcpServers", "mcp"]) { if (value[key] && typeof value[key] === "object" && !Array.isArray(value[key])) { const entry = Object.entries(value[key])[0]; if (entry) { inferredId = entry[0]; value = entry[1]; } break; } }
+      if (!value.type && !value.command && !value.url) { const entries = Object.entries(value); if (entries.length === 1 && entries[0][1] && typeof entries[0][1] === "object" && !Array.isArray(entries[0][1])) { inferredId = inferredId || entries[0][0]; value = entries[0][1]; } }
+      const rawType = value.type || (value.url ? "http" : "stdio"); const transport = rawType === "local" ? "stdio" : rawType === "remote" ? "sse" : rawType; const commandArray = Array.isArray(value.command) ? value.command : null;
+      const command = transport === "stdio" ? (commandArray?.[0] || value.command || "") : (value.url || ""); const args = transport === "stdio" ? (commandArray ? commandArray.slice(1) : Array.isArray(value.args) ? value.args : []) : []; const env = value.env || value.environment || {}; const headers = value.headers || value.http_headers || {}; const known = new Set(["type", "command", "args", "env", "environment", "url", "headers", "http_headers", "cwd", "enabled"]); const extra = Object.fromEntries(Object.entries(value).filter(([key]) => !known.has(key)));
+      if (!["stdio", "http", "sse"].includes(transport)) throw new Error(`不支持的传输类型：${transport}`); if (transport === "stdio" && !String(command).trim()) throw new Error("stdio 配置必须包含 command"); if (transport !== "stdio" && !String(command).trim()) throw new Error(`${transport.toUpperCase()} 配置必须包含 url`); if (!env || Array.isArray(env) || typeof env !== "object") throw new Error("env 必须是 JSON 对象"); if (!headers || Array.isArray(headers) || typeof headers !== "object") throw new Error("headers 必须是 JSON 对象");
+      return { inferredId, transport, command: String(command), args: args.map(String), env, headers, cwd: String(value.cwd || ""), extra };
+    }
+    function showMcpJsonError(message) { const error = document.getElementById("mcp-json-error"); error.hidden = !message; error.querySelector("span").textContent = message; }
+    function validateMcpJsonEditor(autoFill = true) { try { const parsed = parseMcpJson(document.querySelector('[name="mcp-json"]').value); const form = document.getElementById("mcp-form"); if (autoFill && parsed.inferredId && !form.elements["mcp-id"].value.trim() && !state.editingMcpId) { form.elements["mcp-id"].value = uniqueMcpId(parsed.inferredId); if (!form.elements["mcp-name"].value.trim()) form.elements["mcp-name"].value = parsed.inferredId; } showMcpJsonError(""); return parsed; } catch (error) { showMcpJsonError(errorText(error)); return null; } }
+    function mcpInput() {
+      const form = document.getElementById("mcp-form"); if (!form.reportValidity()) throw new Error("请填写服务器标题"); const id = form.elements["mcp-id"].value.trim(); if (!state.editingMcpId && state.mcpServers.some((server) => server.id === id)) throw new Error(`服务器 ID“${id}”已经存在`); const parsed = parseMcpJson(form.elements["mcp-json"].value); showMcpJsonError("");
+      return { id, name: form.elements["mcp-name"].value.trim() || id, description: form.elements["mcp-description"].value.trim(), homepage: form.elements["mcp-homepage"].value.trim(), docs: form.elements["mcp-docs"].value.trim(), tags: form.elements["mcp-tags"].value.split(/[,，]/).map((item) => item.trim()).filter(Boolean), transport: parsed.transport, command: parsed.command, args: parsed.args, env: parsed.env, headers: parsed.headers, cwd: parsed.cwd, extra: parsed.extra, apps: [...document.querySelectorAll("#mcp-apps input:checked")].map((input) => input.value), enabled: true };
+    }
+    function parsePairs(text, mode) { const result = {}; for (const line of text.split("\n").map((item) => item.trim()).filter(Boolean)) { const colon = line.indexOf(":"); const equal = line.indexOf("="); const index = mode === "headers" && colon > 0 && (equal < 0 || colon < equal) ? colon : equal; if (index > 0) result[line.slice(0, index).trim()] = line.slice(index + 1).trim(); } return result; }
+    function wizardSpec() { const type = document.querySelector('[name="mcp-wizard-type"]:checked').value; if (type === "stdio") { const command = document.querySelector('[name="mcp-wizard-command"]').value.trim(); const args = document.querySelector('[name="mcp-wizard-args"]').value.split("\n").map((item) => item.trim()).filter(Boolean); const env = parsePairs(document.querySelector('[name="mcp-wizard-env"]').value, "env"); return { type, command, ...(args.length ? { args } : {}), ...(Object.keys(env).length ? { env } : {}) }; } const url = document.querySelector('[name="mcp-wizard-url"]').value.trim(); const headers = parsePairs(document.querySelector('[name="mcp-wizard-headers"]').value, "headers"); return { type, url, ...(Object.keys(headers).length ? { headers } : {}) }; }
+    function updateMcpWizardPreview() { const type = document.querySelector('[name="mcp-wizard-type"]:checked').value; document.getElementById("mcp-wizard-stdio-fields").hidden = type !== "stdio"; document.getElementById("mcp-wizard-remote-fields").hidden = type === "stdio"; document.querySelector('[name="mcp-wizard-preview"]').value = JSON.stringify(wizardSpec(), null, 2); }
+    function openMcpWizard() { const form = document.getElementById("mcp-form"); let parsed = null; try { parsed = parseMcpJson(form.elements["mcp-json"].value); } catch {} const type = parsed?.transport || "stdio"; document.querySelectorAll('[name="mcp-wizard-type"]').forEach((input) => { input.checked = input.value === type; }); document.querySelector('[name="mcp-wizard-id"]').value = form.elements["mcp-id"].value; document.querySelector('[name="mcp-wizard-command"]').value = parsed?.transport === "stdio" ? parsed.command : ""; document.querySelector('[name="mcp-wizard-args"]').value = parsed?.args?.join("\n") || ""; document.querySelector('[name="mcp-wizard-env"]').value = Object.entries(parsed?.env || {}).map(([key, value]) => `${key}=${value}`).join("\n"); document.querySelector('[name="mcp-wizard-url"]').value = parsed && parsed.transport !== "stdio" ? parsed.command : ""; document.querySelector('[name="mcp-wizard-headers"]').value = Object.entries(parsed?.headers || {}).map(([key, value]) => `${key}: ${value}`).join("\n"); document.getElementById("mcp-wizard-layer").hidden = false; updateMcpWizardPreview(); refreshIcons(); }
+    function closeMcpWizard() { document.getElementById("mcp-wizard-layer").hidden = true; }
+    function applyMcpWizard() { const id = document.querySelector('[name="mcp-wizard-id"]').value.trim(); const spec = wizardSpec(); if (!id) throw new Error("请填写服务器标题"); if (spec.type === "stdio" && !spec.command) throw new Error("请填写 Command"); if (spec.type !== "stdio" && !spec.url) throw new Error("请填写 URL"); const form = document.getElementById("mcp-form"); form.elements["mcp-id"].value = state.editingMcpId ? state.editingMcpId : uniqueMcpId(id); if (!form.elements["mcp-name"].value.trim()) form.elements["mcp-name"].value = id; form.elements["mcp-json"].value = JSON.stringify(spec, null, 2); closeMcpWizard(); validateMcpJsonEditor(); }
+
+    async function handleAction(action, button) {
+      const id = button.dataset.id;
+      if (action === "confirm-cancel") return closeConfirm(false);
+      if (action === "confirm-accept") return closeConfirm(true);
+      if (action === "context-action") return handleAction({ clients: "refresh-all", software: "refresh-catalog", skills: "sync-skills", mcp: "new-mcp", stats: "refresh-stats", logs: "run-diagnostics" }[state.activeView], button);
+      if (action === "refresh-all") return withBusy(button, async () => { await loadAll(); notify("状态已刷新"); });
+      if (action === "select-client") { state.activeClient = id; renderClients(); renderSourceSidebar(); refreshIcons(); return; }
+      if (action === "select-software-client") { state.activeClient = id; showView("clients"); renderClients(); refreshIcons(); return; }
+      if (action === "set-software-filter") { state.softwareFilter = id; renderSoftware(); renderSourceSidebar(); refreshIcons(); return; }
+      if (action === "set-skill-filter") { state.skillFilter = id; renderSkills(); renderSourceSidebar(); refreshIcons(); return; }
+      if (action === "set-diagnostic-filter") { state.diagnosticFilter = id; renderLogs(); renderSourceSidebar(); refreshIcons(); return; }
+      if (action === "focus-software") { state.softwareFilter = "all"; renderSoftware(); renderSourceSidebar(); refreshIcons(); document.querySelector(`[data-software-id="${CSS.escape(id)}"]`)?.scrollIntoView({ behavior: "smooth", block: "center" }); return; }
+      if (action === "focus-skill") { state.skillFilter = "all"; renderSkills(); renderSourceSidebar(); refreshIcons(); document.querySelector(`[data-skill-id="${CSS.escape(id)}"]`)?.scrollIntoView({ behavior: "smooth", block: "center" }); return; }
+      if (action === "refresh-catalog") return withBusy(button, async () => { state.softwareCatalog = await call("list_software_catalog"); renderHeader(); renderClients(); renderSoftware(); renderSourceSidebar(); refreshIcons(); notify("版本信息已更新"); });
+      if (action === "quick-setup") return withBusy(button, async () => { for (const clientId of ["codex", "claude-code"]) if (!state.status.clients.some((client) => client.id === clientId && client.installed)) { const result = await call("install_client", { clientId }); addLog("ok", result.message); } await loadAll({ quiet: true }); notify("推荐客户端已处理"); });
+      if (action === "install-client") return withBusy(button, async () => { const result = await call("install_client", { clientId: id }); addLog("ok", result.message); notify(result.message); await loadAll({ quiet: true }); });
+      if (action === "launch-client") return withBusy(button, async () => { const result = await call("launch_client", { clientId: id }); addLog("ok", result.message); notify(result.message); });
+      if (action === "open-path") return withBusy(button, async () => { const result = await call("open_path", { path: button.dataset.path }); addLog("info", result.message); });
+      if (action === "uninstall-client") { if (!await confirmAction(`卸载 ${clientMeta(id).name}`, "只会删除 AgentDock 托管的客户端文件，供应商配置会保留。", "确认卸载")) return; notify(`正在卸载 ${clientMeta(id).name}`); return withBusy(button, async () => { const result = await call("uninstall_client", { clientId: id }); addLog("warn", result.message); notify(result.message); await loadAll({ quiet: true }); }); }
+      if (action === "open-provider-editor") return openProviderEditor();
+      if (action === "close-provider-editor") return closeProviderEditor();
+      if (action === "select-provider-preset") { applyPreset(findPreset(id)); return withBusy(button, loadProviderModels); }
+      if (action === "refresh-models") return withBusy(button, loadProviderModels);
+      if (action === "toggle-api-key") { const input = document.querySelector('[name="provider-api-key"]'); input.type = input.type === "password" ? "text" : "password"; button.innerHTML = `<i data-lucide="${input.type === "password" ? "eye" : "eye-off"}"></i>`; refreshIcons(); return; }
+      if (action === "reset-provider-config") { regenerateProviderConfig(); notify("配置文件已从表单重新生成"); return; }
+      if (action === "save-provider") return withBusy(button, saveProvider);
+      if (action === "edit-provider") return openProviderEditor(state.providers.find((provider) => provider.id === id));
+      if (action === "activate-provider") return withBusy(button, async () => { const provider = await call("activate_provider", { providerId: id, appId: state.activeClient }); const result = await call("apply_provider_config", { providerId: id, appId: state.activeClient }); addLog("ok", `${provider.name} 已应用到 ${clientMeta(state.activeClient).name}`); notify(`正在使用 ${provider.name}`); await loadAll({ quiet: true }); });
+      if (action === "test-provider") return withBusy(button, async () => { const result = await call("test_provider", { providerId: id }); addLog(result.ok ? "ok" : "warn", `${result.message} (${result.latencyMs}ms)`); notify(result.message, result.ok ? "ok" : "error"); });
+      if (action === "delete-provider") { const provider = state.providers.find((item) => item.id === id); if (!await confirmAction("删除供应商", `确定删除“${provider?.name || id}”？已写入客户端的配置不会自动清空。`)) return; return withBusy(button, async () => { const result = await call("delete_provider", { providerId: id }); addLog("warn", result.message); notify(result.message); await loadAll({ quiet: true }); }); }
+      if (action === "install-skill") return withBusy(button, async () => { const current = state.skills.find((item) => item.id === id); const skill = await call("install_skill", { input: { id, name: current.name, description: current.description, source: current.source, apps: current.apps.length ? current.apps : ["codex"] } }); notify(`${skill.name} 已安装`); await loadAll({ quiet: true }); });
+      if (action === "uninstall-skill") { if (!await confirmAction("卸载 Skill", `确定卸载“${id}”？卸载前会自动备份。`, "确认卸载")) return; return withBusy(button, async () => { const skill = await call("uninstall_skill", { skillId: id }); notify(`${skill.name} 已卸载`); await loadAll({ quiet: true }); }); }
+      if (action === "sync-skills") return withBusy(button, async () => { const result = await call("sync_skills"); addLog("ok", result.message); notify(result.message); });
+      if (action === "new-mcp") return openMcpForm();
+      if (action === "inspect-mcp") return openMcpTools(id);
+      if (action === "close-mcp-tools") return closeMcpTools();
+      if (action === "refresh-mcp-tools") return refreshMcpTools();
+      if (action === "select-mcp-tool") { state.activeMcpToolName = id; renderMcpTools(); return; }
+      if (action === "edit-mcp") return openMcpForm(state.mcpServers.find((server) => server.id === id));
+      if (action === "cancel-mcp") return closeMcpForm();
+      if (action === "select-mcp-preset") return applyMcpPreset(id);
+      if (action === "toggle-mcp-metadata") return setMcpMetadataVisible(document.getElementById("mcp-metadata").hidden);
+      if (action === "open-mcp-wizard") return openMcpWizard();
+      if (action === "close-mcp-wizard") return closeMcpWizard();
+      if (action === "apply-mcp-wizard") return applyMcpWizard();
+      if (action === "open-external") return withBusy(button, async () => { await call("open_external", { url: button.dataset.url }); });
+      if (action === "save-mcp") return withBusy(button, async () => { const server = await call("upsert_mcp_server", { input: mcpInput() }); notify(`${server.name} 已保存`); closeMcpForm(); await loadAll({ quiet: true }); });
+      if (action === "delete-mcp") { const server = state.mcpServers.find((item) => item.id === id); if (!await confirmAction("删除 MCP 服务器", `确定删除“${server?.name || id}”？它会同时从已启用客户端的配置中移除。`)) return; return withBusy(button, async () => { const result = await call("delete_mcp_server", { serverId: id }); notify(result.message); await loadAll({ quiet: true }); }); }
+      if (action === "import-mcp") return withBusy(button, async () => { const result = await call("import_mcp_from_apps"); const changed = result.imported + result.linked; const message = changed ? `已导入 ${result.imported} 个服务器，关联 ${result.linked} 个客户端配置` : "没有发现新的 MCP 配置"; addLog(result.errors.length ? "warn" : "ok", `${message}${result.errors.length ? `，${result.errors.join("；")}` : ""}`); notify(message, result.errors.length && !changed ? "error" : "ok"); await loadAll({ quiet: true }); });
+      if (action === "sync-mcp") return withBusy(button, async () => { const result = await call("sync_mcp_servers"); addLog("ok", result.message); notify(result.message); });
+      if (action === "set-stats-days") { state.usageDays = Number(id); renderSourceSidebar(); refreshIcons(); return withBusy(button, async () => { state.usageStats = await call("get_usage_stats", { days: state.usageDays }); renderStats(); renderSourceSidebar(); refreshIcons(); }); }
+      if (action === "refresh-stats") return withBusy(button, async () => { state.usageStats = await call("get_usage_stats", { days: state.usageDays }); renderStats(); renderSourceSidebar(); refreshIcons(); notify("统计已刷新"); });
+      if (action === "set-trend-metric") { state.trendMetric = id; renderStats(); return; }
+      if (action === "set-breakdown") { state.breakdown = id; renderStats(); renderSourceSidebar(); refreshIcons(); return; }
+      if (action === "run-diagnostics") return withBusy(button, async () => { await refreshDiagnostics(); notify("诊断已完成"); });
+      if (action === "export-diagnostics") return withBusy(button, async () => { const result = await call("export_diagnostics"); addLog("ok", `诊断包已导出：${result.path}`); notify("诊断包已导出"); });
+      if (action === "open-data-dir") return withBusy(button, async () => { const result = await call("open_path", { path: state.status.dataDir }); addLog("info", result.message); });
+      if (action === "clear-logs") { state.logs = []; renderLogs(); renderSourceSidebar(); refreshIcons(); notify("日志已清空"); return; }
+      throw new Error(`按钮动作未实现：${action}`);
+    }
+
+    document.addEventListener("click", (event) => {
+      const viewButton = event.target.closest("[data-view-button]"); if (viewButton) return showView(viewButton.dataset.viewButton);
+      const button = event.target.closest("button[data-action]"); if (!button) return; event.preventDefault();
+      handleAction(button.dataset.action, button).catch((error) => { const message = errorText(error); addLog("error", message); notify(message, "error"); showProviderError(message); });
+    });
+    document.addEventListener("change", (event) => {
+      const input = event.target.closest("input[data-change]"); if (!input) return;
+      withBusy(null, async () => { if (input.dataset.change === "skill-app") await call("toggle_skill_app", { skillId: input.dataset.id, app: input.dataset.app, enabled: input.checked }); if (input.dataset.change === "mcp-enabled") await call("toggle_mcp_server", { serverId: input.dataset.id, enabled: input.checked }); if (input.dataset.change === "mcp-app") await call("toggle_mcp_app", { serverId: input.dataset.id, app: input.dataset.app, enabled: input.checked }); await loadAll({ quiet: true }); });
+    });
+    document.getElementById("command-search").addEventListener("input", (event) => {
+      state.contextQuery = event.target.value;
+      if (state.activeView === "software") renderSoftware();
+      if (state.activeView === "skills") renderSkills();
+      if (state.activeView === "mcp") renderMcp();
+      if (state.activeView === "logs") renderLogs();
+      renderSourceSidebar(); refreshIcons();
+    });
+    document.getElementById("preset-search").addEventListener("input", renderPresetGrid);
+    const providerForm = document.getElementById("provider-form");
+    const generatedConfigFields = new Set(["provider-name", "provider-base-url", "provider-model", "provider-api-format", "advanced-codex-model", "advanced-claude-sonnet", "advanced-claude-haiku", "advanced-claude-opus"]);
+    providerForm.addEventListener("submit", (event) => event.preventDefault());
+    providerForm.addEventListener("input", (event) => {
+      if (["provider-auth-config", "provider-main-config"].includes(event.target.name)) return setConfigEditState(true);
+      if (generatedConfigFields.has(event.target.name) && !state.configManuallyEdited) regenerateProviderConfig();
+    });
+    providerForm.addEventListener("change", (event) => { if (generatedConfigFields.has(event.target.name) && !state.configManuallyEdited) regenerateProviderConfig(); });
+    const mcpForm = document.getElementById("mcp-form");
+    mcpForm.addEventListener("submit", (event) => event.preventDefault());
+    mcpForm.elements["mcp-json"].addEventListener("input", () => validateMcpJsonEditor());
+    document.getElementById("mcp-wizard-layer").addEventListener("input", (event) => { if (event.target.matches("input, textarea")) updateMcpWizardPreview(); });
+    document.getElementById("mcp-wizard-layer").addEventListener("change", (event) => { if (event.target.matches("input, textarea")) updateMcpWizardPreview(); });
+    document.addEventListener("keydown", (event) => {
+      if ((event.metaKey || event.ctrlKey) && event.key.toLowerCase() === "k") { event.preventDefault(); const search = document.getElementById("command-search"); if (!search.disabled) { search.focus(); search.select(); } return; }
+      if (event.key !== "Escape") return;
+      const search = document.getElementById("command-search"); if (document.activeElement === search && search.value) { search.value = ""; search.dispatchEvent(new Event("input", { bubbles: true })); return; }
+      if (!document.getElementById("mcp-wizard-layer").hidden) { closeMcpWizard(); return; }
+      if (!document.getElementById("mcp-tools-view").hidden) { closeMcpTools(); return; }
+      if (!document.getElementById("mcp-editor").hidden) { closeMcpForm(); return; }
+      if (!document.getElementById("provider-editor").hidden) closeProviderEditor();
+    });
+
+    async function boot() {
+      refreshIcons(); addLog("info", state.desktop ? "正在连接 AgentDock 本机服务" : "已进入浏览器交互预览模式");
+      try { await loadAll({ quiet: true }); addLog("ok", `AgentDock ${state.status.appVersion} 已启动`); }
+      catch (error) { const message = errorText(error); document.getElementById("backend-state").className = "badge danger"; document.getElementById("backend-state").innerHTML = `<i data-lucide="circle-x"></i>本机服务连接失败`; addLog("error", message); notify(message, "error"); refreshIcons(); }
+    }
+    boot();
+  </script>
+</body>
+</html>

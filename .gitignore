@@ -1,0 +1,44 @@
+# Dependencies and generated output
+node_modules/
+dist/
+target/
+src-tauri/target/
+src-tauri/gen/
+coverage/
+
+# Internal design and local QA artifacts
+design-proposals/
+screenshots/
+
+# Optional offline client payloads are distributed separately
+resources/installers/
+src-tauri/resources/installers/
+
+# Desktop installers and bundles
+*.app
+*.AppImage
+*.deb
+*.dmg
+*.msi
+*.rpm
+*.exe
+
+# Local configuration and secrets
+.env
+.env.*
+!.env.example
+*.key
+*.pem
+*.p12
+*.pfx
+*.mobileprovision
+*.tauri-signing-private-key
+
+# Logs, editor settings and OS metadata
+*.log
+.DS_Store
+Thumbs.db
+.idea/
+.vscode/
+*.swp
+*.swo

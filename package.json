@@ -1,0 +1,28 @@
+{
+  "name": "agentdock",
+  "version": "0.1.8",
+  "private": true,
+  "type": "module",
+  "description": "AgentDock desktop app for installing AI coding clients and configuring providers.",
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/Cailiang/AgentDock.git"
+  },
+  "scripts": {
+    "dev": "tauri dev",
+    "build": "tauri build",
+    "dev:ui": "vite --host 127.0.0.1 --port 1420",
+    "build:ui": "vite build",
+    "preview": "vite preview --host 127.0.0.1 --port 1420"
+  },
+  "dependencies": {
+    "@fontsource-variable/geist": "^5.2.9",
+    "@tauri-apps/api": "^2.6.0",
+    "lucide": "^1.24.0"
+  },
+  "devDependencies": {
+    "@tauri-apps/cli": "^2.6.0",
+    "vite": "^7.0.5"
+  }
+}

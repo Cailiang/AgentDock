@@ -1,0 +1,10 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64" role="img" aria-labelledby="title description">
+  <title id="title">AgentDock</title>
+  <desc id="description">A connected agent rail entering a stable dock.</desc>
+  <rect x="2" y="2" width="60" height="60" rx="14" fill="#17777a" stroke="#1b282a" stroke-width="2"/>
+  <path d="M32 14v34M20 26h24" fill="none" stroke="#ffffff" stroke-width="6" stroke-linecap="round" stroke-linejoin="round"/>
+  <rect x="13" y="21" width="10" height="10" rx="2.5" fill="#1b282a"/>
+  <rect x="41" y="21" width="10" height="10" rx="2.5" fill="#1b282a"/>
+  <circle cx="32" cy="26" r="3" fill="#1b282a"/>
+  <path d="M17 38v10h30V38" fill="none" stroke="#ffffff" stroke-width="5" stroke-linecap="round" stroke-linejoin="round"/>
+</svg>
