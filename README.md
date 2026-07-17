@@ -17,7 +17,7 @@ English | [简体中文](README_ZH.md) | [日本語](README_JA.md) | [Deutsch](R
 
 AgentDock installs and manages AI coding clients, providers, Skills, and MCP servers from one native desktop app. It is designed for users who want to start with Codex, Claude Code, Grok, or other agents without manually installing runtimes or editing JSON, TOML, and environment files.
 
-> AgentDock `0.1.13` is an early preview. Keep a backup of important client configuration before using provider switching or MCP synchronization.
+> AgentDock `0.1.15` is an early preview. Keep a backup of important client configuration before using provider switching or MCP synchronization.
 
 ## Why AgentDock?
 
@@ -63,6 +63,7 @@ No separate Node.js, npm, Python, or manual configuration is required for end us
 - Switch between Simplified Chinese, Traditional Chinese, English, Japanese, and German interface languages.
 - Use a light, dark, or system-matched appearance.
 - Configure launch at login, silent startup, and minimize-to-tray behavior.
+- On macOS, check GitHub Releases in the background, then update and restart from the connection status area.
 - Select the preferred terminal used to launch command-line clients.
 - Choose which clients appear in the client list and arrange their order.
 - Store Skills in AgentDock's data directory or `~/.agents/skills`, then synchronize with file copies or symbolic links.
@@ -81,7 +82,7 @@ No separate Node.js, npm, Python, or manual configuration is required for end us
 | --- | :---: | :---: | :---: | :---: |
 | Codex | Yes | Yes | Yes | Yes |
 | Claude Code | Yes | Yes | Yes | Yes |
-| Antigravity CLI (Agy) | Yes | Yes | Official login only | Yes |
+| Antigravity CLI (Agy) | Yes | Yes | Yes | Yes |
 | Grok | Yes | Yes | Yes | Yes |
 | OpenCode | Yes | Yes | Yes | Yes |
 | OpenClaw | Yes | Yes | Yes | Yes |
@@ -92,7 +93,7 @@ Claude Desktop is detected and can receive provider or MCP configuration, but Ag
 
 ## Download and Installation
 
-Signed stable packages will be published on the [Releases](https://github.com/Cailiang/AgentDock/releases) page. Until then, preview packages for Windows, macOS, and Linux are available from successful [Desktop Build](https://github.com/Cailiang/AgentDock/actions/workflows/desktop-build.yml) workflow runs.
+Versioned preview packages for Windows, macOS, and Linux are published as prereleases on the [Releases](https://github.com/Cailiang/AgentDock/releases) page. Successful [Desktop Build](https://github.com/Cailiang/AgentDock/actions/workflows/desktop-build.yml) runs also retain their build artifacts.
 
 Choose the package for your system:
 

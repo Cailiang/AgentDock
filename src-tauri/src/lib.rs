@@ -18,7 +18,7 @@ use std::{
     env,
     ffi::OsString,
     fs,
-    io::{BufRead, BufReader, Cursor, Read},
+    io::{BufRead, BufReader, Cursor, Read, Write},
     path::{Path, PathBuf},
     process::{Command, Stdio},
     sync::atomic::{AtomicBool, Ordering},
@@ -42,6 +42,40 @@ pub struct DesktopStatus {
     config_dir: String,
     managed_runtime_ready: bool,
     clients: Vec<ClientStatus>,
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct AppUpdateInfo {
+    supported: bool,
+    available: bool,
+    current_version: String,
+    latest_version: Option<String>,
+    download_size: Option<u64>,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+struct GithubAppRelease {
+    tag_name: String,
+    #[serde(default)]
+    draft: bool,
+    #[serde(default)]
+    assets: Vec<GithubAppAsset>,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+struct GithubAppAsset {
+    name: String,
+    browser_download_url: String,
+    size: u64,
+    digest: Option<String>,
+}
+
+#[derive(Debug, Clone)]
+struct SelectedAppUpdate {
+    version: String,
+    asset: GithubAppAsset,
+    sha256: String,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -481,6 +515,327 @@ fn get_desktop_status() -> Result<DesktopStatus, String> {
         managed_runtime_ready: dirs.runtime_dir.exists(),
         clients: detect_clients(),
     })
+}
+
+#[tauri::command]
+async fn check_app_update() -> Result<AppUpdateInfo, String> {
+    let current_version = env!("CARGO_PKG_VERSION").to_string();
+    if env::consts::OS != "macos" {
+        return Ok(AppUpdateInfo {
+            supported: false,
+            available: false,
+            current_version,
+            latest_version: None,
+            download_size: None,
+        });
+    }
+
+    let update = fetch_available_app_update(&current_version, env::consts::ARCH).await?;
+    Ok(AppUpdateInfo {
+        supported: true,
+        available: update.is_some(),
+        current_version,
+        latest_version: update.as_ref().map(|item| item.version.clone()),
+        download_size: update.as_ref().map(|item| item.asset.size),
+    })
+}
+
+#[tauri::command]
+async fn install_app_update(app: tauri::AppHandle) -> Result<(), String> {
+    #[cfg(not(target_os = "macos"))]
+    {
+        let _ = app;
+        Err("AgentDock 自动升级目前仅支持 macOS".to_string())
+    }
+
+    #[cfg(target_os = "macos")]
+    {
+        let current_version = env!("CARGO_PKG_VERSION");
+        let update = fetch_available_app_update(current_version, env::consts::ARCH)
+            .await?
+            .ok_or_else(|| "当前已经是最新版本".to_string())?;
+        let app_path = current_app_bundle_path()?;
+        ensure_app_parent_writable(&app_path)?;
+
+        let client = app_update_http_client()?;
+        let bytes = download_bytes(&client, &update.asset.browser_download_url).await?;
+        if update.asset.size > 0 && bytes.len() as u64 != update.asset.size {
+            return Err("升级包大小与 GitHub 发布信息不一致，已停止升级".to_string());
+        }
+        verify_sha256(&bytes, &update.sha256)?;
+
+        let dmg_path = app_update_temp_path("dmg");
+        write_private_file(&dmg_path, &bytes)?;
+        let helper_path = app_update_temp_path("sh");
+        if let Err(error) = write_private_file(&helper_path, app_update_helper_script().as_bytes())
+        {
+            let _ = fs::remove_file(&dmg_path);
+            return Err(error);
+        }
+        use std::os::unix::fs::PermissionsExt;
+        if let Err(error) = fs::set_permissions(&helper_path, fs::Permissions::from_mode(0o700)) {
+            let _ = fs::remove_file(&dmg_path);
+            let _ = fs::remove_file(&helper_path);
+            return Err(format!("无法设置升级程序权限: {}", error));
+        }
+
+        let spawn_result = Command::new("/bin/sh")
+            .arg(&helper_path)
+            .arg(std::process::id().to_string())
+            .arg(&dmg_path)
+            .arg(&app_path)
+            .stdin(Stdio::null())
+            .stdout(Stdio::null())
+            .stderr(Stdio::null())
+            .spawn();
+        if let Err(error) = spawn_result {
+            let _ = fs::remove_file(&dmg_path);
+            let _ = fs::remove_file(&helper_path);
+            return Err(format!("无法启动升级程序: {}", error));
+        }
+
+        app.exit(0);
+        Ok(())
+    }
+}
+
+fn app_update_http_client() -> Result<reqwest::Client, String> {
+    reqwest::Client::builder()
+        .connect_timeout(std::time::Duration::from_secs(10))
+        .timeout(std::time::Duration::from_secs(180))
+        .user_agent(format!("AgentDock/{}", env!("CARGO_PKG_VERSION")))
+        .build()
+        .map_err(|error| format!("无法创建升级请求: {}", error))
+}
+
+async fn fetch_available_app_update(
+    current_version: &str,
+    architecture: &str,
+) -> Result<Option<SelectedAppUpdate>, String> {
+    let client = app_update_http_client()?;
+    let releases = client
+        .get("https://api.github.com/repos/Cailiang/AgentDock/releases?per_page=20")
+        .send()
+        .await
+        .map_err(|error| format!("检查 AgentDock 更新失败: {}", error))?
+        .error_for_status()
+        .map_err(|error| format!("检查 AgentDock 更新失败: {}", error))?
+        .json::<Vec<GithubAppRelease>>()
+        .await
+        .map_err(|error| format!("读取 AgentDock 发布信息失败: {}", error))?;
+    select_app_update(&releases, current_version, "macos", architecture)
+}
+
+fn select_app_update(
+    releases: &[GithubAppRelease],
+    current_version: &str,
+    operating_system: &str,
+    architecture: &str,
+) -> Result<Option<SelectedAppUpdate>, String> {
+    let release = releases
+        .iter()
+        .filter(|release| !release.draft)
+        .filter(|release| version_is_newer(&release.tag_name, current_version))
+        .max_by(|left, right| {
+            version_numbers(&left.tag_name).cmp(&version_numbers(&right.tag_name))
+        });
+    let Some(release) = release else {
+        return Ok(None);
+    };
+
+    let version = normalized_release_version(&release.tag_name);
+    let expected_asset = app_update_asset_name(&version, operating_system, architecture)?;
+    let asset = release
+        .assets
+        .iter()
+        .find(|asset| asset.name == expected_asset)
+        .cloned()
+        .ok_or_else(|| format!("新版本 {} 缺少当前架构的安装包 {}", version, expected_asset))?;
+    let sha256 = github_asset_sha256(&asset)?.to_string();
+    Ok(Some(SelectedAppUpdate {
+        version,
+        asset,
+        sha256,
+    }))
+}
+
+fn normalized_release_version(tag: &str) -> String {
+    tag.trim()
+        .trim_start_matches(|character| character == 'v' || character == 'V')
+        .to_string()
+}
+
+fn app_update_asset_name(
+    version: &str,
+    operating_system: &str,
+    architecture: &str,
+) -> Result<String, String> {
+    let suffix = match (operating_system, architecture) {
+        ("macos", "aarch64" | "x86_64") => "universal.dmg",
+        (os, arch) => {
+            return Err(format!(
+                "AgentDock 自动升级暂不支持当前平台: {} {}",
+                os, arch
+            ))
+        }
+    };
+    Ok(format!("AgentDock_{}_{}", version, suffix))
+}
+
+fn github_asset_sha256(asset: &GithubAppAsset) -> Result<&str, String> {
+    let digest = asset
+        .digest
+        .as_deref()
+        .and_then(|value| value.strip_prefix("sha256:"))
+        .ok_or_else(|| format!("安装包 {} 缺少 GitHub SHA-256 摘要", asset.name))?;
+    if digest.len() != 64 || !digest.bytes().all(|byte| byte.is_ascii_hexdigit()) {
+        return Err(format!("安装包 {} 的 SHA-256 摘要无效", asset.name));
+    }
+    Ok(digest)
+}
+
+#[cfg(target_os = "macos")]
+fn current_app_bundle_path() -> Result<PathBuf, String> {
+    let executable =
+        env::current_exe().map_err(|error| format!("无法定位 AgentDock: {}", error))?;
+    executable
+        .ancestors()
+        .find(|path| path.extension().and_then(|value| value.to_str()) == Some("app"))
+        .map(Path::to_path_buf)
+        .ok_or_else(|| "请先将 AgentDock.app 安装到“应用程序”目录后再自动升级".to_string())
+}
+
+#[cfg(target_os = "macos")]
+fn ensure_app_parent_writable(app_path: &Path) -> Result<(), String> {
+    let parent = app_path
+        .parent()
+        .ok_or_else(|| "无法定位 AgentDock 所在目录".to_string())?;
+    let probe = parent.join(format!(
+        ".agentdock-update-write-test-{}-{}",
+        std::process::id(),
+        OffsetDateTime::now_utc().unix_timestamp_nanos()
+    ));
+    match fs::OpenOptions::new()
+        .write(true)
+        .create_new(true)
+        .open(&probe)
+    {
+        Ok(_) => {
+            let _ = fs::remove_file(probe);
+            Ok(())
+        }
+        Err(error) => Err(format!(
+            "AgentDock 所在目录不可写，无法自动升级。请确认当前用户可以修改 {}：{}",
+            parent.display(),
+            error
+        )),
+    }
+}
+
+#[cfg(target_os = "macos")]
+fn app_update_temp_path(extension: &str) -> PathBuf {
+    env::temp_dir().join(format!(
+        "agentdock-update-{}-{}.{}",
+        std::process::id(),
+        OffsetDateTime::now_utc().unix_timestamp_nanos(),
+        extension
+    ))
+}
+
+#[cfg(target_os = "macos")]
+fn write_private_file(path: &Path, bytes: &[u8]) -> Result<(), String> {
+    let mut file = fs::OpenOptions::new()
+        .write(true)
+        .create_new(true)
+        .open(path)
+        .map_err(|error| format!("无法创建升级临时文件 {}: {}", path.display(), error))?;
+    file.write_all(bytes)
+        .map_err(|error| format!("无法写入升级临时文件 {}: {}", path.display(), error))?;
+    file.sync_all()
+        .map_err(|error| format!("无法保存升级临时文件 {}: {}", path.display(), error))
+}
+
+#[cfg(any(target_os = "macos", test))]
+fn app_update_helper_script() -> &'static str {
+    r#"#!/bin/sh
+set -u
+
+APP_PID="$1"
+DMG_PATH="$2"
+APP_PATH="$3"
+SCRIPT_PATH="$0"
+MOUNT_POINT="$(/usr/bin/mktemp -d /tmp/agentdock-update-mount.XXXXXX)" || exit 1
+STAGE_PATH="${APP_PATH}.update.$$"
+BACKUP_PATH="${APP_PATH}.backup.$$"
+LOG_PATH="${TMPDIR:-/tmp}/agentdock-updater.log"
+MOUNTED=0
+
+exec >>"$LOG_PATH" 2>&1
+
+cleanup() {
+  STATUS=$?
+  trap - EXIT HUP INT TERM
+  if [ "$MOUNTED" -eq 1 ]; then
+    /usr/bin/hdiutil detach "$MOUNT_POINT" -quiet || true
+  fi
+  /bin/rm -rf "$MOUNT_POINT" "$STAGE_PATH"
+  /bin/rm -f "$DMG_PATH" "$SCRIPT_PATH"
+  exit "$STATUS"
+}
+
+reopen_or_rollback() {
+  MESSAGE="$1"
+  echo "$MESSAGE"
+  if [ ! -d "$APP_PATH" ] && [ -d "$BACKUP_PATH" ]; then
+    /bin/mv "$BACKUP_PATH" "$APP_PATH" || true
+  fi
+  if [ -d "$APP_PATH" ]; then
+    /usr/bin/open "$APP_PATH" || true
+  fi
+  exit 1
+}
+
+trap cleanup EXIT HUP INT TERM
+
+ATTEMPT=0
+while /bin/kill -0 "$APP_PID" 2>/dev/null; do
+  ATTEMPT=$((ATTEMPT + 1))
+  if [ "$ATTEMPT" -gt 600 ]; then
+    reopen_or_rollback "Timed out waiting for AgentDock to exit"
+  fi
+  /bin/sleep 0.2
+done
+
+if ! /usr/bin/hdiutil attach "$DMG_PATH" -nobrowse -readonly -mountpoint "$MOUNT_POINT"; then
+  reopen_or_rollback "Could not mount the AgentDock update"
+fi
+MOUNTED=1
+
+SOURCE_APP="$(/usr/bin/find "$MOUNT_POINT" -maxdepth 2 -type d -name AgentDock.app -print -quit)"
+if [ -z "$SOURCE_APP" ]; then
+  reopen_or_rollback "The update does not contain AgentDock.app"
+fi
+if ! /usr/bin/ditto "$SOURCE_APP" "$STAGE_PATH"; then
+  reopen_or_rollback "Could not stage the AgentDock update"
+fi
+/usr/bin/xattr -dr com.apple.quarantine "$STAGE_PATH" 2>/dev/null || true
+
+if ! /bin/mv "$APP_PATH" "$BACKUP_PATH"; then
+  reopen_or_rollback "Could not back up the current AgentDock app"
+fi
+if ! /bin/mv "$STAGE_PATH" "$APP_PATH"; then
+  reopen_or_rollback "Could not install the new AgentDock app"
+fi
+if ! /usr/bin/open "$APP_PATH"; then
+  /bin/rm -rf "$APP_PATH"
+  /bin/mv "$BACKUP_PATH" "$APP_PATH" || true
+  /usr/bin/open "$APP_PATH" || true
+  exit 1
+fi
+
+/bin/rm -rf "$BACKUP_PATH"
+exit 0
+"#
 }
 
 #[tauri::command]
@@ -1029,20 +1384,8 @@ fn parse_provider_config_text(app_id: &str, content: &str) -> Result<ParsedProvi
     Ok(result)
 }
 
-fn antigravity_custom_provider_error() -> String {
-    "Antigravity CLI 仅支持 Google 登录，不能使用自定义 URL 或 API Key".to_string()
-}
-
-fn ensure_provider_supported_for_app(provider_type: &str, app_id: &str) -> Result<(), String> {
-    if app_id == "antigravity" && provider_type.trim() != "official" {
-        return Err(antigravity_custom_provider_error());
-    }
-    Ok(())
-}
-
 #[tauri::command]
 fn parse_provider_config(app_id: String, content: String) -> Result<ParsedProviderConfig, String> {
-    ensure_provider_supported_for_app("custom", &app_id)?;
     parse_provider_config_text(&app_id, &content)
 }
 
@@ -1055,15 +1398,6 @@ async fn fetch_provider_models(
 ) -> Result<ProviderModelsResult, String> {
     let fallback = fallback_models(&app_id);
     let normalized_url = normalize_base_url(&base_url);
-    if app_id == "antigravity"
-        && (!normalized_url.is_empty()
-            || api_key
-                .as_deref()
-                .map(str::trim)
-                .is_some_and(|key| !key.is_empty()))
-    {
-        return Err(antigravity_custom_provider_error());
-    }
     if normalized_url.is_empty() {
         return Ok(ProviderModelsResult {
             models: fallback,
@@ -1273,9 +1607,6 @@ fn save_provider(input: ProviderInput) -> Result<ProviderProfile, String> {
                 .unwrap_or_default()
         }
     });
-    for app_id in enabled_apps.iter().chain(active_apps.iter()) {
-        ensure_provider_supported_for_app(&input.provider_type, app_id)?;
-    }
     if let Some(api_key) = input.api_key.as_ref() {
         let api_key = api_key.trim();
         if !api_key.is_empty() {
@@ -1356,12 +1687,6 @@ fn activate_provider(provider_id: String, app_id: String) -> Result<ProviderProf
     ensure_dirs(&dirs)?;
     let mut providers = list_providers()?;
     let mut selected = None;
-    let candidate = providers
-        .iter()
-        .find(|provider| provider.id == provider_id)
-        .ok_or_else(|| "未找到供应商".to_string())?;
-    ensure_provider_supported_for_app(&candidate.provider_type, &app_id)?;
-
     for provider in &mut providers {
         provider.active_apps.retain(|app| app != &app_id);
         if provider.id == provider_id {
@@ -1573,10 +1898,14 @@ async fn install_client(client_id: String) -> Result<InstallClientResult, String
     let config_dir = dirs.managed_configs_dir.join(spec.id);
     fs::create_dir_all(&config_dir).map_err(|err| format!("创建客户端配置目录失败: {}", err))?;
 
-    let detected_version = command_version(&launcher_path.display().to_string())
-        .ok()
-        .filter(|value| !value.is_empty())
-        .unwrap_or(version);
+    let detected_version = if spec.id == "antigravity" {
+        version
+    } else {
+        command_version(&launcher_path.display().to_string())
+            .ok()
+            .filter(|value| !value.is_empty())
+            .unwrap_or(version)
+    };
 
     let record = ManagedClientRecord {
         id: spec.id.to_string(),
@@ -1647,9 +1976,6 @@ async fn test_provider(provider_id: String) -> Result<ProviderTestResult, String
         .into_iter()
         .find(|provider| provider.id == provider_id)
         .ok_or_else(|| "未找到供应商".to_string())?;
-    if provider.enabled_apps.iter().any(|app| app == "antigravity") {
-        ensure_provider_supported_for_app(&provider.provider_type, "antigravity")?;
-    }
     if provider.provider_type == "official" {
         return Ok(ProviderTestResult {
             ok: true,
@@ -1798,7 +2124,6 @@ fn apply_provider_for_app(
     if !supported_provider_apps().contains(&app_id) {
         return Err("不支持的客户端".to_string());
     }
-    ensure_provider_supported_for_app(&provider.provider_type, app_id)?;
     if provider.provider_type == "official" {
         return Ok(ApplyProviderResult {
             provider_id: provider.id.clone(),
@@ -1860,8 +2185,8 @@ fn apply_provider_for_app(
                     .replace("${AGENTDOCK_API_KEY}", &api_key),
             },
             Some(format!(
-                "GEMINI_API_KEY={}\nGOOGLE_GEMINI_BASE_URL={}\n",
-                api_key, provider.base_url
+                "GEMINI_API_KEY={}\nGOOGLE_GEMINI_BASE_URL={}\nGEMINI_MODEL={}\n",
+                api_key, provider.base_url, provider.gemini_model
             )),
         ),
         "grok" => (
@@ -2389,6 +2714,17 @@ fn launch_client(client_id: String) -> Result<LaunchClientResult, String> {
         Some(provider) => provider_launch_environment(&dirs, &client_id, provider)?,
         None => BTreeMap::new(),
     };
+    if client_id == "antigravity"
+        && active_provider
+            .as_ref()
+            .is_some_and(|provider| provider.provider_type != "official")
+        && !antigravity_proxy_runtime_ready(executable)
+    {
+        return Err(
+            "自定义 Antigravity 代理需要新版客户端运行时，请先在软件页面更新 Antigravity CLI"
+                .to_string(),
+        );
+    }
 
     launch_in_terminal(&dirs, &client_id, executable, &environment)?;
 
@@ -2401,13 +2737,18 @@ fn launch_client(client_id: String) -> Result<LaunchClientResult, String> {
     })
 }
 
+fn antigravity_proxy_runtime_ready(executable: &str) -> bool {
+    fs::read_to_string(executable)
+        .map(|content| content.contains("GOOGLE_GEMINI_BASE_URL") && content.contains("gemini-cli"))
+        .unwrap_or(false)
+}
+
 fn provider_launch_environment(
     dirs: &AgentDockDirs,
     app_id: &str,
     provider: &ProviderProfile,
 ) -> Result<BTreeMap<String, String>, String> {
     let mut environment = BTreeMap::new();
-    ensure_provider_supported_for_app(&provider.provider_type, app_id)?;
     if provider.provider_type == "official" {
         return Ok(environment);
     }
@@ -2481,9 +2822,10 @@ fn provider_launch_environment(
                 .entry("GEMINI_MODEL".to_string())
                 .or_insert_with(|| provider.gemini_model.clone());
             environment.insert(
-                "AGY_HOME".to_string(),
+                "GEMINI_CLI_HOME".to_string(),
                 dirs.managed_configs_dir
                     .join("antigravity")
+                    .join("gemini-cli-home")
                     .display()
                     .to_string(),
             );
@@ -4827,6 +5169,8 @@ pub fn run() {
         })
         .invoke_handler(tauri::generate_handler![
             get_desktop_status,
+            check_app_update,
+            install_app_update,
             get_app_settings,
             save_app_settings,
             list_software_catalog,
@@ -5455,14 +5799,20 @@ fn detect_client(
     let managed = managed_clients
         .iter()
         .find(|client| client.id == id && client.installed && managed_client_is_runnable(client));
-    let executable = executable_names
+    let external_executable = executable_names
         .iter()
         .find_map(|name| find_executable(name))
         .map(|path| path.display().to_string());
-    let version = executable
+    let external_version = external_executable
         .as_ref()
         .and_then(|path| command_version(path).ok())
         .filter(|version| !version.trim().is_empty());
+    let executable = managed
+        .map(|client| client.launcher_path.clone())
+        .or(external_executable);
+    let version = managed
+        .map(|client| client.version.clone())
+        .or(external_version);
 
     let config_path = if managed.is_some() {
         managed_config_path.and_then(|path| {
@@ -5480,8 +5830,8 @@ fn detect_client(
         id: id.to_string(),
         name: name.to_string(),
         installed: executable.is_some() || managed.is_some(),
-        version: version.or_else(|| managed.map(|client| client.version.clone())),
-        executable: executable.or_else(|| managed.map(|client| client.launcher_path.clone())),
+        version,
+        executable,
         config_path,
         managed_by_agentdock: managed.is_some(),
     }
@@ -5784,7 +6134,7 @@ struct AntigravityManifest {
 async fn download_antigravity_cli(target_dir: &Path) -> Result<(PathBuf, String, String), String> {
     let client = reqwest::Client::builder()
         .connect_timeout(std::time::Duration::from_secs(12))
-        .timeout(std::time::Duration::from_secs(300))
+        .timeout(std::time::Duration::from_secs(600))
         .user_agent(format!("AgentDock/{}", env!("CARGO_PKG_VERSION")))
         .build()
         .map_err(|err| format!("创建 Antigravity 下载请求失败: {}", err))?;
@@ -5802,7 +6152,7 @@ async fn download_antigravity_cli(target_dir: &Path) -> Result<(PathBuf, String,
     let bytes = download_bytes(&client, &manifest.url).await?;
     verify_sha512_hex(&bytes, &manifest.sha512)?;
 
-    let executable = if manifest.url.contains(".tar.gz") {
+    let agy_executable = if manifest.url.contains(".tar.gz") {
         extract_archive(&bytes, "agy.tar.gz", target_dir)?;
         let source = find_file_named(target_dir, "antigravity")
             .ok_or_else(|| "Agy 安装包中缺少 antigravity 启动文件".to_string())?;
@@ -5814,12 +6164,87 @@ async fn download_antigravity_cli(target_dir: &Path) -> Result<(PathBuf, String,
         fs::write(&target, bytes).map_err(|err| format!("写入 Agy 启动文件失败: {}", err))?;
         target
     };
+    make_executable(&agy_executable)?;
+
+    let (node_path, _) = download_managed_node_runtime(&client, target_dir).await?;
+    let (gemini_entry, gemini_source) = download_gemini_proxy_cli(&client, target_dir).await?;
+    let launcher =
+        write_antigravity_launcher(target_dir, &agy_executable, &node_path, &gemini_entry)?;
+    let version = antigravity_bundle_version(&manifest.version);
 
     Ok((
-        executable,
-        manifest.version.clone(),
-        format!("Google 官方 Agy {}，SHA-512 校验通过", manifest.version),
+        launcher,
+        version,
+        format!(
+            "Google 官方 Agy {} 与 {} Gemini CLI {}，完整性校验通过",
+            manifest.version, gemini_source, GEMINI_PROXY_CLI_VERSION
+        ),
     ))
+}
+
+const GEMINI_PROXY_CLI_VERSION: &str = "0.40.0";
+
+fn antigravity_bundle_version(agy_version: &str) -> String {
+    format!("{}+gemini.{}", agy_version.trim(), GEMINI_PROXY_CLI_VERSION)
+}
+
+async fn download_gemini_proxy_cli(
+    client: &reqwest::Client,
+    target_dir: &Path,
+) -> Result<(PathBuf, &'static str), String> {
+    let package_dir = target_dir.join("gemini-cli");
+    let registries = [
+        ("https://registry.npmmirror.com", "npmmirror 国内镜像"),
+        ("https://registry.npmjs.org", "npm 官方源"),
+    ];
+    let mut errors = Vec::new();
+
+    for (registry, source_name) in registries {
+        let result = async {
+            let metadata_url =
+                npm_metadata_url(registry, "@google/gemini-cli", GEMINI_PROXY_CLI_VERSION);
+            let metadata: serde_json::Value = client
+                .get(metadata_url)
+                .send()
+                .await
+                .map_err(|err| format!("查询 Gemini CLI 版本失败: {}", err))?
+                .error_for_status()
+                .map_err(|err| format!("查询 Gemini CLI 版本失败: {}", err))?
+                .json()
+                .await
+                .map_err(|err| format!("解析 Gemini CLI 版本失败: {}", err))?;
+            let dist = metadata
+                .get("dist")
+                .ok_or_else(|| "Gemini CLI 安装包缺少 dist 信息".to_string())?;
+            let url = dist
+                .get("tarball")
+                .and_then(serde_json::Value::as_str)
+                .ok_or_else(|| "Gemini CLI 安装包缺少下载地址".to_string())?;
+            let integrity = dist
+                .get("integrity")
+                .and_then(serde_json::Value::as_str)
+                .ok_or_else(|| "Gemini CLI 安装包缺少完整性校验".to_string())?;
+            let bytes = download_bytes(client, url).await?;
+            verify_npm_integrity(&bytes, integrity)?;
+            if package_dir.exists() {
+                fs::remove_dir_all(&package_dir)
+                    .map_err(|err| format!("清理 Gemini CLI 安装目录失败: {}", err))?;
+            }
+            fs::create_dir_all(&package_dir)
+                .map_err(|err| format!("创建 Gemini CLI 安装目录失败: {}", err))?;
+            extract_archive(&bytes, "gemini-cli.tgz", &package_dir)?;
+            find_file_named(&package_dir, "gemini.js")
+                .ok_or_else(|| "Gemini CLI 安装包中缺少 gemini.js".to_string())
+        }
+        .await;
+
+        match result {
+            Ok(entry) => return Ok((entry, source_name)),
+            Err(error) => errors.push(format!("{}: {}", source_name, error)),
+        }
+    }
+
+    Err(format!("Gemini CLI 安装失败: {}", errors.join("；")))
 }
 
 async fn download_opencode_from_npm(
@@ -5851,13 +6276,10 @@ async fn download_grok_from_npm(target_dir: &Path) -> Result<(PathBuf, String, S
 
 const MANAGED_NODE_VERSION: &str = "24.15.0";
 
-async fn download_openclaw_client(target_dir: &Path) -> Result<(PathBuf, String, String), String> {
-    let client = reqwest::Client::builder()
-        .connect_timeout(std::time::Duration::from_secs(12))
-        .timeout(std::time::Duration::from_secs(600))
-        .user_agent(format!("AgentDock/{}", env!("CARGO_PKG_VERSION")))
-        .build()
-        .map_err(|err| format!("创建 OpenClaw 下载请求失败: {}", err))?;
+async fn download_managed_node_runtime(
+    client: &reqwest::Client,
+    target_dir: &Path,
+) -> Result<(PathBuf, PathBuf), String> {
     let (node_asset, node_sha256) = managed_node_asset()?;
     let node_urls = [
         format!(
@@ -5872,7 +6294,7 @@ async fn download_openclaw_client(target_dir: &Path) -> Result<(PathBuf, String,
     let mut node_errors = Vec::new();
     let mut node_bytes = None;
     for url in node_urls {
-        match download_bytes(&client, &url).await {
+        match download_bytes(client, &url).await {
             Ok(bytes) => {
                 verify_sha256(&bytes, node_sha256)?;
                 node_bytes = Some(bytes);
@@ -5896,6 +6318,17 @@ async fn download_openclaw_client(target_dir: &Path) -> Result<(PathBuf, String,
     make_executable(&node_path)?;
     let npm_cli = find_file_named(&runtime_dir, "npm-cli.js")
         .ok_or_else(|| "Node 运行时中缺少 npm".to_string())?;
+    Ok((node_path, npm_cli))
+}
+
+async fn download_openclaw_client(target_dir: &Path) -> Result<(PathBuf, String, String), String> {
+    let client = reqwest::Client::builder()
+        .connect_timeout(std::time::Duration::from_secs(12))
+        .timeout(std::time::Duration::from_secs(600))
+        .user_agent(format!("AgentDock/{}", env!("CARGO_PKG_VERSION")))
+        .build()
+        .map_err(|err| format!("创建 OpenClaw 下载请求失败: {}", err))?;
+    let (node_path, npm_cli) = download_managed_node_runtime(&client, target_dir).await?;
 
     let version = fetch_npm_latest_version(&client, "openclaw")
         .await?
@@ -6380,7 +6813,7 @@ async fn latest_client_version(
                 .json()
                 .await
                 .map_err(|err| err.to_string())?;
-            Ok(Some(manifest.version))
+            Ok(Some(antigravity_bundle_version(&manifest.version)))
         }
         "opencode" => fetch_npm_latest_version(client, "opencode-ai").await,
         "grok" => fetch_npm_latest_version(client, "@xai-official/grok").await,
@@ -6628,7 +7061,7 @@ fn managed_node_asset() -> Result<(&'static str, &'static str), String> {
             "node-v24.15.0-win-x64.zip",
             "cc5149eabd53779ce1e7bdc5401643622d0c7e6800ade18928a767e940bb0e62",
         )),
-        (os, arch) => Err(format!("OpenClaw 暂不支持当前平台: {} {}", os, arch)),
+        (os, arch) => Err(format!("托管 Node 暂不支持当前平台: {} {}", os, arch)),
     }
 }
 
@@ -6721,6 +7154,51 @@ fn write_node_client_launcher(
         )
     };
     fs::write(&launcher, content).map_err(|err| format!("写入客户端启动器失败: {}", err))?;
+    make_executable(&launcher)?;
+    Ok(launcher)
+}
+
+fn write_antigravity_launcher(
+    root: &Path,
+    agy_path: &Path,
+    node_path: &Path,
+    gemini_entry_path: &Path,
+) -> Result<PathBuf, String> {
+    let relative = |path: &Path| {
+        path.strip_prefix(root)
+            .map_err(|_| "Antigravity 启动路径不在托管目录内".to_string())
+            .map(|path| path.to_string_lossy().replace('\\', "/"))
+    };
+    let agy = relative(agy_path)?;
+    let node = relative(node_path)?;
+    let gemini = relative(gemini_entry_path)?;
+
+    #[cfg(windows)]
+    let (launcher, content) = {
+        let launcher = root.join("antigravity.cmd");
+        let agy = agy.replace('/', "\\");
+        let node = node.replace('/', "\\");
+        let gemini = gemini.replace('/', "\\");
+        (
+            launcher,
+            format!(
+                "@echo off\r\nif not defined GOOGLE_GEMINI_BASE_URL goto agy\r\n\"%~dp0{}\" \"%~dp0{}\" %*\r\nexit /b %errorlevel%\r\n:agy\r\n\"%~dp0{}\" %*\r\n",
+                node, gemini, agy
+            ),
+        )
+    };
+    #[cfg(not(windows))]
+    let (launcher, content) = {
+        let launcher = root.join("antigravity");
+        (
+            launcher,
+            format!(
+                "#!/bin/sh\nROOT=$(CDPATH= cd -- \"$(dirname -- \"$0\")\" && pwd)\nif [ -n \"${{GOOGLE_GEMINI_BASE_URL:-}}\" ]; then\n  exec \"$ROOT/{}\" \"$ROOT/{}\" \"$@\"\nfi\nexec \"$ROOT/{}\" \"$@\"\n",
+                node, gemini, agy
+            ),
+        )
+    };
+    fs::write(&launcher, content).map_err(|err| format!("写入 Antigravity 启动器失败: {}", err))?;
     make_executable(&launcher)?;
     Ok(launcher)
 }
@@ -7450,15 +7928,6 @@ requires_openai_auth = true"#;
     }
 
     #[test]
-    fn antigravity_only_accepts_official_google_login() {
-        let error = ensure_provider_supported_for_app("gemini", "antigravity")
-            .expect_err("custom Antigravity providers must be rejected");
-        assert!(error.contains("Google 登录"));
-        assert!(ensure_provider_supported_for_app("official", "antigravity").is_ok());
-        assert!(ensure_provider_supported_for_app("gemini", "codex").is_ok());
-    }
-
-    #[test]
     fn imports_opencode_provider_json() {
         let parsed = parse_provider_config_text(
             "opencode",
@@ -7577,6 +8046,110 @@ requires_openai_auth = true"#;
         assert!(verify_npm_integrity(bytes, "sha512-invalid").is_err());
     }
 
+    fn app_release(tag: &str, draft: bool, assets: Vec<GithubAppAsset>) -> GithubAppRelease {
+        GithubAppRelease {
+            tag_name: tag.to_string(),
+            draft,
+            assets,
+        }
+    }
+
+    fn app_asset(name: &str, digest: Option<&str>) -> GithubAppAsset {
+        GithubAppAsset {
+            name: name.to_string(),
+            browser_download_url: format!("https://example.test/{}", name),
+            size: 42,
+            digest: digest.map(str::to_string),
+        }
+    }
+
+    #[test]
+    fn selects_latest_non_draft_app_release() {
+        let digest = format!("sha256:{}", "a".repeat(64));
+        let releases = vec![
+            app_release(
+                "v0.1.17",
+                true,
+                vec![app_asset("AgentDock_0.1.17_universal.dmg", Some(&digest))],
+            ),
+            app_release(
+                "v0.1.16",
+                false,
+                vec![app_asset("AgentDock_0.1.16_universal.dmg", Some(&digest))],
+            ),
+            app_release(
+                "v0.1.13",
+                false,
+                vec![app_asset("AgentDock_0.1.13_universal.dmg", Some(&digest))],
+            ),
+        ];
+
+        let selected = select_app_update(&releases, "0.1.14", "macos", "aarch64")
+            .unwrap()
+            .expect("a newer release should be selected");
+        assert_eq!(selected.version, "0.1.16");
+        assert_eq!(selected.asset.name, "AgentDock_0.1.16_universal.dmg");
+        assert_eq!(selected.sha256, "a".repeat(64));
+        assert!(version_is_newer("v0.1.15", "0.1.14"));
+        assert!(!version_is_newer("v0.1.14", "0.1.14"));
+    }
+
+    #[test]
+    fn selects_universal_macos_app_assets() {
+        assert_eq!(
+            app_update_asset_name("0.1.15", "macos", "aarch64").unwrap(),
+            "AgentDock_0.1.15_universal.dmg"
+        );
+        assert_eq!(
+            app_update_asset_name("0.1.15", "macos", "x86_64").unwrap(),
+            "AgentDock_0.1.15_universal.dmg"
+        );
+        assert!(app_update_asset_name("0.1.15", "linux", "aarch64").is_err());
+    }
+
+    #[test]
+    fn app_updates_require_a_valid_github_digest() {
+        let missing = app_asset("AgentDock_0.1.15_universal.dmg", None);
+        assert!(github_asset_sha256(&missing).is_err());
+
+        let invalid = app_asset(
+            "AgentDock_0.1.15_universal.dmg",
+            Some("sha256:not-a-digest"),
+        );
+        assert!(github_asset_sha256(&invalid).is_err());
+
+        let release = app_release("v0.1.15", false, vec![missing]);
+        assert!(select_app_update(&[release], "0.1.14", "macos", "aarch64").is_err());
+    }
+
+    #[test]
+    fn app_update_helper_waits_replaces_rolls_back_and_restarts() {
+        let script = app_update_helper_script();
+        assert!(script.contains("kill -0 \"$APP_PID\""));
+        assert!(script.contains("hdiutil attach"));
+        assert!(script.contains("ditto \"$SOURCE_APP\" \"$STAGE_PATH\""));
+        assert!(script.contains("mv \"$APP_PATH\" \"$BACKUP_PATH\""));
+        assert!(script.contains("mv \"$BACKUP_PATH\" \"$APP_PATH\""));
+        assert!(script.contains("open \"$APP_PATH\""));
+        assert!(script.contains("rm -f \"$DMG_PATH\" \"$SCRIPT_PATH\""));
+
+        #[cfg(unix)]
+        {
+            let mut child = Command::new("/bin/sh")
+                .arg("-n")
+                .stdin(Stdio::piped())
+                .spawn()
+                .expect("the shell syntax checker should start");
+            child
+                .stdin
+                .as_mut()
+                .unwrap()
+                .write_all(script.as_bytes())
+                .unwrap();
+            assert!(child.wait().unwrap().success());
+        }
+    }
+
     #[test]
     fn decompresses_grok_platform_binary() {
         let root = env::temp_dir().join(format!("agentdock-grok-br-test-{}", std::process::id()));
@@ -7633,9 +8206,98 @@ requires_openai_auth = true"#;
     }
 
     #[test]
+    fn managed_client_launcher_takes_priority_over_system_executable() {
+        let root = env::temp_dir().join(format!(
+            "agentdock-managed-client-priority-test-{}",
+            std::process::id()
+        ));
+        fs::create_dir_all(&root).unwrap();
+        let launcher = root.join(if cfg!(windows) {
+            "antigravity.cmd"
+        } else {
+            "antigravity"
+        });
+        fs::write(&launcher, "managed launcher").unwrap();
+        let record = ManagedClientRecord {
+            id: "antigravity".to_string(),
+            name: "Antigravity CLI".to_string(),
+            installed: true,
+            version: "1.1.3+gemini.0.40.0".to_string(),
+            install_dir: root.display().to_string(),
+            launcher_path: launcher.display().to_string(),
+            config_dir: root.join("config").display().to_string(),
+            installed_at: now_rfc3339(),
+            updated_at: now_rfc3339(),
+        };
+        let status = detect_client(
+            "antigravity",
+            "Antigravity CLI",
+            &["node"],
+            None,
+            None,
+            &[record],
+        );
+        assert_eq!(status.executable.as_deref(), launcher.to_str());
+        assert_eq!(status.version.as_deref(), Some("1.1.3+gemini.0.40.0"));
+        assert!(status.managed_by_agentdock);
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
     fn quotes_shell_values_without_exposing_commands() {
         assert_eq!(shell_quote("simple"), "'simple'");
         assert_eq!(shell_quote("key'with space"), "'key'\"'\"'with space'");
+    }
+
+    #[test]
+    fn antigravity_bundle_marks_legacy_agy_install_as_outdated() {
+        let bundle = antigravity_bundle_version("1.1.3");
+        assert_eq!(bundle, "1.1.3+gemini.0.40.0");
+        assert!(version_is_newer(&bundle, "1.1.3"));
+        assert!(!version_is_newer(&bundle, &bundle));
+    }
+
+    #[test]
+    fn antigravity_launcher_routes_custom_providers_to_gemini() {
+        let root = env::temp_dir().join(format!(
+            "agentdock-antigravity-launcher-test-{}",
+            std::process::id()
+        ));
+        let agy = root.join(if cfg!(windows) { "agy.exe" } else { "agy" });
+        let node = root
+            .join("runtime")
+            .join(if cfg!(windows) { "node.exe" } else { "node" });
+        let gemini = root.join("gemini-cli/package/bundle/gemini.js");
+        fs::create_dir_all(node.parent().unwrap()).unwrap();
+        fs::create_dir_all(gemini.parent().unwrap()).unwrap();
+        fs::write(&agy, b"agy").unwrap();
+        fs::write(&node, b"node").unwrap();
+        fs::write(&gemini, b"gemini").unwrap();
+
+        let launcher = write_antigravity_launcher(&root, &agy, &node, &gemini)
+            .expect("hybrid Antigravity launcher should be written");
+        assert!(antigravity_proxy_runtime_ready(
+            launcher.to_string_lossy().as_ref()
+        ));
+        assert!(!antigravity_proxy_runtime_ready(
+            agy.to_string_lossy().as_ref()
+        ));
+        let content = fs::read_to_string(launcher).unwrap();
+        assert!(content.contains("GOOGLE_GEMINI_BASE_URL"));
+        assert!(content.contains("gemini-cli"));
+        assert!(content.contains("agy"));
+        #[cfg(not(windows))]
+        {
+            assert!(content.contains("if [ -n \"${GOOGLE_GEMINI_BASE_URL:-}\" ]"));
+            assert!(content.contains("exec \"$ROOT/runtime/node\""));
+            assert!(content.contains("exec \"$ROOT/agy\""));
+        }
+        #[cfg(windows)]
+        {
+            assert!(content.contains("if not defined GOOGLE_GEMINI_BASE_URL goto agy"));
+            assert!(content.contains(":agy"));
+        }
+        fs::remove_dir_all(root).unwrap();
     }
 
     #[test]
@@ -7824,6 +8486,44 @@ requires_openai_auth = true"#;
         assert_eq!(record.env.get("API_TOKEN"), Some(&"test".to_string()));
         assert_eq!(record.extra.get("timeout"), Some(&serde_json::json!(45)));
         assert_eq!(record.apps, vec!["opencode"]);
+    }
+
+    #[tokio::test]
+    #[ignore = "downloads official Agy, Node.js, and Gemini CLI packages"]
+    async fn downloads_antigravity_hybrid_bundle() {
+        let root = env::temp_dir().join(format!(
+            "agentdock-antigravity-download-test-{}",
+            std::process::id()
+        ));
+        if root.exists() {
+            fs::remove_dir_all(&root).unwrap();
+        }
+        fs::create_dir_all(&root).unwrap();
+
+        let (launcher, version, message) = download_antigravity_cli(&root)
+            .await
+            .expect("Antigravity hybrid bundle should download");
+        assert!(antigravity_proxy_runtime_ready(
+            launcher.to_string_lossy().as_ref()
+        ));
+        assert!(version.contains("+gemini.0.40.0"));
+        assert!(message.contains("完整性校验通过"));
+
+        let node = find_file_named(
+            &root.join("runtime"),
+            if cfg!(windows) { "node.exe" } else { "node" },
+        )
+        .expect("managed Node executable");
+        let gemini = find_file_named(&root.join("gemini-cli"), "gemini.js")
+            .expect("managed Gemini CLI entry");
+        let output = Command::new(node)
+            .arg(gemini)
+            .arg("--version")
+            .output()
+            .expect("managed Gemini CLI should launch");
+        assert!(output.status.success());
+        assert_eq!(String::from_utf8_lossy(&output.stdout).trim(), "0.40.0");
+        fs::remove_dir_all(root).unwrap();
     }
 
     #[tokio::test]

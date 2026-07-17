@@ -1,6 +1,6 @@
 {
   "name": "agentdock",
-  "version": "0.1.13",
+  "version": "0.1.15",
   "private": true,
   "type": "module",
   "description": "A beginner-friendly desktop hub for installing AI coding clients and managing providers, Skills, MCP, usage, and diagnostics.",
@@ -14,7 +14,8 @@
     "build": "tauri build",
     "dev:ui": "vite --host 127.0.0.1 --port 1420",
     "build:ui": "vite build",
-    "preview": "vite preview --host 127.0.0.1 --port 1420"
+    "preview": "vite preview --host 127.0.0.1 --port 1420",
+    "release:macmini": "./scripts/release-macmini.sh"
   },
   "dependencies": {
     "@fontsource-variable/geist": "^5.2.9",

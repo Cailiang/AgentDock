@@ -17,7 +17,7 @@
 
 AgentDock は、AI コーディングクライアント、プロバイダー、Skills、MCP サーバーのインストールと管理を 1 つのネイティブデスクトップアプリにまとめます。Codex、Claude Code、Grok などを使い始めるために、ランタイムを手動で導入したり、JSON、TOML、環境変数ファイルを編集したりしたくないユーザー向けです。
 
-> AgentDock `0.1.13` は早期プレビュー版です。プロバイダー切り替えや MCP 同期を使用する前に、重要なクライアント設定をバックアップしてください。
+> AgentDock `0.1.15` は早期プレビュー版です。プロバイダー切り替えや MCP 同期を使用する前に、重要なクライアント設定をバックアップしてください。
 
 ## AgentDock を選ぶ理由
 
@@ -63,6 +63,7 @@ AgentDock は初心者向けの流れを優先します。
 - 簡体字中国語、繁体字中国語、英語、日本語、ドイツ語の表示言語を切り替えます。
 - ライト、ダーク、またはシステムに合わせた外観を選択します。
 - ログイン時の起動、サイレント起動、閉じたときのトレイ格納を設定します。
+- macOS では GitHub Releases をバックグラウンドで確認し、接続ステータスから更新して自動再起動できます。
 - コマンドラインクライアントを起動する優先ターミナルを選択します。
 - クライアント一覧に表示する項目と並び順を設定します。
 - Skills を AgentDock データディレクトリまたは `~/.agents/skills` に保存し、ファイルコピーまたはシンボリックリンクで同期します。
@@ -81,7 +82,7 @@ AgentDock は初心者向けの流れを優先します。
 | --- | :---: | :---: | :---: | :---: |
 | Codex | はい | はい | はい | はい |
 | Claude Code | はい | はい | はい | はい |
-| Antigravity CLI (Agy) | はい | はい | 公式ログインのみ | はい |
+| Antigravity CLI (Agy) | はい | はい | はい | はい |
 | Grok | はい | はい | はい | はい |
 | OpenCode | はい | はい | はい | はい |
 | OpenClaw | はい | はい | はい | はい |
@@ -92,7 +93,7 @@ Claude Desktop は検出とプロバイダー/MCP 設定の同期に対応しま
 
 ## ダウンロードとインストール
 
-署名済みの安定版は [Releases](https://github.com/Cailiang/AgentDock/releases) で公開予定です。それまでは、成功した [Desktop Build](https://github.com/Cailiang/AgentDock/actions/workflows/desktop-build.yml) から Windows、macOS、Linux のプレビューパッケージを取得できます。
+Windows、macOS、Linux 向けのバージョン付きプレビュー版は、[Releases](https://github.com/Cailiang/AgentDock/releases) ページでプレリリースとして公開されます。成功した [Desktop Build](https://github.com/Cailiang/AgentDock/actions/workflows/desktop-build.yml) でも各ビルド成果物を保持します。
 
 - **Windows:** `.msi` または `.exe`
 - **macOS:** `.dmg` または `.app`

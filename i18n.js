@@ -466,6 +466,11 @@ const rows = [
   ,["action.skillsSynced", "Skills 已同步", "Skills synchronized", "Skills を同期しました", "Skills synchronisiert"]
   ,["action.mcpDeleted", "{name} 已刪除", "{name} deleted", "{name} を削除しました", "{name} gelöscht"]
   ,["action.mcpSynced", "MCP 設定已同步", "MCP configuration synchronized", "MCP 設定を同期しました", "MCP-Konfiguration synchronisiert"]
+  ,["appUpdate.updateTo", "更新至 {version}", "Update to {version}", "{version} に更新", "Auf {version} aktualisieren"]
+  ,["appUpdate.installing", "正在升級", "Updating", "更新中", "Aktualisierung"]
+  ,["appUpdate.restartHint", "升級至 {version} 並自動重新啟動", "Update to {version} and restart automatically", "{version} に更新して自動的に再起動", "Auf {version} aktualisieren und automatisch neu starten"]
+  ,["appUpdate.previewComplete", "預覽模式已完成升級流程模擬", "The update flow simulation is complete", "プレビューモードで更新フローを完了しました", "Die Aktualisierung wurde im Vorschaumodus simuliert"]
+  ,["appUpdate.checkFailed", "檢查 AgentDock 更新失敗：{error}", "Failed to check for AgentDock updates: {error}", "AgentDock の更新確認に失敗しました：{error}", "AgentDock-Aktualisierung konnte nicht geprüft werden: {error}"]
   ,["客户端不支持", "客戶端不支援", "Unsupported by client", "クライアント未対応", "Vom Client nicht unterstützt"]
   ,["本机服务连接失败", "本機服務連線失敗", "Local service connection failed", "ローカルサービスへの接続に失敗しました", "Verbindung zum lokalen Dienst fehlgeschlagen"]
 ];

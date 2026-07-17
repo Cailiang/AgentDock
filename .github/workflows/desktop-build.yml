@@ -3,8 +3,12 @@ name: Desktop Build
 on:
   push:
     branches: [main]
+    tags: ['v*']
   pull_request:
   workflow_dispatch:
+
+permissions:
+  contents: read
 
 jobs:
   build:
@@ -39,6 +43,10 @@ jobs:
       - name: Setup Rust
         uses: dtolnay/rust-toolchain@stable
 
+      - name: Install macOS universal targets
+        if: runner.os == 'macOS'
+        run: rustup target add aarch64-apple-darwin x86_64-apple-darwin
+
       - name: Cache Rust build
         uses: swatinem/rust-cache@v2
         with:
@@ -48,7 +56,12 @@ jobs:
         run: npm ci
 
       - name: Build desktop app
+        if: runner.os != 'macOS'
         run: npm run build
+
+      - name: Build universal macOS app
+        if: runner.os == 'macOS'
+        run: npm run build -- --target universal-apple-darwin
 
       - name: Upload bundles
         uses: actions/upload-artifact@v7
@@ -57,9 +70,45 @@ jobs:
           path: |
             src-tauri/target/release/bundle/**/*.dmg
             src-tauri/target/release/bundle/**/*.app
+            src-tauri/target/universal-apple-darwin/release/bundle/**/*.dmg
+            src-tauri/target/universal-apple-darwin/release/bundle/**/*.app
             src-tauri/target/release/bundle/**/*.msi
             src-tauri/target/release/bundle/**/*.exe
             src-tauri/target/release/bundle/**/*.deb
             src-tauri/target/release/bundle/**/*.rpm
             src-tauri/target/release/bundle/**/*.AppImage
           if-no-files-found: error
+
+  release:
+    name: Publish desktop release
+    if: github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v')
+    needs: build
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: write
+
+    steps:
+      - name: Download desktop bundles
+        uses: actions/download-artifact@v7
+        with:
+          pattern: agentdock-*
+          path: release-assets
+          merge-multiple: true
+
+      - name: Publish versioned installers
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          version="${GITHUB_REF_NAME#v}"
+          expected="AgentDock_${version}_universal.dmg"
+          test -n "$(find release-assets -type f -name "$expected" -print -quit)"
+          mapfile -d '' assets < <(find release-assets -type f \( \
+            -name '*.dmg' -o -name '*.msi' -o -name '*.exe' -o \
+            -name '*.deb' -o -name '*.rpm' -o -name '*.AppImage' \
+          \) -print0)
+          test "${#assets[@]}" -gt 0
+          if gh release view "$GITHUB_REF_NAME" >/dev/null 2>&1; then
+            gh release upload "$GITHUB_REF_NAME" "${assets[@]}" --clobber
+          else
+            gh release create "$GITHUB_REF_NAME" "${assets[@]}" --verify-tag --generate-notes --prerelease --title "AgentDock ${version}"
+          fi
