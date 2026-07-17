@@ -121,6 +121,7 @@ body { background: var(--canvas); }
 .source-state { width: 7px; height: 7px; border-radius: 50%; background: #a7b3b5; }
 .source-state.ok { background: var(--accent); }
 .source-state.warn { background: #cb7a17; }
+.source-state.busy { background: var(--warning); box-shadow: 0 0 0 3px rgba(203, 122, 23, .14); animation: status-pulse 1.2s ease-in-out infinite; }
 .source-count { color: var(--ink-faint); font: 9px var(--mono); }
 .source-filter { min-height: 39px; grid-template-columns: 17px minmax(0, 1fr) auto; color: var(--ink-soft); }
 .source-filter svg { width: 15px; height: 15px; }
@@ -140,12 +141,15 @@ body { background: var(--canvas); }
 .source-update-button:hover { border-color: var(--warning); background: #ffe6bf; }
 .source-update-button:disabled { cursor: wait; }
 .source-update-button svg { width: 13px; height: 13px; flex: 0 0 auto; }
-.source-update-button .spin { animation: update-spin .85s linear infinite; }
+.spin { animation: update-spin .85s linear infinite; }
 .source-update-button span { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 @keyframes update-spin { to { transform: rotate(360deg); } }
+@keyframes status-pulse { 50% { opacity: .45; transform: scale(.8); } }
+
+.client-dot.busy { background: var(--warning); box-shadow: 0 0 0 3px rgba(203, 122, 23, .14); animation: status-pulse 1.2s ease-in-out infinite; }
 
 @media (prefers-reduced-motion: reduce) {
-  .source-update-button .spin { animation: none; }
+  .spin, .source-state.busy, .client-dot.busy { animation: none; }
 }
 
 .workspace { grid-template-rows: 60px minmax(0, 1fr); background: #fbfcfc; }
@@ -389,9 +393,10 @@ body { background: var(--canvas); }
 }
 .settings-segmented button svg { width: 14px; height: 14px; }
 .settings-toggle-list, .settings-client-list { overflow: hidden; border: 1px solid var(--line); border-radius: 7px; background: var(--surface); }
-.settings-toggle-row, .settings-client-row { display: grid; min-height: 62px; align-items: center; gap: 11px; border-bottom: 1px solid var(--line); padding: 9px 12px; }
+.settings-toggle-row, .settings-client-row, .settings-import-row { display: grid; min-height: 62px; align-items: center; gap: 11px; border-bottom: 1px solid var(--line); padding: 9px 12px; }
 .settings-toggle-row:last-child, .settings-client-row:last-child { border-bottom: 0; }
 .settings-toggle-row { grid-template-columns: 32px minmax(0, 1fr) auto; cursor: pointer; }
+.settings-import-row { grid-template-columns: 32px minmax(0, 1fr) auto; border: 1px solid var(--line); border-radius: 7px; background: var(--surface); }
 .settings-toggle-row:hover, .settings-client-row:hover { background: var(--surface-raised); }
 .settings-row-icon { display: grid; width: 31px; height: 31px; place-items: center; border-radius: 7px; background: var(--accent-soft); color: var(--accent); }
 .settings-row-icon.amber { background: var(--warning-soft); color: var(--warning); }
@@ -497,4 +502,6 @@ html[data-theme="dark"] .settings-segmented button.active:hover { background: #6
   .field.full, .advanced-config { grid-column: auto; }
   .settings-client-row { grid-template-columns: 32px minmax(0, 1fr) auto; }
   .settings-client-actions { grid-column: 2 / -1; justify-content: flex-start; }
+  .settings-import-row { grid-template-columns: 32px minmax(0, 1fr); }
+  .settings-import-row .btn { grid-column: 2; justify-self: start; }
 }

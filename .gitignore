@@ -9,6 +9,7 @@ coverage/
 # Internal design and local QA artifacts
 design-proposals/
 screenshots/
+release-artifacts/
 
 # Optional offline client payloads are distributed separately
 resources/installers/

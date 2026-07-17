@@ -11,7 +11,7 @@ SKIP_BUILD=0
 
 usage() {
   printf 'Usage: %s [--skip-build]\n' "$(basename "$0")"
-  printf '\nBuilds AgentDock, deploys it to %s, and restarts the remote app.\n' "$SSH_TARGET"
+  printf '\nBuilds AgentDock, creates a local installer, deploys it to %s, and restarts the remote app.\n' "$SSH_TARGET"
   printf 'Override the destination with MACMINI_HOST, MACMINI_USER, or MACMINI_APP_PATH.\n'
 }
 
@@ -49,11 +49,12 @@ VERSION="$(node -p 'require("./package.json").version')"
 
 DMG_PATH="$ROOT_DIR/src-tauri/target/universal-apple-darwin/release/bundle/dmg/AgentDock_${VERSION}_universal.dmg"
 APP_PATH="$ROOT_DIR/src-tauri/target/universal-apple-darwin/release/bundle/macos/AgentDock.app"
+LOCAL_DMG_PATH="$ROOT_DIR/release-artifacts/$(basename "$DMG_PATH")"
 
-if [[ "$SKIP_BUILD" -eq 0 ]]; then
-  printf 'Building AgentDock %s for arm64 and x86_64...\n' "$VERSION"
-  rustup target add aarch64-apple-darwin x86_64-apple-darwin
-  npm run build -- --target universal-apple-darwin
+if [[ "$SKIP_BUILD" -eq 1 ]]; then
+  "$ROOT_DIR/scripts/build-local-release.sh" --skip-build
+else
+  "$ROOT_DIR/scripts/build-local-release.sh"
 fi
 
 [[ -f "$DMG_PATH" && -d "$APP_PATH" ]] || {
@@ -170,3 +171,4 @@ exit 1
 REMOTE_SCRIPT
 
 printf 'Release complete: AgentDock %s is running on %s.\n' "$VERSION" "$SSH_TARGET"
+printf 'Local installer: %s\n' "$LOCAL_DMG_PATH"

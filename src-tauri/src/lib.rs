@@ -21,7 +21,10 @@ use std::{
     io::{BufRead, BufReader, Cursor, Read, Write},
     path::{Path, PathBuf},
     process::{Command, Stdio},
-    sync::atomic::{AtomicBool, Ordering},
+    sync::{
+        atomic::{AtomicBool, Ordering},
+        Mutex, OnceLock,
+    },
     time::Instant,
 };
 use tauri::{
@@ -31,6 +34,8 @@ use tauri::{
 };
 
 static TRAY_AVAILABLE: AtomicBool = AtomicBool::new(false);
+static CLIENT_DETECTION_CACHE: OnceLock<Mutex<Option<(Instant, Vec<ClientStatus>)>>> =
+    OnceLock::new();
 use time::{format_description::well_known::Rfc3339, Duration, OffsetDateTime};
 
 #[derive(Debug, Serialize)]
@@ -236,6 +241,48 @@ pub struct ProviderInput {
     claude_opus_model: Option<String>,
     active: Option<bool>,
     active_apps: Option<Vec<String>>,
+    api_key: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct CcSwitchImportDetection {
+    available: bool,
+    source_path: String,
+    source_kind: String,
+    fingerprint: String,
+    provider_count: usize,
+    app_counts: BTreeMap<String, usize>,
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct CcSwitchImportResult {
+    imported: usize,
+    updated: usize,
+    skipped: usize,
+    app_counts: BTreeMap<String, usize>,
+    errors: Vec<String>,
+    backup_dir: String,
+}
+
+#[derive(Debug, Clone)]
+struct CcSwitchProviderCandidate {
+    source_id: String,
+    source_app: String,
+    app_id: String,
+    name: String,
+    settings_config: serde_json::Value,
+    website_url: String,
+    category: String,
+    notes: String,
+    meta: serde_json::Value,
+    is_current: bool,
+}
+
+#[derive(Debug, Clone)]
+struct PreparedCcSwitchProvider {
+    provider: ProviderProfile,
     api_key: Option<String>,
 }
 
@@ -502,8 +549,7 @@ struct UsageRecord {
     cost_usd: Option<f64>,
 }
 
-#[tauri::command]
-fn get_desktop_status() -> Result<DesktopStatus, String> {
+fn desktop_status() -> Result<DesktopStatus, String> {
     let dirs = agentdock_dirs()?;
     ensure_dirs(&dirs)?;
 
@@ -513,8 +559,15 @@ fn get_desktop_status() -> Result<DesktopStatus, String> {
         data_dir: dirs.data_dir.display().to_string(),
         config_dir: dirs.config_dir.display().to_string(),
         managed_runtime_ready: dirs.runtime_dir.exists(),
-        clients: detect_clients(),
+        clients: refresh_client_detection(),
     })
+}
+
+#[tauri::command]
+async fn get_desktop_status() -> Result<DesktopStatus, String> {
+    tauri::async_runtime::spawn_blocking(desktop_status)
+        .await
+        .map_err(|error| format!("客户端检测任务失败: {}", error))?
 }
 
 #[tauri::command]
@@ -865,7 +918,7 @@ fn save_app_settings(settings: AppSettings) -> Result<AppSettings, String> {
 
 #[tauri::command]
 async fn list_software_catalog() -> Result<Vec<SoftwareCatalogItem>, String> {
-    let statuses = detect_clients();
+    let statuses = cached_client_detection();
     let client = reqwest::Client::builder()
         .connect_timeout(std::time::Duration::from_secs(5))
         .timeout(std::time::Duration::from_secs(10))
@@ -1389,6 +1442,641 @@ fn parse_provider_config(app_id: String, content: String) -> Result<ParsedProvid
     parse_provider_config_text(&app_id, &content)
 }
 
+fn cc_switch_app_id(source_app: &str) -> Option<&'static str> {
+    match source_app {
+        "claude" => Some("claude-code"),
+        "claude-desktop" => Some("claude-desktop"),
+        "codex" => Some("codex"),
+        "gemini" => Some("antigravity"),
+        "grokbuild" | "grok" => Some("grok"),
+        "opencode" => Some("opencode"),
+        "openclaw" => Some("openclaw"),
+        "hermes" => Some("hermes"),
+        _ => None,
+    }
+}
+
+fn cc_switch_source() -> Option<(PathBuf, String)> {
+    let config_dir = dirs_home()?.join(".cc-switch");
+    let database = config_dir.join("cc-switch.db");
+    if database.is_file() {
+        return Some((database, "SQLite".to_string()));
+    }
+    let legacy = config_dir.join("config.json");
+    legacy.is_file().then(|| (legacy, "JSON".to_string()))
+}
+
+fn cc_switch_source_fingerprint(path: &Path) -> Result<String, String> {
+    let mut paths = vec![path.to_path_buf()];
+    if path.extension().and_then(|value| value.to_str()) == Some("db") {
+        paths.push(path.with_extension("db-wal"));
+    }
+    let mut identity = String::new();
+    for item in paths {
+        let Ok(metadata) = fs::metadata(&item) else {
+            continue;
+        };
+        let modified = metadata
+            .modified()
+            .ok()
+            .and_then(|value| value.duration_since(std::time::UNIX_EPOCH).ok())
+            .map(|value| value.as_nanos())
+            .unwrap_or_default();
+        identity.push_str(&format!(
+            "{}:{}:{};",
+            item.display(),
+            metadata.len(),
+            modified
+        ));
+    }
+    if identity.is_empty() {
+        return Err("读取 cc-switch 配置状态失败".to_string());
+    }
+    Ok(format!("{:x}", Sha256::digest(identity.as_bytes())))
+}
+
+fn cc_switch_display_path(path: &Path) -> String {
+    path.file_name()
+        .map(|name| format!("~/.cc-switch/{}", name.to_string_lossy()))
+        .unwrap_or_else(|| "~/.cc-switch".to_string())
+}
+
+fn load_cc_switch_database(path: &Path) -> Result<Vec<CcSwitchProviderCandidate>, String> {
+    use rusqlite::{Connection, OpenFlags};
+
+    let connection = Connection::open_with_flags(
+        path,
+        OpenFlags::SQLITE_OPEN_READ_ONLY | OpenFlags::SQLITE_OPEN_NO_MUTEX,
+    )
+    .map_err(|err| format!("只读打开 cc-switch 数据库失败: {}", err))?;
+    let mut statement = connection
+        .prepare(
+            "SELECT id, app_type, name, settings_config, website_url, category, notes, meta, is_current
+             FROM providers
+             ORDER BY app_type, COALESCE(sort_index, 999999), created_at, id",
+        )
+        .map_err(|err| format!("读取 cc-switch 供应商表失败: {}", err))?;
+    let rows = statement
+        .query_map([], |row| {
+            Ok((
+                row.get::<_, String>(0)?,
+                row.get::<_, String>(1)?,
+                row.get::<_, String>(2)?,
+                row.get::<_, String>(3)?,
+                row.get::<_, Option<String>>(4)?.unwrap_or_default(),
+                row.get::<_, Option<String>>(5)?.unwrap_or_default(),
+                row.get::<_, Option<String>>(6)?.unwrap_or_default(),
+                row.get::<_, String>(7).unwrap_or_else(|_| "{}".to_string()),
+                row.get::<_, bool>(8)?,
+            ))
+        })
+        .map_err(|err| format!("查询 cc-switch 供应商失败: {}", err))?;
+
+    let mut candidates = Vec::new();
+    for row in rows {
+        let (source_id, source_app, name, settings, website_url, category, notes, meta, is_current) =
+            row.map_err(|err| format!("读取 cc-switch 供应商记录失败: {}", err))?;
+        let Some(app_id) = cc_switch_app_id(&source_app) else {
+            continue;
+        };
+        let settings_config = serde_json::from_str(&settings)
+            .map_err(|err| format!("{} 的配置不是有效 JSON: {}", name, err))?;
+        let meta = serde_json::from_str(&meta).unwrap_or_else(|_| serde_json::json!({}));
+        candidates.push(CcSwitchProviderCandidate {
+            source_id,
+            source_app,
+            app_id: app_id.to_string(),
+            name,
+            settings_config,
+            website_url,
+            category,
+            notes,
+            meta,
+            is_current,
+        });
+    }
+    Ok(candidates)
+}
+
+fn load_cc_switch_legacy_json(path: &Path) -> Result<Vec<CcSwitchProviderCandidate>, String> {
+    let raw = fs::read_to_string(path)
+        .map_err(|err| format!("读取 cc-switch config.json 失败: {}", err))?;
+    if raw.len() > 20_000_000 {
+        return Err("cc-switch config.json 过大，已停止导入".to_string());
+    }
+    let root: serde_json::Value = serde_json::from_str(&raw)
+        .map_err(|err| format!("解析 cc-switch config.json 失败: {}", err))?;
+    let apps = root.get("apps").unwrap_or(&root);
+    let mut candidates = Vec::new();
+    for source_app in [
+        "claude",
+        "claude-desktop",
+        "codex",
+        "gemini",
+        "grokbuild",
+        "opencode",
+        "openclaw",
+        "hermes",
+    ] {
+        let Some(manager) = apps.get(source_app) else {
+            continue;
+        };
+        let current = manager
+            .get("current")
+            .and_then(serde_json::Value::as_str)
+            .unwrap_or_default();
+        let Some(providers) = manager
+            .get("providers")
+            .and_then(serde_json::Value::as_object)
+        else {
+            continue;
+        };
+        for (source_id, value) in providers {
+            let name = value
+                .get("name")
+                .and_then(serde_json::Value::as_str)
+                .unwrap_or(source_id)
+                .to_string();
+            candidates.push(CcSwitchProviderCandidate {
+                source_id: source_id.clone(),
+                source_app: source_app.to_string(),
+                app_id: cc_switch_app_id(source_app)
+                    .unwrap_or(source_app)
+                    .to_string(),
+                name,
+                settings_config: value
+                    .get("settingsConfig")
+                    .cloned()
+                    .unwrap_or_else(|| serde_json::json!({})),
+                website_url: value
+                    .get("websiteUrl")
+                    .and_then(serde_json::Value::as_str)
+                    .unwrap_or_default()
+                    .to_string(),
+                category: value
+                    .get("category")
+                    .and_then(serde_json::Value::as_str)
+                    .unwrap_or_default()
+                    .to_string(),
+                notes: value
+                    .get("notes")
+                    .and_then(serde_json::Value::as_str)
+                    .unwrap_or_default()
+                    .to_string(),
+                meta: value
+                    .get("meta")
+                    .cloned()
+                    .unwrap_or_else(|| serde_json::json!({})),
+                is_current: current == source_id,
+            });
+        }
+    }
+    Ok(candidates)
+}
+
+fn load_cc_switch_candidates(
+) -> Result<Option<(PathBuf, String, Vec<CcSwitchProviderCandidate>)>, String> {
+    let Some((path, source_kind)) = cc_switch_source() else {
+        return Ok(None);
+    };
+    let candidates = if source_kind == "SQLite" {
+        load_cc_switch_database(&path)?
+    } else {
+        load_cc_switch_legacy_json(&path)?
+    };
+    Ok(Some((path, source_kind, candidates)))
+}
+
+fn cc_switch_api_format(value: Option<&str>) -> Option<String> {
+    let normalized = value.map(normalized_config_key)?;
+    match normalized.as_str() {
+        "openairesponses" | "responses" => Some("responses".to_string()),
+        "openaichat" | "chatcompletions" | "openai" => Some("chat-completions".to_string()),
+        "anthropic" | "anthropicmessages" | "messages" => Some("anthropic".to_string()),
+        "gemini" | "gemininative" => Some("gemini".to_string()),
+        _ => None,
+    }
+}
+
+fn is_cc_switch_secret_key(key: &str) -> bool {
+    matches!(
+        normalized_config_key(key).as_str(),
+        "apikey"
+            | "openaiapikey"
+            | "anthropicauthtoken"
+            | "anthropicapikey"
+            | "geminiapikey"
+            | "googleapikey"
+            | "xaiapikey"
+            | "authtoken"
+            | "accesstoken"
+            | "secretaccesskey"
+    )
+}
+
+fn collect_cc_switch_secrets(value: &serde_json::Value, secrets: &mut HashSet<String>) {
+    match value {
+        serde_json::Value::Object(entries) => {
+            for (key, value) in entries {
+                if is_cc_switch_secret_key(key) {
+                    if let Some(secret) = value.as_str().and_then(clean_imported_api_key) {
+                        secrets.insert(secret);
+                    }
+                }
+                collect_cc_switch_secrets(value, secrets);
+            }
+        }
+        serde_json::Value::Array(items) => {
+            for item in items {
+                collect_cc_switch_secrets(item, secrets);
+            }
+        }
+        _ => {}
+    }
+}
+
+fn redact_cc_switch_settings(value: &mut serde_json::Value, secrets: &[String]) {
+    match value {
+        serde_json::Value::String(text) => {
+            for secret in secrets {
+                *text = text.replace(secret, "${AGENTDOCK_API_KEY}");
+            }
+        }
+        serde_json::Value::Array(items) => {
+            for item in items {
+                redact_cc_switch_settings(item, secrets);
+            }
+        }
+        serde_json::Value::Object(entries) => {
+            for (key, value) in entries {
+                if is_cc_switch_secret_key(key)
+                    && value.as_str().and_then(clean_imported_api_key).is_some()
+                {
+                    *value = serde_json::Value::String("${AGENTDOCK_API_KEY}".to_string());
+                } else {
+                    redact_cc_switch_settings(value, secrets);
+                }
+            }
+        }
+        _ => {}
+    }
+}
+
+fn cc_switch_string_at(value: &serde_json::Value, paths: &[&[&str]]) -> Option<String> {
+    paths
+        .iter()
+        .find_map(|path| json_string_at(value, path))
+        .map(str::to_string)
+        .filter(|value| !value.trim().is_empty())
+}
+
+fn cc_switch_model(value: &serde_json::Value) -> Option<String> {
+    cc_switch_string_at(
+        value,
+        &[
+            &["env", "ANTHROPIC_MODEL"],
+            &["env", "GEMINI_MODEL"],
+            &["model"],
+        ],
+    )
+    .or_else(|| {
+        value
+            .pointer("/models/0/id")
+            .and_then(serde_json::Value::as_str)
+            .map(str::to_string)
+    })
+    .or_else(|| {
+        value
+            .get("models")
+            .and_then(serde_json::Value::as_object)
+            .and_then(|models| models.keys().next().cloned())
+    })
+    .filter(|value| !value.trim().is_empty())
+}
+
+fn cc_switch_preset_id(name: &str, base_url: &str) -> String {
+    let name = name.to_ascii_lowercase();
+    let mappings = [
+        ("agentplan", "volcengine-agentplan"),
+        ("doubao", "doubao"),
+        ("deepseek", "deepseek"),
+        ("openrouter", "openrouter"),
+        ("packy", "packycode"),
+        ("subrouter", "subrouter"),
+        ("qiniu", "qiniu"),
+        ("zhipu", "zhipu-glm"),
+        ("minimax", "minimax"),
+        ("modelscope", "modelscope"),
+    ];
+    if base_url.contains("volces.com/api/coding") {
+        return "volcengine-agentplan".to_string();
+    }
+    mappings
+        .iter()
+        .find(|(needle, _)| name.contains(needle))
+        .map(|(_, id)| (*id).to_string())
+        .unwrap_or_default()
+}
+
+fn cc_switch_provider_id(candidate: &CcSwitchProviderCandidate) -> String {
+    let identity = format!("{}:{}", candidate.source_app, candidate.source_id);
+    let digest = format!("{:x}", Sha256::digest(identity.as_bytes()));
+    let source_slug = slugify(&candidate.source_id);
+    let source_slug = if source_slug.starts_with("provider-") {
+        "provider".to_string()
+    } else {
+        source_slug
+    };
+    format!(
+        "cc-switch-{}-{}-{}",
+        candidate.app_id,
+        source_slug,
+        &digest[..10]
+    )
+}
+
+fn prepare_cc_switch_provider(
+    candidate: &CcSwitchProviderCandidate,
+) -> Result<PreparedCcSwitchProvider, String> {
+    let raw = serde_json::to_string(&candidate.settings_config)
+        .map_err(|err| format!("读取配置失败: {}", err))?;
+    let parsed = parse_provider_config_text(&candidate.app_id, &raw).unwrap_or_default();
+    let base_url = normalize_base_url(parsed.base_url.as_deref().unwrap_or_default());
+    let is_official = candidate.category.eq_ignore_ascii_case("official")
+        || (base_url.is_empty() && candidate.name.to_ascii_lowercase().contains("official"));
+    if !is_official && !(base_url.starts_with("https://") || base_url.starts_with("http://")) {
+        return Err("没有识别到有效请求地址".to_string());
+    }
+
+    let mut secrets = HashSet::new();
+    collect_cc_switch_secrets(&candidate.settings_config, &mut secrets);
+    if let Some(secret) = parsed
+        .api_key
+        .as_ref()
+        .and_then(|value| clean_imported_api_key(value))
+    {
+        secrets.insert(secret);
+    }
+    if secrets.len() > 1 {
+        return Err("包含多组凭据，暂不支持自动合并".to_string());
+    }
+    let api_key = secrets.iter().next().cloned();
+    let mut sanitized_settings = candidate.settings_config.clone();
+    let secret_values = secrets.into_iter().collect::<Vec<_>>();
+    redact_cc_switch_settings(&mut sanitized_settings, &secret_values);
+
+    let meta_format = candidate
+        .meta
+        .get("apiFormat")
+        .and_then(serde_json::Value::as_str);
+    let default_format = match candidate.app_id.as_str() {
+        "claude-code" | "claude-desktop" => "anthropic",
+        "antigravity" => "gemini",
+        "grok" | "opencode" | "openclaw" | "hermes" => "chat-completions",
+        _ => "responses",
+    };
+    let api_format = cc_switch_api_format(meta_format)
+        .or_else(|| {
+            parsed
+                .api_format
+                .and_then(|value| cc_switch_api_format(Some(&value)))
+        })
+        .unwrap_or_else(|| default_format.to_string());
+
+    let model = parsed.model.unwrap_or_else(|| {
+        cc_switch_model(&candidate.settings_config).unwrap_or_else(|| {
+            match candidate.app_id.as_str() {
+                "claude-code" | "claude-desktop" => "claude-sonnet-5".to_string(),
+                "antigravity" => default_gemini_model(),
+                _ => default_codex_model(),
+            }
+        })
+    });
+    let claude_sonnet_model = cc_switch_string_at(
+        &candidate.settings_config,
+        &[
+            &["env", "ANTHROPIC_DEFAULT_SONNET_MODEL"],
+            &["env", "ANTHROPIC_MODEL"],
+        ],
+    )
+    .unwrap_or_else(|| model.clone());
+    let claude_haiku_model = cc_switch_string_at(
+        &candidate.settings_config,
+        &[
+            &["env", "ANTHROPIC_DEFAULT_HAIKU_MODEL"],
+            &["env", "ANTHROPIC_MODEL"],
+        ],
+    )
+    .unwrap_or_else(|| model.clone());
+    let claude_opus_model = cc_switch_string_at(
+        &candidate.settings_config,
+        &[
+            &["env", "ANTHROPIC_DEFAULT_OPUS_MODEL"],
+            &["env", "ANTHROPIC_MODEL"],
+        ],
+    )
+    .unwrap_or_else(|| model.clone());
+    let settings_config = if is_official {
+        String::new()
+    } else {
+        let settings = serde_json::to_string_pretty(&sanitized_settings)
+            .map_err(|err| format!("生成脱敏配置失败: {}", err))?;
+        validate_provider_settings_config(&candidate.app_id, &settings)?
+    };
+    let now = now_rfc3339();
+    let active_apps = candidate
+        .is_current
+        .then(|| vec![candidate.app_id.clone()])
+        .unwrap_or_default();
+    let note = if candidate.notes.trim().is_empty() {
+        "从 cc-switch 导入".to_string()
+    } else {
+        format!("{} · 从 cc-switch 导入", candidate.notes.trim())
+    };
+    let provider_type = if is_official {
+        "official"
+    } else {
+        match candidate.app_id.as_str() {
+            "claude-code" | "claude-desktop" => "anthropic",
+            "antigravity" => "gemini",
+            _ => "openai",
+        }
+    };
+    Ok(PreparedCcSwitchProvider {
+        provider: ProviderProfile {
+            id: cc_switch_provider_id(candidate),
+            name: candidate.name.trim().to_string(),
+            notes: note,
+            website_url: candidate.website_url.trim().to_string(),
+            preset_id: cc_switch_preset_id(&candidate.name, &base_url),
+            provider_type: provider_type.to_string(),
+            base_url,
+            api_format,
+            settings_config,
+            enabled_apps: vec![candidate.app_id.clone()],
+            codex_model: model.clone(),
+            gemini_model: if candidate.app_id == "antigravity" {
+                model.clone()
+            } else {
+                default_gemini_model()
+            },
+            claude_sonnet_model,
+            claude_haiku_model,
+            claude_opus_model,
+            active: !active_apps.is_empty(),
+            active_apps,
+            api_key_configured: api_key.is_some(),
+            created_at: now.clone(),
+            updated_at: now,
+        },
+        api_key,
+    })
+}
+
+#[tauri::command]
+fn detect_cc_switch_config() -> Result<CcSwitchImportDetection, String> {
+    let Some((path, source_kind, candidates)) = load_cc_switch_candidates()? else {
+        return Ok(CcSwitchImportDetection {
+            available: false,
+            source_path: String::new(),
+            source_kind: String::new(),
+            fingerprint: String::new(),
+            provider_count: 0,
+            app_counts: BTreeMap::new(),
+        });
+    };
+    let mut app_counts = BTreeMap::new();
+    let mut provider_count = 0;
+    for candidate in &candidates {
+        if prepare_cc_switch_provider(candidate).is_ok() {
+            provider_count += 1;
+            *app_counts.entry(candidate.app_id.clone()).or_insert(0) += 1;
+        }
+    }
+    Ok(CcSwitchImportDetection {
+        available: provider_count > 0,
+        source_path: cc_switch_display_path(&path),
+        source_kind,
+        fingerprint: cc_switch_source_fingerprint(&path)?,
+        provider_count,
+        app_counts,
+    })
+}
+
+#[tauri::command]
+fn import_cc_switch_config() -> Result<CcSwitchImportResult, String> {
+    let Some((_source_path, _source_kind, candidates)) = load_cc_switch_candidates()? else {
+        return Err("没有检测到 cc-switch 配置".to_string());
+    };
+    let dirs = agentdock_dirs()?;
+    ensure_dirs(&dirs)?;
+    let mut prepared = Vec::new();
+    let mut errors = Vec::new();
+    for candidate in &candidates {
+        match prepare_cc_switch_provider(candidate) {
+            Ok(provider) => prepared.push(provider),
+            Err(error) => errors.push(format!(
+                "{} / {}: {}",
+                candidate.app_id, candidate.name, error
+            )),
+        }
+    }
+    if prepared.is_empty() {
+        return Ok(CcSwitchImportResult {
+            imported: 0,
+            updated: 0,
+            skipped: errors.len(),
+            app_counts: BTreeMap::new(),
+            errors,
+            backup_dir: String::new(),
+        });
+    }
+
+    let providers_file = providers_path(&dirs);
+    let secrets_file = provider_secrets_path(&dirs);
+    let old_providers = fs::read(&providers_file).ok();
+    let old_secrets = fs::read(&secrets_file).ok();
+    let backup_dir = dirs.backups_dir.join(format!(
+        "cc-switch-import-{}",
+        OffsetDateTime::now_utc().unix_timestamp()
+    ));
+    fs::create_dir_all(&backup_dir)
+        .map_err(|err| format!("创建 cc-switch 导入备份失败: {}", err))?;
+    if providers_file.exists() {
+        fs::copy(&providers_file, backup_dir.join("providers.json"))
+            .map_err(|err| format!("备份供应商配置失败: {}", err))?;
+    }
+    if secrets_file.exists() {
+        let backup = backup_dir.join("provider-secrets.json");
+        fs::copy(&secrets_file, &backup).map_err(|err| format!("备份供应商密钥失败: {}", err))?;
+        protect_secret_file(&backup)?;
+    }
+
+    let mut providers = list_providers()?;
+    let mut secrets = read_provider_secrets(&dirs)?;
+    let existing_ids = providers
+        .iter()
+        .map(|provider| provider.id.clone())
+        .collect::<HashSet<_>>();
+    let current_apps = prepared
+        .iter()
+        .flat_map(|item| item.provider.active_apps.iter().cloned())
+        .collect::<HashSet<_>>();
+    for provider in &mut providers {
+        provider
+            .active_apps
+            .retain(|app| !current_apps.contains(app));
+        provider.active = !provider.active_apps.is_empty();
+    }
+
+    let mut imported = 0;
+    let mut updated = 0;
+    let mut app_counts = BTreeMap::new();
+    let mut imported_profiles = Vec::new();
+    for mut item in prepared {
+        if let Some(existing) = providers
+            .iter()
+            .find(|provider| provider.id == item.provider.id)
+        {
+            item.provider.created_at = existing.created_at.clone();
+            updated += 1;
+        } else if existing_ids.contains(&item.provider.id) {
+            updated += 1;
+        } else {
+            imported += 1;
+        }
+        if let Some(api_key) = item.api_key {
+            secrets.insert(item.provider.id.clone(), api_key);
+        }
+        item.provider.api_key_configured = secrets.contains_key(&item.provider.id);
+        *app_counts
+            .entry(item.provider.enabled_apps[0].clone())
+            .or_insert(0) += 1;
+        providers.retain(|provider| provider.id != item.provider.id);
+        imported_profiles.push(item.provider);
+    }
+    imported_profiles.extend(providers);
+
+    let write_result = (|| {
+        write_provider_secrets(&dirs, &secrets)?;
+        write_providers(&dirs, &imported_profiles)
+    })();
+    if let Err(error) = write_result {
+        restore_file_snapshot(&secrets_file, old_secrets.as_deref());
+        restore_file_snapshot(&providers_file, old_providers.as_deref());
+        return Err(error);
+    }
+
+    Ok(CcSwitchImportResult {
+        imported,
+        updated,
+        skipped: errors.len(),
+        app_counts,
+        errors,
+        backup_dir: backup_dir.display().to_string(),
+    })
+}
+
 #[tauri::command]
 async fn fetch_provider_models(
     app_id: String,
@@ -1469,7 +2157,7 @@ async fn fetch_provider_models(
 #[tauri::command]
 fn run_ready_check() -> Result<ReadyCheck, String> {
     let providers = list_providers()?;
-    let clients = detect_clients();
+    let clients = cached_client_detection();
     let clients_ready = clients.iter().filter(|client| client.installed).count();
     let providers_ready = providers
         .iter()
@@ -2303,7 +2991,7 @@ fn apply_provider_for_app(
 async fn run_diagnostics() -> Result<DiagnosticsReport, String> {
     let dirs = agentdock_dirs()?;
     ensure_dirs(&dirs)?;
-    let desktop = get_desktop_status()?;
+    let desktop = desktop_status()?;
     let mut checks = vec![diagnostic_check(
         "system-platform",
         "系统",
@@ -2677,7 +3365,7 @@ async fn export_diagnostics() -> Result<DiagnosticsResult, String> {
     let payload = serde_json::json!({
         "exportedAt": now_rfc3339(),
         "diagnostics": run_diagnostics().await?,
-        "desktopStatus": get_desktop_status()?,
+        "desktopStatus": desktop_status()?,
         "ready": run_ready_check()?,
         "providers": provider_summaries,
         "managedClients": list_managed_clients()?,
@@ -2694,7 +3382,7 @@ async fn export_diagnostics() -> Result<DiagnosticsResult, String> {
 fn launch_client(client_id: String) -> Result<LaunchClientResult, String> {
     let dirs = agentdock_dirs()?;
     ensure_dirs(&dirs)?;
-    let clients = detect_clients();
+    let clients = refresh_client_detection();
     let client = clients
         .iter()
         .find(|client| client.id == client_id)
@@ -2726,6 +3414,13 @@ fn launch_client(client_id: String) -> Result<LaunchClientResult, String> {
         );
     }
 
+    #[cfg(target_os = "macos")]
+    if is_macos_app_bundle(Path::new(executable)) {
+        launch_macos_app_bundle(Path::new(executable))?;
+    } else {
+        launch_in_terminal(&dirs, &client_id, executable, &environment)?;
+    }
+    #[cfg(not(target_os = "macos"))]
     launch_in_terminal(&dirs, &client_id, executable, &environment)?;
 
     Ok(LaunchClientResult {
@@ -2735,6 +3430,26 @@ fn launch_client(client_id: String) -> Result<LaunchClientResult, String> {
             None => format!("已启动 {}", client.name),
         },
     })
+}
+
+#[cfg(target_os = "macos")]
+fn is_macos_app_bundle(path: &Path) -> bool {
+    path.is_dir()
+        && path.extension().and_then(|value| value.to_str()) == Some("app")
+        && path.join("Contents/Info.plist").is_file()
+}
+
+#[cfg(target_os = "macos")]
+fn launch_macos_app_bundle(path: &Path) -> Result<(), String> {
+    let status = Command::new("open")
+        .arg(path)
+        .status()
+        .map_err(|error| format!("无法启动 {}: {}", path.display(), error))?;
+    if status.success() {
+        Ok(())
+    } else {
+        Err(format!("启动 {} 失败: {}", path.display(), status))
+    }
 }
 
 fn antigravity_proxy_runtime_ready(executable: &str) -> bool {
@@ -3640,14 +4355,28 @@ fn mcp_stdio_command(
     Ok(command)
 }
 
-fn mcp_command_paths() -> Vec<PathBuf> {
+fn command_search_paths() -> Vec<PathBuf> {
     let mut paths = Vec::new();
     if let Some(home) = dirs_home() {
         paths.extend([
+            home.join(".grok/bin"),
             home.join(".local/bin"),
             home.join(".cargo/bin"),
             home.join(".npm-global/bin"),
+            home.join(".volta/bin"),
+            home.join(".bun/bin"),
+            home.join(".asdf/shims"),
+            home.join(".local/share/mise/shims"),
+            home.join(".local/share/pnpm"),
+            home.join("Library/pnpm"),
+            home.join("Library/Application Support/pnpm"),
         ]);
+        append_version_manager_bins(&mut paths, &home.join(".nvm/versions/node"), "bin");
+        append_version_manager_bins(
+            &mut paths,
+            &home.join(".local/share/fnm/node-versions"),
+            "installation/bin",
+        );
         #[cfg(windows)]
         paths.push(home.join("AppData/Roaming/npm"));
     }
@@ -3670,6 +4399,23 @@ fn mcp_command_paths() -> Vec<PathBuf> {
     let mut seen = HashSet::new();
     paths.retain(|path| seen.insert(path.clone()));
     paths
+}
+
+fn append_version_manager_bins(paths: &mut Vec<PathBuf>, root: &Path, suffix: &str) {
+    let Ok(entries) = fs::read_dir(root) else {
+        return;
+    };
+    let mut entries = entries
+        .flatten()
+        .map(|entry| entry.path())
+        .collect::<Vec<_>>();
+    entries.sort();
+    entries.reverse();
+    paths.extend(entries.into_iter().map(|path| path.join(suffix)));
+}
+
+fn mcp_command_paths() -> Vec<PathBuf> {
+    command_search_paths()
 }
 
 fn resolve_mcp_executable(dirs: &AgentDockDirs, paths: &[PathBuf], command: &str) -> PathBuf {
@@ -3879,7 +4625,7 @@ fn sync_mcp_servers() -> Result<SyncResult, String> {
     let servers = list_mcp_servers()?;
     let dirs = agentdock_dirs()?;
     let home = dirs_home().ok_or_else(|| "无法确定用户主目录".to_string())?;
-    let installed_apps = detect_clients()
+    let installed_apps = refresh_client_detection()
         .into_iter()
         .filter(|client| client.installed)
         .map(|client| client.id)
@@ -5175,6 +5921,8 @@ pub fn run() {
             save_app_settings,
             list_software_catalog,
             parse_provider_config,
+            detect_cc_switch_config,
+            import_cc_switch_config,
             fetch_provider_models,
             run_ready_check,
             list_providers,
@@ -5719,94 +6467,100 @@ fn replace_json_placeholder(value: &mut serde_json::Value, api_key: &str) {
 
 fn detect_clients() -> Vec<ClientStatus> {
     let managed = list_managed_clients().unwrap_or_default();
-    let managed_configs_dir = agentdock_dirs().ok().map(|dirs| dirs.managed_configs_dir);
     vec![
         detect_client(
             "codex",
             "Codex",
             &["codex"],
-            user_home_config(".codex/config.toml"),
-            managed_config_path(&managed_configs_dir, "codex"),
+            client_user_config_dir("codex"),
             &managed,
         ),
         detect_client(
             "claude-code",
             "Claude Code",
             &["claude"],
-            user_home_config(".claude/settings.json"),
-            managed_config_path(&managed_configs_dir, "claude-code"),
+            client_user_config_dir("claude-code"),
             &managed,
         ),
         detect_client(
             "claude-desktop",
             "Claude Desktop",
             &["claude-desktop", "Claude Desktop"],
-            claude_desktop_config_path(),
-            managed_config_path(&managed_configs_dir, "claude-desktop"),
+            client_user_config_dir("claude-desktop"),
             &managed,
         ),
         detect_client(
             "antigravity",
             "Antigravity CLI",
             &["agy"],
-            user_home_config(".agy"),
-            managed_config_path(&managed_configs_dir, "antigravity"),
+            client_user_config_dir("antigravity"),
             &managed,
         ),
         detect_client(
             "grok",
             "Grok",
             &["grok"],
-            user_home_config(".grok/config.toml"),
-            managed_config_path(&managed_configs_dir, "grok"),
+            client_user_config_dir("grok"),
             &managed,
         ),
         detect_client(
             "opencode",
             "OpenCode",
             &["opencode"],
-            user_home_config(".config/opencode/opencode.json"),
-            managed_config_path(&managed_configs_dir, "opencode"),
+            client_user_config_dir("opencode"),
             &managed,
         ),
         detect_client(
             "openclaw",
             "OpenClaw",
             &["openclaw"],
-            user_home_config(".openclaw/openclaw.json"),
-            managed_config_path(&managed_configs_dir, "openclaw"),
+            client_user_config_dir("openclaw"),
             &managed,
         ),
         detect_client(
             "hermes",
             "Hermes",
             &["hermes"],
-            user_home_config(".hermes/config.yaml"),
-            managed_config_path(&managed_configs_dir, "hermes"),
+            client_user_config_dir("hermes"),
             &managed,
         ),
     ]
+}
+
+fn client_detection_cache() -> &'static Mutex<Option<(Instant, Vec<ClientStatus>)>> {
+    CLIENT_DETECTION_CACHE.get_or_init(|| Mutex::new(None))
+}
+
+fn refresh_client_detection() -> Vec<ClientStatus> {
+    let clients = detect_clients();
+    if let Ok(mut cache) = client_detection_cache().lock() {
+        *cache = Some((Instant::now(), clients.clone()));
+    }
+    clients
+}
+
+fn cached_client_detection() -> Vec<ClientStatus> {
+    if let Ok(cache) = client_detection_cache().lock() {
+        if let Some((detected_at, clients)) = cache.as_ref() {
+            if detected_at.elapsed() < std::time::Duration::from_secs(30) {
+                return clients.clone();
+            }
+        }
+    }
+    refresh_client_detection()
 }
 
 fn detect_client(
     id: &str,
     name: &str,
     executable_names: &[&str],
-    config_path: Option<PathBuf>,
-    managed_config_path: Option<PathBuf>,
+    user_config_dir: Option<PathBuf>,
     managed_clients: &[ManagedClientRecord],
 ) -> ClientStatus {
     let managed = managed_clients
         .iter()
         .find(|client| client.id == id && client.installed && managed_client_is_runnable(client));
-    let external_executable = executable_names
-        .iter()
-        .find_map(|name| find_executable(name))
-        .map(|path| path.display().to_string());
-    let external_version = external_executable
-        .as_ref()
-        .and_then(|path| command_version(path).ok())
-        .filter(|version| !version.trim().is_empty());
+    let (external_executable, external_version) = detect_external_client(id, executable_names);
     let executable = managed
         .map(|client| client.launcher_path.clone())
         .or(external_executable);
@@ -5815,14 +6569,13 @@ fn detect_client(
         .or(external_version);
 
     let config_path = if managed.is_some() {
-        managed_config_path.and_then(|path| {
+        user_config_dir.and_then(|path| {
             fs::create_dir_all(&path).ok()?;
             Some(path.display().to_string())
         })
     } else {
-        config_path
-            .as_deref()
-            .and_then(existing_directory_for_path)
+        user_config_dir
+            .filter(|path| path.is_dir())
             .map(|path| path.display().to_string())
     };
 
@@ -5837,8 +6590,25 @@ fn detect_client(
     }
 }
 
-fn managed_config_path(root: &Option<PathBuf>, client_id: &str) -> Option<PathBuf> {
-    root.as_ref().map(|root| root.join(client_id))
+fn detect_external_client(id: &str, executable_names: &[&str]) -> (Option<String>, Option<String>) {
+    if let Some(path) = executable_names
+        .iter()
+        .find_map(|name| find_executable(name))
+    {
+        let executable = path.display().to_string();
+        let version = command_version(&executable)
+            .ok()
+            .filter(|value| !value.trim().is_empty());
+        return (Some(executable), version);
+    }
+
+    #[cfg(target_os = "macos")]
+    if let Some(bundle) = find_macos_client_app(id) {
+        let version = macos_app_bundle_version(&bundle);
+        return (Some(bundle.display().to_string()), version);
+    }
+
+    (None, None)
 }
 
 fn managed_client_is_runnable(client: &ManagedClientRecord) -> bool {
@@ -5852,10 +6622,13 @@ fn managed_client_is_runnable(client: &ManagedClientRecord) -> bool {
 }
 
 fn find_executable(name: &str) -> Option<PathBuf> {
-    let path_var = env::var_os("PATH")?;
+    find_executable_in_paths(name, &command_search_paths())
+}
+
+fn find_executable_in_paths(name: &str, paths: &[PathBuf]) -> Option<PathBuf> {
     let candidates = executable_candidates(name);
 
-    for dir in env::split_paths(&path_var) {
+    for dir in paths {
         for candidate in &candidates {
             let full_path = dir.join(candidate);
             if full_path.is_file() {
@@ -5865,6 +6638,43 @@ fn find_executable(name: &str) -> Option<PathBuf> {
     }
 
     None
+}
+
+#[cfg(target_os = "macos")]
+fn find_macos_client_app(id: &str) -> Option<PathBuf> {
+    let mut roots = vec![PathBuf::from("/Applications")];
+    if let Some(home) = dirs_home() {
+        roots.push(home.join("Applications"));
+    }
+    find_macos_client_app_in_roots(id, &roots)
+}
+
+#[cfg(target_os = "macos")]
+fn find_macos_client_app_in_roots(id: &str, roots: &[PathBuf]) -> Option<PathBuf> {
+    let app_names: &[&str] = match id {
+        "codex" => &["Codex.app"],
+        "claude-desktop" => &["Claude.app", "Claude Desktop.app"],
+        "opencode" => &["OpenCode.app", "OpenCode Desktop.app"],
+        "openclaw" => &["OpenClaw.app"],
+        _ => &[],
+    };
+    roots
+        .iter()
+        .flat_map(|root| app_names.iter().map(move |name| root.join(name)))
+        .find(|path| is_macos_app_bundle(path))
+}
+
+#[cfg(target_os = "macos")]
+fn macos_app_bundle_version(bundle: &Path) -> Option<String> {
+    let output = Command::new("/usr/libexec/PlistBuddy")
+        .args(["-c", "Print :CFBundleShortVersionString"])
+        .arg(bundle.join("Contents/Info.plist"))
+        .output()
+        .ok()?;
+    output
+        .status
+        .success()
+        .then(|| String::from_utf8_lossy(&output.stdout).trim().to_string())
 }
 
 fn executable_candidates(name: &str) -> Vec<OsString> {
@@ -5885,24 +6695,40 @@ fn executable_candidates(name: &str) -> Vec<OsString> {
 
 fn command_version(executable: &str) -> Result<String, String> {
     #[cfg(windows)]
-    let output = if executable.to_ascii_lowercase().ends_with(".cmd")
+    let mut command = if executable.to_ascii_lowercase().ends_with(".cmd")
         || executable.to_ascii_lowercase().ends_with(".bat")
     {
-        Command::new("cmd.exe")
-            .args(["/D", "/C", executable, "--version"])
-            .output()
-            .map_err(|err| err.to_string())?
+        let mut command = Command::new("cmd.exe");
+        command.args(["/D", "/C", executable, "--version"]);
+        command
     } else {
-        Command::new(executable)
-            .arg("--version")
-            .output()
-            .map_err(|err| err.to_string())?
+        let mut command = Command::new(executable);
+        command.arg("--version");
+        command
     };
     #[cfg(not(windows))]
-    let output = Command::new(executable)
-        .arg("--version")
-        .output()
-        .map_err(|err| err.to_string())?;
+    let mut command = {
+        let mut command = Command::new(executable);
+        command.arg("--version");
+        command
+    };
+    let mut search_paths = command_search_paths();
+    if let Some(parent) = Path::new(executable).parent() {
+        search_paths.insert(0, parent.to_path_buf());
+    }
+    if let Ok(path) = env::join_paths(search_paths) {
+        command.env("PATH", path);
+    }
+    let output = command_output_with_timeout(&mut command, std::time::Duration::from_secs(2))?;
+
+    if !output.status.success() {
+        let detail = first_line(String::from_utf8_lossy(&output.stderr).trim());
+        return Err(if detail.is_empty() {
+            format!("版本命令执行失败: {}", output.status)
+        } else {
+            detail
+        });
+    }
 
     let stdout = String::from_utf8_lossy(&output.stdout).trim().to_string();
     if !stdout.is_empty() {
@@ -5913,12 +6739,49 @@ fn command_version(executable: &str) -> Result<String, String> {
     Ok(first_line(&stderr))
 }
 
+fn command_output_with_timeout(
+    command: &mut Command,
+    timeout: std::time::Duration,
+) -> Result<std::process::Output, String> {
+    command.stdout(Stdio::piped()).stderr(Stdio::piped());
+    let mut child = command.spawn().map_err(|error| error.to_string())?;
+    let started = Instant::now();
+    loop {
+        match child.try_wait().map_err(|error| error.to_string())? {
+            Some(_) => return child.wait_with_output().map_err(|error| error.to_string()),
+            None if started.elapsed() >= timeout => {
+                let _ = child.kill();
+                let _ = child.wait();
+                return Err("读取客户端版本号超时".to_string());
+            }
+            None => std::thread::sleep(std::time::Duration::from_millis(20)),
+        }
+    }
+}
+
 fn first_line(value: &str) -> String {
     value.lines().next().unwrap_or_default().trim().to_string()
 }
 
-fn user_home_config(relative_path: &str) -> Option<PathBuf> {
-    dirs_home().map(|home| home.join(relative_path))
+fn client_user_config_dir(client_id: &str) -> Option<PathBuf> {
+    if client_id == "claude-desktop" {
+        return claude_desktop_config_path().and_then(|path| path.parent().map(Path::to_path_buf));
+    }
+    dirs_home().and_then(|home| client_user_config_dir_in(&home, client_id))
+}
+
+fn client_user_config_dir_in(home: &Path, client_id: &str) -> Option<PathBuf> {
+    let relative = match client_id {
+        "codex" => ".codex",
+        "claude-code" => ".claude",
+        "antigravity" => ".agy",
+        "grok" => ".grok",
+        "opencode" => ".config/opencode",
+        "openclaw" => ".openclaw",
+        "hermes" => ".hermes",
+        _ => return None,
+    };
+    Some(home.join(relative))
 }
 
 fn dirs_home() -> Option<PathBuf> {
@@ -6585,31 +7448,20 @@ async fn download_npm_native_client(
         ("https://registry.npmmirror.com", "npmmirror 国内镜像"),
         ("https://registry.npmjs.org", "npm 官方源"),
     ];
+    let latest_version = fetch_npm_latest_version(&client, root_package)
+        .await?
+        .ok_or_else(|| "无法获取最新版本".to_string())?;
+    let version = minimum_version
+        .filter(|minimum| version_is_newer(minimum, &latest_version))
+        .unwrap_or(&latest_version)
+        .to_string();
+    let platform_version = platform_version_suffix
+        .map(|suffix| format!("{}-{}", version, suffix))
+        .unwrap_or_else(|| version.clone());
     let mut errors = Vec::new();
 
     for (registry, source_name) in registries {
         let result = async {
-            let root_url = npm_metadata_url(registry, root_package, "latest");
-            let root_metadata: serde_json::Value = client
-                .get(&root_url)
-                .send()
-                .await
-                .map_err(|err| format!("查询版本失败: {}", err))?
-                .error_for_status()
-                .map_err(|err| format!("查询版本失败: {}", err))?
-                .json()
-                .await
-                .map_err(|err| format!("解析版本失败: {}", err))?;
-            let reported_version = root_metadata
-                .get("version")
-                .and_then(serde_json::Value::as_str)
-                .ok_or_else(|| "版本信息无效".to_string())?;
-            let version = minimum_version
-                .filter(|minimum| version_is_newer(minimum, reported_version))
-                .unwrap_or(reported_version);
-            let platform_version = platform_version_suffix
-                .map(|suffix| format!("{}-{}", version, suffix))
-                .unwrap_or_else(|| version.to_string());
             let metadata_url = npm_metadata_url(registry, platform_package, &platform_version);
             let metadata: serde_json::Value = client
                 .get(&metadata_url)
@@ -6639,7 +7491,14 @@ async fn download_npm_native_client(
                 decompress_grok_binary(target_dir)?;
             }
             let executable = find_client_executable(target_dir, client_id)?;
-            Ok::<_, String>((executable, version.to_string()))
+            let detected_version = command_version(&executable.display().to_string())?;
+            if version_is_newer(&version, &detected_version) {
+                return Err(format!(
+                    "安装包版本校验失败：期望 {}，实际 {}",
+                    version, detected_version
+                ));
+            }
+            Ok::<_, String>((executable, version.clone()))
         }
         .await;
 
@@ -7636,6 +8495,137 @@ fn now_rfc3339() -> String {
 mod tests {
     use super::*;
 
+    fn cc_switch_test_path(name: &str) -> PathBuf {
+        env::temp_dir().join(format!(
+            "agentdock-cc-switch-{}-{}-{}",
+            name,
+            std::process::id(),
+            OffsetDateTime::now_utc().unix_timestamp_nanos()
+        ))
+    }
+
+    #[test]
+    fn reads_cc_switch_sqlite_providers_in_read_only_mode() {
+        let path = cc_switch_test_path("database").with_extension("db");
+        let connection = rusqlite::Connection::open(&path).expect("create cc-switch fixture");
+        connection
+            .execute_batch(
+                "CREATE TABLE providers (
+                    id TEXT NOT NULL, app_type TEXT NOT NULL, name TEXT NOT NULL,
+                    settings_config TEXT NOT NULL, website_url TEXT, category TEXT,
+                    created_at INTEGER, sort_index INTEGER, notes TEXT, meta TEXT NOT NULL,
+                    is_current BOOLEAN NOT NULL DEFAULT 0,
+                    PRIMARY KEY (id, app_type)
+                );",
+            )
+            .expect("create providers table");
+        connection
+            .execute(
+                "INSERT INTO providers
+                 (id, app_type, name, settings_config, website_url, category, created_at, sort_index, notes, meta, is_current)
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, 1, 0, '', ?7, 1)",
+                rusqlite::params![
+                    "ark-plan",
+                    "claude",
+                    "火山 AgentPlan",
+                    r#"{"env":{"ANTHROPIC_BASE_URL":"https://ark.cn-beijing.volces.com/api/coding","ANTHROPIC_AUTH_TOKEN":"fixture-key","ANTHROPIC_MODEL":"ark-code-latest"}}"#,
+                    "https://www.volcengine.com/activity/codingplan",
+                    "cn_official",
+                    r#"{"apiFormat":"anthropic"}"#,
+                ],
+            )
+            .expect("insert provider");
+        drop(connection);
+
+        let providers = load_cc_switch_database(&path).expect("read cc-switch database");
+        assert_eq!(providers.len(), 1);
+        assert_eq!(providers[0].app_id, "claude-code");
+        assert!(providers[0].is_current);
+        assert_eq!(providers[0].name, "火山 AgentPlan");
+        let connection = rusqlite::Connection::open(&path).expect("reopen fixture");
+        let count: i64 = connection
+            .query_row("SELECT COUNT(*) FROM providers", [], |row| row.get(0))
+            .expect("count unchanged providers");
+        assert_eq!(count, 1);
+        drop(connection);
+        let _ = fs::remove_file(path);
+    }
+
+    #[test]
+    fn prepares_cc_switch_provider_without_leaking_its_key() {
+        let candidate = CcSwitchProviderCandidate {
+            source_id: "ark-plan".to_string(),
+            source_app: "claude".to_string(),
+            app_id: "claude-code".to_string(),
+            name: "火山 AgentPlan".to_string(),
+            settings_config: serde_json::json!({
+                "env": {
+                    "ANTHROPIC_BASE_URL": "https://ark.cn-beijing.volces.com/api/coding",
+                    "ANTHROPIC_AUTH_TOKEN": "fixture-key",
+                    "ANTHROPIC_MODEL": "ark-code-latest",
+                    "ANTHROPIC_DEFAULT_HAIKU_MODEL": "ark-code-latest",
+                    "ANTHROPIC_DEFAULT_SONNET_MODEL": "ark-code-latest",
+                    "ANTHROPIC_DEFAULT_OPUS_MODEL": "ark-code-latest"
+                }
+            }),
+            website_url: "https://www.volcengine.com/activity/codingplan".to_string(),
+            category: "cn_official".to_string(),
+            notes: String::new(),
+            meta: serde_json::json!({ "apiFormat": "anthropic" }),
+            is_current: true,
+        };
+
+        let prepared = prepare_cc_switch_provider(&candidate).expect("prepare provider");
+        assert_eq!(prepared.api_key.as_deref(), Some("fixture-key"));
+        assert!(!prepared.provider.settings_config.contains("fixture-key"));
+        assert!(prepared
+            .provider
+            .settings_config
+            .contains("${AGENTDOCK_API_KEY}"));
+        assert_eq!(prepared.provider.active_apps, vec!["claude-code"]);
+        assert_eq!(prepared.provider.claude_sonnet_model, "ark-code-latest");
+        assert_eq!(prepared.provider.claude_haiku_model, "ark-code-latest");
+        assert_eq!(prepared.provider.claude_opus_model, "ark-code-latest");
+        assert_eq!(prepared.provider.preset_id, "volcengine-agentplan");
+    }
+
+    #[test]
+    fn reads_legacy_cc_switch_json_and_builds_stable_ids() {
+        let path = cc_switch_test_path("legacy").with_extension("json");
+        fs::write(
+            &path,
+            r#"{
+              "version": 2,
+              "apps": {
+                "codex": {
+                  "current": "relay",
+                  "providers": {
+                    "relay": {
+                      "name": "Relay",
+                      "settingsConfig": {
+                        "auth": {"OPENAI_API_KEY": "fixture-key"},
+                        "config": "model_provider = \"custom\"\nmodel = \"gpt-test\"\n[model_providers.custom]\nbase_url = \"https://relay.example/v1\"\nwire_api = \"responses\""
+                      }
+                    }
+                  }
+                }
+              }
+            }"#,
+        )
+        .expect("write legacy fixture");
+        let providers = load_cc_switch_legacy_json(&path).expect("read legacy config");
+        assert_eq!(providers.len(), 1);
+        let first_id = cc_switch_provider_id(&providers[0]);
+        let second_id = cc_switch_provider_id(&providers[0]);
+        assert_eq!(first_id, second_id);
+        assert!(first_id.starts_with("cc-switch-codex-relay-"));
+        let prepared = prepare_cc_switch_provider(&providers[0]).expect("prepare legacy provider");
+        assert_eq!(prepared.provider.codex_model, "gpt-test");
+        assert_eq!(prepared.provider.api_format, "responses");
+        assert!(prepared.provider.active);
+        let _ = fs::remove_file(path);
+    }
+
     #[test]
     fn normalizes_general_settings_and_keeps_a_visible_client() {
         let mut settings = AppSettings::default();
@@ -8229,18 +9219,107 @@ requires_openai_auth = true"#;
             installed_at: now_rfc3339(),
             updated_at: now_rfc3339(),
         };
+        let user_config_dir = root.join(".agy");
         let status = detect_client(
             "antigravity",
             "Antigravity CLI",
             &["node"],
-            None,
-            None,
+            Some(user_config_dir.clone()),
             &[record],
         );
         assert_eq!(status.executable.as_deref(), launcher.to_str());
         assert_eq!(status.version.as_deref(), Some("1.1.3+gemini.0.40.0"));
+        assert_eq!(status.config_path.as_deref(), user_config_dir.to_str());
+        assert!(user_config_dir.is_dir());
         assert!(status.managed_by_agentdock);
         fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn finds_cli_clients_in_explicit_search_paths() {
+        let root = env::temp_dir().join(format!(
+            "agentdock-client-path-test-{}-{}",
+            std::process::id(),
+            OffsetDateTime::now_utc().unix_timestamp_nanos()
+        ));
+        let bin = root.join(".local/bin");
+        fs::create_dir_all(&bin).unwrap();
+        let executable = bin.join(if cfg!(windows) { "codex.exe" } else { "codex" });
+        fs::write(&executable, "test executable").unwrap();
+
+        assert_eq!(find_executable_in_paths("codex", &[bin]), Some(executable));
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn includes_official_grok_install_directory_in_command_paths() {
+        let home = dirs_home().expect("home directory should be available");
+        assert!(command_search_paths().contains(&home.join(".grok/bin")));
+    }
+
+    #[test]
+    fn maps_managed_clients_to_standard_user_config_directories() {
+        let home = Path::new("/Users/tester");
+        assert_eq!(
+            client_user_config_dir_in(home, "antigravity"),
+            Some(home.join(".agy"))
+        );
+        assert_eq!(
+            client_user_config_dir_in(home, "grok"),
+            Some(home.join(".grok"))
+        );
+        assert_eq!(
+            client_user_config_dir_in(home, "opencode"),
+            Some(home.join(".config/opencode"))
+        );
+    }
+
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn detects_supported_macos_client_app_bundles() {
+        let root = env::temp_dir().join(format!(
+            "agentdock-client-app-test-{}-{}",
+            std::process::id(),
+            OffsetDateTime::now_utc().unix_timestamp_nanos()
+        ));
+        let bundle = root.join("Codex.app");
+        fs::create_dir_all(bundle.join("Contents")).unwrap();
+        fs::write(bundle.join("Contents/Info.plist"), "test plist").unwrap();
+
+        assert_eq!(
+            find_macos_client_app_in_roots("codex", std::slice::from_ref(&root)),
+            Some(bundle)
+        );
+        assert_eq!(
+            find_macos_client_app_in_roots("grok", std::slice::from_ref(&root)),
+            None
+        );
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn client_version_probe_returns_output() {
+        let mut command = Command::new("sh");
+        command.args(["-c", "printf 'client 1.2.3'"]);
+        let output =
+            command_output_with_timeout(&mut command, std::time::Duration::from_millis(500))
+                .unwrap();
+
+        assert_eq!(String::from_utf8_lossy(&output.stdout), "client 1.2.3");
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn client_version_probe_has_a_timeout() {
+        let mut command = Command::new("sh");
+        command.args(["-c", "while :; do :; done"]);
+        let started = Instant::now();
+        let result =
+            command_output_with_timeout(&mut command, std::time::Duration::from_millis(40));
+
+        assert!(result.is_err());
+        assert!(started.elapsed() < std::time::Duration::from_millis(500));
     }
 
     #[test]
@@ -8523,6 +9602,29 @@ requires_openai_auth = true"#;
             .expect("managed Gemini CLI should launch");
         assert!(output.status.success());
         assert_eq!(String::from_utf8_lossy(&output.stdout).trim(), "0.40.0");
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[tokio::test]
+    #[ignore = "downloads the current official Grok platform package"]
+    async fn downloads_current_grok_bundle() {
+        let root = env::temp_dir().join(format!(
+            "agentdock-grok-download-test-{}",
+            std::process::id()
+        ));
+        if root.exists() {
+            fs::remove_dir_all(&root).unwrap();
+        }
+        fs::create_dir_all(&root).unwrap();
+
+        let (launcher, version, message) = download_grok_from_npm(&root)
+            .await
+            .expect("Grok platform bundle should download");
+        let detected = command_version(launcher.to_string_lossy().as_ref())
+            .expect("downloaded Grok should report a version");
+        assert!(version_is_newer(&version, "0.2.101"));
+        assert!(detected.contains(&version));
+        assert!(message.contains("SHA-512"));
         fs::remove_dir_all(root).unwrap();
     }
 
