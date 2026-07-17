@@ -466,6 +466,7 @@ const rows = [
   ,["action.skillsSynced", "Skills 已同步", "Skills synchronized", "Skills を同期しました", "Skills synchronisiert"]
   ,["action.mcpDeleted", "{name} 已刪除", "{name} deleted", "{name} を削除しました", "{name} gelöscht"]
   ,["action.mcpSynced", "MCP 設定已同步", "MCP configuration synchronized", "MCP 設定を同期しました", "MCP-Konfiguration synchronisiert"]
+  ,["客户端不支持", "客戶端不支援", "Unsupported by client", "クライアント未対応", "Vom Client nicht unterstützt"]
   ,["本机服务连接失败", "本機服務連線失敗", "Local service connection failed", "ローカルサービスへの接続に失敗しました", "Verbindung zum lokalen Dienst fehlgeschlagen"]
 ];
 

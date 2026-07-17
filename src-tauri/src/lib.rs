@@ -1029,8 +1029,20 @@ fn parse_provider_config_text(app_id: &str, content: &str) -> Result<ParsedProvi
     Ok(result)
 }
 
+fn antigravity_custom_provider_error() -> String {
+    "Antigravity CLI 仅支持 Google 登录，不能使用自定义 URL 或 API Key".to_string()
+}
+
+fn ensure_provider_supported_for_app(provider_type: &str, app_id: &str) -> Result<(), String> {
+    if app_id == "antigravity" && provider_type.trim() != "official" {
+        return Err(antigravity_custom_provider_error());
+    }
+    Ok(())
+}
+
 #[tauri::command]
 fn parse_provider_config(app_id: String, content: String) -> Result<ParsedProviderConfig, String> {
+    ensure_provider_supported_for_app("custom", &app_id)?;
     parse_provider_config_text(&app_id, &content)
 }
 
@@ -1043,6 +1055,15 @@ async fn fetch_provider_models(
 ) -> Result<ProviderModelsResult, String> {
     let fallback = fallback_models(&app_id);
     let normalized_url = normalize_base_url(&base_url);
+    if app_id == "antigravity"
+        && (!normalized_url.is_empty()
+            || api_key
+                .as_deref()
+                .map(str::trim)
+                .is_some_and(|key| !key.is_empty()))
+    {
+        return Err(antigravity_custom_provider_error());
+    }
     if normalized_url.is_empty() {
         return Ok(ProviderModelsResult {
             models: fallback,
@@ -1236,14 +1257,6 @@ fn save_provider(input: ProviderInput) -> Result<ProviderProfile, String> {
         .map(|provider| provider.created_at.clone())
         .unwrap_or_else(|| now.clone());
 
-    if let Some(api_key) = input.api_key.as_ref() {
-        let api_key = api_key.trim();
-        if !api_key.is_empty() {
-            secrets.insert(provider_id.clone(), api_key.to_string());
-            write_provider_secrets(&dirs, &secrets)?;
-        }
-    }
-
     let enabled_apps = input.enabled_apps.unwrap_or_else(|| {
         existing
             .as_ref()
@@ -1260,6 +1273,16 @@ fn save_provider(input: ProviderInput) -> Result<ProviderProfile, String> {
                 .unwrap_or_default()
         }
     });
+    for app_id in enabled_apps.iter().chain(active_apps.iter()) {
+        ensure_provider_supported_for_app(&input.provider_type, app_id)?;
+    }
+    if let Some(api_key) = input.api_key.as_ref() {
+        let api_key = api_key.trim();
+        if !api_key.is_empty() {
+            secrets.insert(provider_id.clone(), api_key.to_string());
+            write_provider_secrets(&dirs, &secrets)?;
+        }
+    }
     let mut raw_settings_config = input.settings_config.unwrap_or_else(|| {
         existing
             .as_ref()
@@ -1333,6 +1356,11 @@ fn activate_provider(provider_id: String, app_id: String) -> Result<ProviderProf
     ensure_dirs(&dirs)?;
     let mut providers = list_providers()?;
     let mut selected = None;
+    let candidate = providers
+        .iter()
+        .find(|provider| provider.id == provider_id)
+        .ok_or_else(|| "未找到供应商".to_string())?;
+    ensure_provider_supported_for_app(&candidate.provider_type, &app_id)?;
 
     for provider in &mut providers {
         provider.active_apps.retain(|app| app != &app_id);
@@ -1619,6 +1647,9 @@ async fn test_provider(provider_id: String) -> Result<ProviderTestResult, String
         .into_iter()
         .find(|provider| provider.id == provider_id)
         .ok_or_else(|| "未找到供应商".to_string())?;
+    if provider.enabled_apps.iter().any(|app| app == "antigravity") {
+        ensure_provider_supported_for_app(&provider.provider_type, "antigravity")?;
+    }
     if provider.provider_type == "official" {
         return Ok(ProviderTestResult {
             ok: true,
@@ -1767,6 +1798,7 @@ fn apply_provider_for_app(
     if !supported_provider_apps().contains(&app_id) {
         return Err("不支持的客户端".to_string());
     }
+    ensure_provider_supported_for_app(&provider.provider_type, app_id)?;
     if provider.provider_type == "official" {
         return Ok(ApplyProviderResult {
             provider_id: provider.id.clone(),
@@ -2375,6 +2407,7 @@ fn provider_launch_environment(
     provider: &ProviderProfile,
 ) -> Result<BTreeMap<String, String>, String> {
     let mut environment = BTreeMap::new();
+    ensure_provider_supported_for_app(&provider.provider_type, app_id)?;
     if provider.provider_type == "official" {
         return Ok(environment);
     }
@@ -7414,6 +7447,15 @@ requires_openai_auth = true"#;
         assert_eq!(antigravity.api_key.as_deref(), Some("gem-key"));
         assert_eq!(antigravity.model.as_deref(), Some("gemini-test"));
         assert_eq!(antigravity.api_format.as_deref(), Some("gemini"));
+    }
+
+    #[test]
+    fn antigravity_only_accepts_official_google_login() {
+        let error = ensure_provider_supported_for_app("gemini", "antigravity")
+            .expect_err("custom Antigravity providers must be rejected");
+        assert!(error.contains("Google 登录"));
+        assert!(ensure_provider_supported_for_app("official", "antigravity").is_ok());
+        assert!(ensure_provider_supported_for_app("gemini", "codex").is_ok());
     }
 
     #[test]

@@ -17,7 +17,7 @@
 
 AgentDock 用一个原生桌面程序完成 AI 编程客户端、供应商、Skills 和 MCP 服务器的安装与管理。它面向希望直接使用 Codex、Claude Code、Grok 等智能代理，但不想手动安装运行时或编辑 JSON、TOML、环境变量文件的用户。
 
-> AgentDock `0.1.12` 仍处于早期预览阶段。使用供应商切换或 MCP 同步前，请保留重要客户端配置的备份。
+> AgentDock `0.1.13` 仍处于早期预览阶段。使用供应商切换或 MCP 同步前，请保留重要客户端配置的备份。
 
 ## 为什么选择 AgentDock？
 
@@ -81,7 +81,7 @@ AgentDock 把新手流程放在首位：
 | --- | :---: | :---: | :---: | :---: |
 | Codex | 是 | 是 | 是 | 是 |
 | Claude Code | 是 | 是 | 是 | 是 |
-| Antigravity CLI (Agy) | 是 | 是 | 是 | 是 |
+| Antigravity CLI (Agy) | 是 | 是 | 仅官方登录 | 是 |
 | Grok | 是 | 是 | 是 | 是 |
 | OpenCode | 是 | 是 | 是 | 是 |
 | OpenClaw | 是 | 是 | 是 | 是 |

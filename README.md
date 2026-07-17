@@ -17,7 +17,7 @@ English | [简体中文](README_ZH.md) | [日本語](README_JA.md) | [Deutsch](R
 
 AgentDock installs and manages AI coding clients, providers, Skills, and MCP servers from one native desktop app. It is designed for users who want to start with Codex, Claude Code, Grok, or other agents without manually installing runtimes or editing JSON, TOML, and environment files.
 
-> AgentDock `0.1.12` is an early preview. Keep a backup of important client configuration before using provider switching or MCP synchronization.
+> AgentDock `0.1.13` is an early preview. Keep a backup of important client configuration before using provider switching or MCP synchronization.
 
 ## Why AgentDock?
 
@@ -81,7 +81,7 @@ No separate Node.js, npm, Python, or manual configuration is required for end us
 | --- | :---: | :---: | :---: | :---: |
 | Codex | Yes | Yes | Yes | Yes |
 | Claude Code | Yes | Yes | Yes | Yes |
-| Antigravity CLI (Agy) | Yes | Yes | Yes | Yes |
+| Antigravity CLI (Agy) | Yes | Yes | Official login only | Yes |
 | Grok | Yes | Yes | Yes | Yes |
 | OpenCode | Yes | Yes | Yes | Yes |
 | OpenClaw | Yes | Yes | Yes | Yes |

@@ -663,15 +663,15 @@
                 <label class="field"><span>备注</span><input name="provider-notes" placeholder="例如：公司专用账号" /></label>
                 <label class="field full" id="base-url-field"><span>请求地址</span><input name="provider-base-url" type="url" placeholder="https://api.example.com/v1" /></label>
                 <label class="field full key-field" id="api-key-field"><span>API Key</span><input name="provider-api-key" type="password" autocomplete="off" placeholder="编辑时留空会保留已有密钥" /><button class="icon-btn" type="button" data-action="toggle-api-key" title="显示或隐藏 API Key" aria-label="显示或隐藏 API Key"><i data-lucide="eye"></i></button></label>
-                <label class="field provider-control-pair"><span>默认模型</span><div class="model-control"><select name="provider-model" aria-label="默认模型"><option value="">正在读取模型</option></select><button class="icon-btn" type="button" data-action="refresh-models" title="刷新模型列表" aria-label="刷新模型列表"><i data-lucide="refresh-cw"></i></button></div><small class="model-source" id="model-source">按客户端读取推荐模型</small></label>
-                <label class="field provider-control-pair"><span>API 协议</span><select name="provider-api-format"><option value="auto">自动识别</option><option value="responses">OpenAI Responses</option><option value="chat-completions">Chat Completions</option><option value="anthropic">Anthropic Messages</option><option value="gemini">Gemini Native</option></select><small class="model-source" aria-hidden="true">&nbsp;</small></label>
-                <details class="advanced-config"><summary>高级模型映射</summary><div class="form-grid">
+                <label class="field provider-control-pair" id="provider-model-field"><span>默认模型</span><div class="model-control"><select name="provider-model" aria-label="默认模型"><option value="">正在读取模型</option></select><button class="icon-btn" type="button" data-action="refresh-models" title="刷新模型列表" aria-label="刷新模型列表"><i data-lucide="refresh-cw"></i></button></div><small class="model-source" id="model-source">按客户端读取推荐模型</small></label>
+                <label class="field provider-control-pair" id="provider-api-format-field"><span>API 协议</span><select name="provider-api-format"><option value="auto">自动识别</option><option value="responses">OpenAI Responses</option><option value="chat-completions">Chat Completions</option><option value="anthropic">Anthropic Messages</option><option value="gemini">Gemini Native</option></select><small class="model-source" aria-hidden="true">&nbsp;</small></label>
+                <details class="advanced-config" id="advanced-model-fields"><summary>高级模型映射</summary><div class="form-grid">
                   <label class="field full"><span>Codex 模型</span><input name="advanced-codex-model" /></label>
                   <label class="field"><span>Claude Sonnet</span><input name="advanced-claude-sonnet" /></label>
                   <label class="field"><span>Claude Haiku</span><input name="advanced-claude-haiku" /></label>
                   <label class="field full"><span>Claude Opus</span><input name="advanced-claude-opus" /></label>
                 </div></details>
-                <section class="config-content" aria-labelledby="config-content-title">
+                <section class="config-content" id="provider-config-content" aria-labelledby="config-content-title">
                   <div class="config-content-head"><div><h4 id="config-content-title">配置文件内容</h4><p>保存后将按此内容生成客户端配置，粘贴现有配置会自动识别地址和密钥</p></div><div class="config-content-actions"><span class="badge config-import-status" id="config-import-status" hidden></span><span class="badge" id="config-edit-state">自动生成</span><button class="btn text" type="button" data-action="reset-provider-config"><i data-lucide="rotate-ccw"></i>从表单重新生成</button></div></div>
                   <div class="config-files" id="config-files">
                     <label class="config-file auth" id="provider-auth-config-field"><span><b>认证配置</b><code id="provider-auth-filename">auth.json</code></span><textarea name="provider-auth-config" spellcheck="false" aria-label="认证配置内容"></textarea></label>
@@ -875,20 +875,7 @@
         { id: "packycode", name: "PackyCode", short: "PK", type: "openai", baseUrl: "https://www.packyapi.com/v1", model: "gpt-5.5", website: "https://www.packyapi.com", format: "responses", category: "aggregator" }
       ],
       antigravity: [
-        ...COMMON_PRESETS,
-        { id: "google-official", name: "Google Official", short: "GO", type: "official", baseUrl: "", model: "gemini-3.1-pro", website: "https://ai.google.dev", format: "gemini", category: "official" },
-        { id: "shengsuanyun", name: "Shengsuanyun", short: "SS", type: "gemini", baseUrl: "https://router.shengsuanyun.com/api", model: "google/gemini-3.5-flash", website: "https://www.shengsuanyun.com", format: "gemini", category: "aggregator" },
-        { id: "unity2", name: "Unity2.ai", short: "U2", type: "gemini", baseUrl: "https://api.unity2.ai", model: "gemini-3.1-pro", website: "https://unity2.ai", format: "gemini", category: "aggregator" },
-        { id: "subrouter", name: "SubRouter", short: "SR", type: "gemini", baseUrl: "https://subrouter.ai/v1beta", model: "gemini-3.5-flash", website: "https://subrouter.ai", format: "gemini", category: "aggregator" },
-        { id: "qiniu", name: "Qiniu", short: "QN", type: "gemini", baseUrl: "https://api.qnaigc.com/bypass/vertex", model: "gemini-3.1-pro-preview", website: "https://s.qiniu.com/nMvAvy", format: "gemini", category: "aggregator" },
-        { id: "code0", name: "Code0", short: "C0", type: "gemini", baseUrl: "https://code0.ai", model: "gemini-3.1-pro-preview", website: "https://code0.ai", format: "gemini", category: "aggregator" },
-        { id: "packycode", name: "PackyCode", short: "PK", type: "gemini", baseUrl: "https://www.packyapi.com", model: "gemini-3.5-flash", website: "https://www.packyapi.com", format: "gemini", category: "third_party" },
-        { id: "apikey-fun", name: "APIKEY.FUN", short: "AF", type: "gemini", baseUrl: "https://api.apikey.fun", model: "gemini-3.5-flash", website: "https://apikey.fun", format: "gemini", category: "third_party" },
-        { id: "apinebula", name: "APINebula", short: "AN", type: "gemini", baseUrl: "https://apinebula.com", model: "gemini-3.5-flash", website: "https://apinebula.com", format: "gemini", category: "third_party" },
-        { id: "cubence", name: "Cubence", short: "CU", type: "gemini", baseUrl: "https://api.cubence.com", model: "gemini-3.5-flash", website: "https://cubence.com", format: "gemini", category: "third_party" },
-        { id: "aigocode", name: "AIGoCode", short: "AG", type: "gemini", baseUrl: "https://api.aigocode.com", model: "gemini-3.5-flash", website: "https://aigocode.com", format: "gemini", category: "third_party" },
-        { id: "aicodemirror", name: "AICodeMirror", short: "AM", type: "gemini", baseUrl: "https://api.aicodemirror.com/api/gemini", model: "gemini-3.5-flash", website: "https://www.aicodemirror.com", format: "gemini", category: "third_party" },
-        { id: "openrouter", name: "OpenRouter", short: "OR", type: "gemini", baseUrl: "https://openrouter.ai/api", model: "gemini-3.5-flash", website: "https://openrouter.ai", format: "gemini", category: "aggregator" }
+        { id: "google-official", name: "Google Official", short: "GO", type: "official", baseUrl: "", model: "", website: "https://antigravity.google", format: "auto", category: "official" }
       ],
       "claude-desktop": COMMON_PRESETS,
       opencode: COMMON_PRESETS,
@@ -953,7 +940,7 @@
 
     const mock = {
       status: {
-        appVersion: "0.1.12", platform: "browser-preview", dataDir: "/AgentDock/data", configDir: "/AgentDock/config", managedRuntimeReady: true,
+        appVersion: "0.1.13", platform: "browser-preview", dataDir: "/AgentDock/data", configDir: "/AgentDock/config", managedRuntimeReady: true,
         clients: APP_ORDER.map((id) => { const installed = ["codex", "claude-desktop"].includes(id); return { id, name: APP_META[id].name, installed, version: installed ? id === "codex" ? "0.91.0" : "detected" : null, executable: installed ? `/Applications/${id}` : null, configPath: installed ? `/AgentDock/${id}/config` : null, managedByAgentdock: id === "codex" }; })
       },
       settings: { language: "zh-CN", theme: "system", launchOnStartup: false, silentStartup: false, minimizeToTrayOnClose: false, preferredTerminal: "terminal", visibleClients: [...APP_ORDER], clientOrder: [...APP_ORDER], skillStorageLocation: "agentdock", skillSyncMethod: "copy" },
@@ -1053,7 +1040,7 @@
       if (command === "run_diagnostics") return {
         generatedAt: new Date().toISOString(), score: 90, passed: 6, warnings: 2, failed: 0,
         checks: [
-          { id: "system-platform", category: "系统", status: "pass", title: "桌面运行环境", detail: "AgentDock 0.1.12 · macOS arm64", action: "" },
+          { id: "system-platform", category: "系统", status: "pass", title: "桌面运行环境", detail: "AgentDock 0.1.13 · macOS arm64", action: "" },
           { id: "system-data-dir", category: "系统", status: "pass", title: "数据目录可写", detail: "/AgentDock/data", action: "" },
           { id: "client-claude", category: "客户端", status: "pass", title: "Claude Desktop 可正常启动", detail: "1.0.2 · 系统安装", action: "" },
           { id: "client-codex", category: "客户端", status: "warning", title: "Codex 尚未安装", detail: "这是推荐客户端，可由 AgentDock 自动安装", action: "前往客户端页面点击一键安装" },
@@ -1126,19 +1113,24 @@
       const walker = document.createTreeWalker(root, NodeFilter.SHOW_TEXT);
       for (let node = walker.nextNode(); node; node = walker.nextNode()) {
         if (node.parentElement?.closest(userContentSelector)) continue;
-        const source = literalTextSources.get(node) ?? node.nodeValue;
-        literalTextSources.set(node, source);
+        const current = node.nodeValue;
+        const previous = literalTextSources.get(node);
+        const source = previous && current === previous.rendered ? previous.source : current;
         const value = source.trim(); if (!value) continue;
         const translated = tr(value, value);
-        if (translated !== value || node.nodeValue === source) node.nodeValue = source.replace(value, translated);
+        const rendered = source.replace(value, translated);
+        node.nodeValue = rendered;
+        literalTextSources.set(node, { source, rendered });
       }
       for (const element of root.querySelectorAll("[placeholder], [title], [aria-label]")) {
         if (element.closest(userContentSelector)) continue;
         const sources = literalAttributeSources.get(element) || {};
         for (const attribute of ["placeholder", "title", "aria-label"]) {
           if (!element.hasAttribute(attribute)) continue;
-          const current = element.getAttribute(attribute); const source = sources[attribute] ?? current; const translated = tr(source, source);
-          sources[attribute] = source; if (translated !== source || current === source) element.setAttribute(attribute, translated);
+          const current = element.getAttribute(attribute); const previous = sources[attribute];
+          const source = previous && current === previous.rendered ? previous.source : current;
+          const rendered = tr(source, source);
+          element.setAttribute(attribute, rendered); sources[attribute] = { source, rendered };
         }
         literalAttributeSources.set(element, sources);
       }
@@ -1259,7 +1251,8 @@
       const query = state.contextQuery.trim().toLowerCase();
       return !query || values.some((value) => String(value || "").toLowerCase().includes(query));
     };
-    const providerDefaultModel = (provider, app = state.activeClient) => app === "antigravity" ? provider.geminiModel : app.startsWith("claude") ? provider.claudeSonnetModel : provider.codexModel || provider.defaultModel;
+    const providerSupportedForClient = (provider, app = state.activeClient) => app !== "antigravity" || provider.providerType === "official";
+    const providerDefaultModel = (provider, app = state.activeClient) => app === "antigravity" ? tr("跟随客户端", "跟随客户端") : app.startsWith("claude") ? provider.claudeSonnetModel : provider.codexModel || provider.defaultModel;
     function sourceFilterButton(id, label, iconName, count, active, action) {
       return `<button class="source-filter ${active ? "active" : ""}" data-action="${action}" data-id="${id}"><i data-lucide="${iconName}"></i><span>${label}</span>${count === undefined ? "" : `<b>${count}</b>`}</button>`;
     }
@@ -1339,9 +1332,10 @@
       const stage = document.getElementById("client-stage"); const client = selectedClient(); const meta = clientMeta(state.activeClient);
       if (!client) { stage.innerHTML = `<div class="client-empty">${tr("正在检测客户端", "正在检测客户端")}</div>`; return; }
       const providers = state.providers.filter((provider) => provider.enabledApps?.includes(state.activeClient));
+      const usableProviders = providers.filter((provider) => providerSupportedForClient(provider));
       const catalog = state.softwareCatalog.find((item) => item.clientId === client.id);
       const installing = state.inFlightOperations.has(`install-client:${client.id}`);
-      const currentProvider = providers.find((provider) => provider.activeApps?.includes(state.activeClient));
+      const currentProvider = usableProviders.find((provider) => provider.activeApps?.includes(state.activeClient));
       const enabledMcp = state.mcpServers.filter((server) => server.enabled && server.apps?.includes(state.activeClient)).length;
       const currentModel = currentProvider ? providerDefaultModel(currentProvider) || tr("跟随客户端", "跟随客户端") : tr("尚未配置", "尚未配置");
       const clientName = escapeHtml(meta.name);
@@ -1355,7 +1349,7 @@
         <div class="client-stage-head"><div class="client-identity">${clientLogo(client.id)}<div><h3>${clientName}</h3><p>${client.installed ? `${escapeHtml(client.version || tr("已安装", "已安装"))}${client.managedByAgentdock ? tr("client.managed", " · AgentDock 托管") : tr("client.systemInstall", " · 本机安装")}` : tr("未检测到可执行程序", "未检测到可执行程序")}</p></div></div><div class="client-stage-actions">${clientActions}</div></div>
         <section class="client-readiness" aria-label="${tr("客户端就绪状态", "客户端就绪状态")}">
           <div class="readiness-item"><span class="readiness-icon ${client.installed ? "" : "muted"}"><i data-lucide="${client.installed ? "circle-check" : "circle-dashed"}"></i></span><div><strong>${client.installed ? tr("客户端可用", "客户端可用") : tr("等待安装", "等待安装")}</strong><small>${client.installed ? tr("可执行文件与配置目录已检测", "可执行文件与配置目录已检测") : tr("安装时会自动处理下载源和依赖", "安装时会自动处理下载源和依赖")}</small></div></div>
-          <div class="readiness-item"><span class="readiness-icon ${providers.length ? "" : "warn"}"><i data-lucide="key-round"></i></span><div><strong>${trf("count.providers", "{count} 个供应商", { count: providers.length })}</strong><small>${currentProvider ? trf("provider.current", "当前使用 {name}", { name: escapeHtml(currentProvider.name) }) : tr("添加供应商后即可调用模型", "添加供应商后即可调用模型")}</small></div></div>
+          <div class="readiness-item"><span class="readiness-icon ${usableProviders.length ? "" : "warn"}"><i data-lucide="key-round"></i></span><div><strong>${trf("count.providers", "{count} 个供应商", { count: usableProviders.length })}</strong><small>${currentProvider ? trf("provider.current", "当前使用 {name}", { name: escapeHtml(currentProvider.name) }) : tr("添加供应商后即可调用模型", "添加供应商后即可调用模型")}</small></div></div>
           <div class="readiness-item"><span class="readiness-icon ${enabledMcp ? "" : "muted"}"><i data-lucide="blocks"></i></span><div><strong>${trf("count.mcp", "{count} 个 MCP", { count: enabledMcp })}</strong><small>${enabledMcp ? trf("mcp.syncedTo", "已同步到 {name}", { name: clientName }) : tr("可在 MCP 页面启用扩展工具", "可在 MCP 页面启用扩展工具")}</small></div></div>
         </section>
         ${client.installed ? `<section class="client-section"><div class="provider-section-head"><div><h3>${tr("供应商", "供应商")}</h3><p>${providers.length ? trf("provider.configured", "已配置 {count} 个，使用操作会立即写入 {name}", { count: providers.length, name: clientName }) : tr("还没有配置供应商", "还没有配置供应商")}</p></div><button class="btn primary" data-action="open-provider-editor"><i data-lucide="plus"></i>${tr("添加供应商", "添加供应商")}</button></div><div class="provider-list" id="provider-list">${providerCards(providers)}</div></section><section class="client-config-summary"><header><div><h3>${tr("配置摘要", "配置摘要")}</h3><p>${tr("由 AgentDock 管理并写入真实客户端配置", "由 AgentDock 管理并写入真实客户端配置")}</p></div>${client.configPath ? `<button class="btn text" data-action="open-path" data-path="${escapeHtml(client.configPath)}"><i data-lucide="external-link"></i>${tr("查看完整文件", "查看完整文件")}</button>` : `<span class="badge">${tr("等待生成", "等待生成")}</span>`}</header><div class="client-config-values"><span><small>${tr("配置位置", "配置位置")}</small><code>${escapeHtml(client.configPath || tr("安装后自动创建", "安装后自动创建"))}</code></span><span><small>${tr("默认模型", "默认模型")}</small><code>${escapeHtml(currentModel)}</code></span><span><small>${tr("API 协议", "API 协议")}</small><code>${escapeHtml(currentProvider?.apiFormat || tr("跟随供应商", "跟随供应商"))}</code></span></div></section>` : `<div class="client-empty"><div><span class="empty-symbol"><i data-lucide="download"></i></span><h3>${trf("client.notInstalled", "{name} 尚未安装", { name: clientName })}</h3><p>${meta.autoInstall ? tr("AgentDock 会优先使用国内可用镜像，自动回退备用源并校验官方包完整性。", "AgentDock 会优先使用国内可用镜像，自动回退备用源并校验官方包完整性。") : tr("安装后重新扫描即可配置供应商。", "安装后重新扫描即可配置供应商。")}</p>${meta.autoInstall ? `<button class="btn primary" data-action="install-client" data-id="${client.id}"><i data-lucide="download"></i>${tr("一键安装", "一键安装")}</button>` : ""}</div></div>`}
@@ -1388,11 +1382,14 @@
     function providerCards(providers) {
       if (!providers.length) return `<div class="empty"><div>${trf("provider.empty", "还没有为 {name} 配置供应商", { name: escapeHtml(clientMeta(state.activeClient).name) })}</div><button class="btn primary" data-action="open-provider-editor"><i data-lucide="plus"></i>${tr("添加供应商", "添加供应商")}</button></div>`;
       return providers.map((provider) => {
-        const current = provider.activeApps?.includes(state.activeClient); const preset = findPreset(provider.presetId); const short = preset?.short || provider.name.slice(0, 2).toUpperCase(); const model = providerDefaultModel(provider) || tr("跟随客户端", "跟随客户端");
+        const unsupported = !providerSupportedForClient(provider); const current = !unsupported && provider.activeApps?.includes(state.activeClient); const preset = findPreset(provider.presetId); const short = preset?.short || provider.name.slice(0, 2).toUpperCase(); const model = providerDefaultModel(provider) || tr("跟随客户端", "跟随客户端");
         const logoPreset = preset || { name: provider.name, short };
         const name = escapeHtml(provider.name);
         const notes = provider.id === "packycode-preview" ? tr(provider.notes, provider.notes) : provider.notes;
-        return `<article class="provider-card ${current ? "current" : ""}"><div class="provider-main">${providerLogoMarkup(logoPreset)}<div class="provider-copy"><div class="provider-name-line"><strong>${name}</strong>${current ? `<span class="badge ok">${tr("当前使用", "当前使用")}</span>` : ""}<span class="badge ${provider.providerType === "official" || provider.apiKeyConfigured ? "" : "warn"}">${provider.providerType === "official" ? tr("客户端登录", "客户端登录") : provider.apiKeyConfigured ? tr("密钥已保存", "密钥已保存") : tr("缺少密钥", "缺少密钥")}</span></div><p>${escapeHtml(notes || provider.baseUrl || tr("官方直连", "官方直连"))}</p></div></div><div class="provider-model"><small>${tr("默认模型", "默认模型")}</small><code title="${escapeHtml(model)}">${escapeHtml(model)}</code></div><div class="row-actions">${current ? `<button class="btn text" data-action="activate-provider" data-id="${provider.id}"><i data-lucide="refresh-cw"></i>${tr("重新应用", "重新应用")}</button>` : `<button class="btn primary" data-action="activate-provider" data-id="${provider.id}">${tr("使用", "使用")}</button>`}<button class="icon-btn" data-action="test-provider" data-id="${provider.id}" title="${tr("测试连接", "测试连接")}" aria-label="${trf("provider.test", "测试 {name}", { name })}"><i data-lucide="activity"></i></button><button class="icon-btn" data-action="edit-provider" data-id="${provider.id}" title="${tr("编辑", "编辑")}" aria-label="${trf("provider.edit", "编辑 {name}", { name })}"><i data-lucide="pencil"></i></button><button class="icon-btn" data-action="delete-provider" data-id="${provider.id}" title="${tr("删除", "删除")}" aria-label="${trf("provider.delete", "删除 {name}", { name })}"><i data-lucide="trash-2"></i></button></div></article>`;
+        const deleteAction = `<button class="icon-btn" data-action="delete-provider" data-id="${provider.id}" title="${tr("删除", "删除")}" aria-label="${trf("provider.delete", "删除 {name}", { name })}"><i data-lucide="trash-2"></i></button>`;
+        const actions = unsupported ? deleteAction : `${current ? `<button class="btn text" data-action="activate-provider" data-id="${provider.id}"><i data-lucide="refresh-cw"></i>${tr("重新应用", "重新应用")}</button>` : `<button class="btn primary" data-action="activate-provider" data-id="${provider.id}">${tr("使用", "使用")}</button>`}<button class="icon-btn" data-action="test-provider" data-id="${provider.id}" title="${tr("测试连接", "测试连接")}" aria-label="${trf("provider.test", "测试 {name}", { name })}"><i data-lucide="activity"></i></button><button class="icon-btn" data-action="edit-provider" data-id="${provider.id}" title="${tr("编辑", "编辑")}" aria-label="${trf("provider.edit", "编辑 {name}", { name })}"><i data-lucide="pencil"></i></button>${deleteAction}`;
+        const status = unsupported ? `<span class="badge warn">${tr("客户端不支持", "客户端不支持")}</span>` : `<span class="badge ${provider.providerType === "official" || provider.apiKeyConfigured ? "" : "warn"}">${provider.providerType === "official" ? tr("客户端登录", "客户端登录") : provider.apiKeyConfigured ? tr("密钥已保存", "密钥已保存") : tr("缺少密钥", "缺少密钥")}</span>`;
+        return `<article class="provider-card ${current ? "current" : ""}"><div class="provider-main">${providerLogoMarkup(logoPreset)}<div class="provider-copy"><div class="provider-name-line"><strong>${name}</strong>${current ? `<span class="badge ok">${tr("当前使用", "当前使用")}</span>` : ""}${status}</div><p>${escapeHtml(notes || provider.baseUrl || tr("官方直连", "官方直连"))}</p></div></div><div class="provider-model"><small>${tr("默认模型", "默认模型")}</small><code title="${escapeHtml(model)}">${escapeHtml(model)}</code></div><div class="row-actions">${actions}</div></article>`;
       }).join("");
     }
 
@@ -1556,6 +1553,7 @@
       if (name === "logs" && !state.diagnostics && !state.diagnosticRunning) refreshDiagnostics().catch((error) => { addLog("error", errorText(error)); notify(errorText(error), "error"); });
     }
     function findPreset(id) { return (PRESETS[state.activeClient] || COMMON_PRESETS).find((preset) => preset.id === id); }
+    function defaultProviderPresetId() { return state.activeClient === "antigravity" ? "google-official" : "custom"; }
     function visiblePresets() { const query = document.getElementById("preset-search")?.value.trim().toLowerCase() || ""; return (PRESETS[state.activeClient] || COMMON_PRESETS).filter((preset) => !query || preset.name.toLowerCase().includes(query)); }
     function renderPresetGrid() { document.getElementById("preset-grid").innerHTML = visiblePresets().map((preset) => `<button type="button" class="preset-option ${state.selectedPresetId === preset.id ? "active" : ""}" data-action="select-provider-preset" data-id="${preset.id}">${providerLogoMarkup(preset, "mini-logo")}<span>${escapeHtml(preset.name)}</span></button>`).join(""); refreshIcons(); }
 
@@ -1669,7 +1667,8 @@
     }
 
     function openProviderEditor(provider = null) {
-      state.configImportRequest += 1; state.editingProviderId = provider?.id || null; state.selectedPresetId = provider?.presetId || "custom";
+      const defaultPresetId = defaultProviderPresetId();
+      state.configImportRequest += 1; state.editingProviderId = provider?.id || null; state.selectedPresetId = provider?.presetId || defaultPresetId;
       const form = document.getElementById("provider-form"); const meta = clientMeta(state.activeClient);
       document.getElementById("provider-editor").hidden = false;
       document.getElementById("provider-editor-title").textContent = trf("provider.editorTitle", "{action} {name} 供应商", { action: provider ? tr("action.edit", "编辑") : tr("action.add", "添加"), name: meta.name });
@@ -1689,8 +1688,8 @@
       form.elements["advanced-claude-sonnet"].value = provider?.claudeSonnetModel || "claude-sonnet-5";
       form.elements["advanced-claude-haiku"].value = provider?.claudeHaikuModel || "claude-haiku-4-5";
       form.elements["advanced-claude-opus"].value = provider?.claudeOpusModel || "claude-opus-4-8";
-      document.getElementById("preset-search").value = ""; hideProviderError(); renderPresetGrid(); updateProviderFormPresentation(provider ? findPreset(state.selectedPresetId) : findPreset("custom"));
-      if (!provider) applyPreset(findPreset("custom")); else loadProviderConfig(provider);
+      document.getElementById("preset-search").value = ""; hideProviderError(); renderPresetGrid(); updateProviderFormPresentation(provider ? findPreset(state.selectedPresetId) : findPreset(defaultPresetId));
+      if (!provider) applyPreset(findPreset(defaultPresetId)); else loadProviderConfig(provider);
       loadProviderModels().catch((error) => { document.getElementById("model-source").textContent = errorText(error); });
       setTimeout(() => form.elements["provider-name"].focus(), 120);
     }
@@ -1719,10 +1718,13 @@
     }
     function updateProviderFormPresentation(preset) {
       const form = document.getElementById("provider-form"); const official = (preset?.type || form.elements["provider-type"].value) === "official";
+      const clientLoginOnly = state.activeClient === "antigravity";
       const short = preset?.short || form.elements["provider-name"].value.slice(0, 2).toUpperCase() || "CU";
       const logo = document.getElementById("provider-form-logo"); const logoPreset = preset || { name: form.elements["provider-name"].value, short };
       logo.classList.toggle("has-image", Boolean(PROVIDER_LOGOS[logoPreset.id])); logo.innerHTML = providerLogoContent(logoPreset); document.getElementById("provider-form-heading").textContent = preset?.name ? tr(preset.name, preset.name) : form.elements["provider-name"].value || tr("自定义配置", "自定义配置");
       document.getElementById("base-url-field").hidden = official; document.getElementById("api-key-field").hidden = official;
+      document.querySelector(".preset-search").hidden = clientLoginOnly;
+      for (const id of ["provider-model-field", "provider-api-format-field", "advanced-model-fields", "provider-config-content"]) document.getElementById(id).hidden = clientLoginOnly;
       form.elements["provider-base-url"].required = !official; form.elements["provider-api-key"].required = !official && !state.editingProviderId;
       const hints = { official: tr("官方供应商使用客户端登录，无需填写 API Key", "官方供应商使用客户端登录，无需填写 API Key"), cn_official: tr("请求地址已预设，只需填写 API Key", "请求地址已预设，只需填写 API Key"), aggregator: tr("请求地址已预设，只需填写 API Key", "请求地址已预设，只需填写 API Key"), third_party: tr("确认请求地址后填写 API Key", "确认请求地址后填写 API Key"), custom: tr("填写供应商提供的请求地址和 API Key", "填写供应商提供的请求地址和 API Key") };
       document.querySelector("#preset-hint span").textContent = hints[preset?.category || "custom"];
