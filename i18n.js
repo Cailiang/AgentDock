@@ -39,7 +39,6 @@ const rows = [
   ["供应商", "供應商", "Providers", "プロバイダー", "Anbieter"],
   ["模型", "模型", "Models", "モデル", "Modelle"],
   ["重新检测", "重新偵測", "Run again", "再診断", "Erneut prüfen"],
-  ["导出诊断包", "匯出診斷包", "Export diagnostics", "診断データを出力", "Diagnose exportieren"],
   ["打开数据目录", "開啟資料目錄", "Open data directory", "データフォルダーを開く", "Datenverzeichnis öffnen"],
   ["健康分", "健康分數", "Health score", "健全性スコア", "Zustandswert"],
   ["等待检测", "等待偵測", "Waiting for checks", "診断待ち", "Wartet auf Prüfung"],
@@ -336,7 +335,6 @@ const rows = [
   ["action.configRegenerated", "設定檔已從表單重新產生", "Configuration regenerated from the form", "フォームから設定を再生成しました", "Konfiguration aus dem Formular neu erzeugt"],
   ["action.statsRefreshed", "統計已重新整理", "Usage refreshed", "統計を更新しました", "Statistik aktualisiert"],
   ["action.diagnosticsComplete", "診斷已完成", "Diagnostics complete", "診断が完了しました", "Diagnose abgeschlossen"],
-  ["action.diagnosticsExported", "診斷包已匯出", "Diagnostics exported", "診断データを出力しました", "Diagnose exportiert"],
   ["action.logsCleared", "記錄已清除", "Logs cleared", "ログを消去しました", "Protokoll geleert"]
   ,["重新检测客户端", "重新偵測客戶端", "Check clients again", "クライアントを再確認", "Clients erneut prüfen"]
   ,["检查软件更新", "檢查軟體更新", "Check software updates", "ソフトウェア更新を確認", "Software-Updates prüfen"]
@@ -376,7 +374,6 @@ const rows = [
   ,["error.serverExists", "伺服器 ID「{id}」已存在", "Server ID “{id}” already exists", "サーバー ID「{id}」は既に存在します", "Server-ID „{id}“ ist bereits vorhanden"]
   ,["推荐客户端已处理", "推薦客戶端已處理", "Recommended clients processed", "推奨クライアントを処理しました", "Empfohlene Clients verarbeitet"]
   ,["action.uninstalling", "正在解除安裝 {name}", "Uninstalling {name}", "{name} をアンインストール中", "{name} wird deinstalliert"]
-  ,["diagnostics.exportPath", "診斷包已匯出：{path}", "Diagnostics exported: {path}", "診断データを出力しました：{path}", "Diagnose exportiert: {path}"]
   ,["error.actionNotImplemented", "按鈕動作尚未實作：{action}", "Button action not implemented: {action}", "ボタン操作が未実装です：{action}", "Schaltflächenaktion nicht implementiert: {action}"]
   ,["读取网页并转换为适合模型处理的内容", "讀取網頁並轉換為適合模型處理的內容", "Fetch web pages and convert them for model use", "Web ページを取得してモデル向けに変換", "Webseiten abrufen und für Modelle aufbereiten"]
   ,["获取时区时间并进行时间转换", "取得時區時間並進行時間轉換", "Read and convert time across time zones", "タイムゾーンの時刻取得と変換", "Zeit über Zeitzonen hinweg lesen und umrechnen"]
@@ -446,7 +443,6 @@ const rows = [
   ,["部分统计数据无法读取", "部分統計資料無法讀取", "Some usage data could not be read", "一部の統計データを読み込めません", "Einige Nutzungsdaten konnten nicht gelesen werden"]
   ,["检查对应会话目录的读取权限", "檢查對應工作階段目錄的讀取權限", "Check read permissions for the session directories", "セッションフォルダーの読み取り権限を確認してください", "Leserechte der Sitzungsverzeichnisse prüfen"]
   ,["统计检查失败", "統計檢查失敗", "Usage check failed", "統計の確認に失敗しました", "Nutzungsprüfung fehlgeschlagen"]
-  ,["重新检测或查看诊断包", "重新偵測或查看診斷包", "Run diagnostics again or inspect the export", "再診断するか診断データを確認してください", "Diagnose erneut ausführen oder Export prüfen"]
   ,["diagnostics.clientReady", "{name} 可正常啟動", "{name} can launch", "{name} は起動可能", "{name} kann gestartet werden"]
   ,["diagnostics.clientUpdate", "{name} 有新版本", "{name} has an update", "{name} に更新があります", "Für {name} ist ein Update verfügbar"]
   ,["diagnostics.versions", "目前 {current}，最新 {latest}", "Current {current}, latest {latest}", "現在 {current}、最新 {latest}", "Aktuell {current}, neueste {latest}"]

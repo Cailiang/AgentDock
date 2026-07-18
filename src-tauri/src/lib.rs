@@ -345,12 +345,6 @@ pub struct ApplyProviderResult {
     written_files: Vec<String>,
 }
 
-#[derive(Debug, Serialize)]
-#[serde(rename_all = "camelCase")]
-pub struct DiagnosticsResult {
-    path: String,
-}
-
 #[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct DiagnosticCheck {
@@ -3068,135 +3062,116 @@ async fn run_diagnostics() -> Result<DiagnosticsReport, String> {
             Vec::new()
         }
     };
-    for client in &desktop.clients {
+    let installed_client_ids = desktop
+        .clients
+        .iter()
+        .filter(|client| client.installed)
+        .map(|client| client.id.clone())
+        .collect::<HashSet<_>>();
+    for client in desktop.clients.iter().filter(|client| client.installed) {
         let catalog_item = catalog.iter().find(|item| item.client_id == client.id);
-        if client.installed {
-            let detail = format!(
-                "{} · {} · {}",
-                client.version.as_deref().unwrap_or("版本未知"),
-                if client.managed_by_agentdock {
-                    "AgentDock 托管"
-                } else {
-                    "系统安装"
-                },
-                client.executable.as_deref().unwrap_or("启动路径未知")
-            );
+        let detail = format!(
+            "{} · {} · {}",
+            client.version.as_deref().unwrap_or("版本未知"),
+            if client.managed_by_agentdock {
+                "AgentDock 托管"
+            } else {
+                "系统安装"
+            },
+            client.executable.as_deref().unwrap_or("启动路径未知")
+        );
+        checks.push(diagnostic_check(
+            &format!("client-{}", client.id),
+            "客户端",
+            "pass",
+            &format!("{} 可正常启动", client.name),
+            &detail,
+            "",
+        ));
+        if let Some(item) = catalog_item.filter(|item| item.update_available) {
             checks.push(diagnostic_check(
-                &format!("client-{}", client.id),
-                "客户端",
-                "pass",
-                &format!("{} 可正常启动", client.name),
-                &detail,
-                "",
-            ));
-            if let Some(item) = catalog_item.filter(|item| item.update_available) {
-                checks.push(diagnostic_check(
-                    &format!("client-{}-update", client.id),
-                    "客户端",
-                    "warning",
-                    &format!("{} 有新版本", client.name),
-                    &format!(
-                        "当前 {}，最新 {}",
-                        item.current_version.as_deref().unwrap_or("未知"),
-                        item.latest_version.as_deref().unwrap_or("最新版")
-                    ),
-                    "前往客户端页面点击更新",
-                ));
-            }
-            match client.config_path.as_deref() {
-                Some(path) if Path::new(path).exists() => checks.push(diagnostic_check(
-                    &format!("client-{}-config", client.id),
-                    "客户端",
-                    "pass",
-                    &format!("{} 配置位置可用", client.name),
-                    path,
-                    "",
-                )),
-                _ => checks.push(diagnostic_check(
-                    &format!("client-{}-config", client.id),
-                    "客户端",
-                    "warning",
-                    &format!("{} 尚未生成配置", client.name),
-                    "客户端已安装，但还没有可读取的配置位置",
-                    "添加并启用一个供应商后会自动生成",
-                )),
-            }
-        } else if catalog_item.map(|item| item.recommended).unwrap_or(false) {
-            checks.push(diagnostic_check(
-                &format!("client-{}", client.id),
+                &format!("client-{}-update", client.id),
                 "客户端",
                 "warning",
-                &format!("{} 尚未安装", client.name),
-                "这是推荐客户端，可由 AgentDock 自动安装",
-                "前往客户端页面点击一键安装",
+                &format!("{} 有新版本", client.name),
+                &format!(
+                    "当前 {}，最新 {}",
+                    item.current_version.as_deref().unwrap_or("未知"),
+                    item.latest_version.as_deref().unwrap_or("最新版")
+                ),
+                "前往客户端页面点击更新",
             ));
+        }
+        match client.config_path.as_deref() {
+            Some(path) if Path::new(path).exists() => checks.push(diagnostic_check(
+                &format!("client-{}-config", client.id),
+                "客户端",
+                "pass",
+                &format!("{} 配置位置可用", client.name),
+                path,
+                "",
+            )),
+            _ => checks.push(diagnostic_check(
+                &format!("client-{}-config", client.id),
+                "客户端",
+                "warning",
+                &format!("{} 尚未生成配置", client.name),
+                "客户端已安装，但还没有可读取的配置位置",
+                "添加并启用一个供应商后会自动生成",
+            )),
         }
     }
 
     let providers = list_providers()?;
-    if providers.is_empty() {
-        checks.push(diagnostic_check(
-            "providers-empty",
-            "供应商",
-            "error",
-            "还没有可用供应商",
-            "客户端无法在没有登录或 API Key 的情况下调用模型",
-            "在已安装客户端中添加供应商",
-        ));
-    } else {
-        let tests = join_all(providers.iter().cloned().map(|provider| async move {
-            let result = test_provider(provider.id.clone()).await;
-            (provider, result)
-        }))
-        .await;
-        for (provider, result) in tests {
-            let apps = if provider.enabled_apps.is_empty() {
-                "未关联客户端".to_string()
-            } else {
-                provider.enabled_apps.join("、")
-            };
-            match result {
-                Ok(result) if result.ok => checks.push(diagnostic_check(
-                    &format!("provider-{}", provider.id),
-                    "供应商",
-                    "pass",
-                    &format!("{} 连接正常", provider.name),
-                    &format!("{} · {} ms · {}", apps, result.latency_ms, result.message),
-                    "",
-                )),
-                Ok(result) => checks.push(diagnostic_check(
-                    &format!("provider-{}", provider.id),
-                    "供应商",
-                    "error",
-                    &format!("{} 无法使用", provider.name),
-                    &result.message,
-                    "编辑供应商的请求地址或 API Key 后重试",
-                )),
-                Err(error) => checks.push(diagnostic_check(
-                    &format!("provider-{}", provider.id),
-                    "供应商",
-                    "error",
-                    &format!("{} 检查失败", provider.name),
-                    &error,
-                    "检查供应商配置后重试",
-                )),
-            }
-        }
-    }
-
-    for client in desktop.clients.iter().filter(|client| client.installed) {
-        if !providers
+    let relevant_providers = providers
+        .iter()
+        .filter(|provider| {
+            provider
+                .enabled_apps
+                .iter()
+                .chain(provider.active_apps.iter())
+                .any(|app| installed_client_ids.contains(app))
+        })
+        .cloned()
+        .collect::<Vec<_>>();
+    let tests = join_all(relevant_providers.into_iter().map(|provider| async move {
+        let result = test_provider(provider.id.clone()).await;
+        (provider, result)
+    }))
+    .await;
+    for (provider, result) in tests {
+        let apps = provider
+            .enabled_apps
             .iter()
-            .any(|provider| provider.active_apps.iter().any(|app| app == &client.id))
-        {
-            checks.push(diagnostic_check(
-                &format!("provider-active-{}", client.id),
+            .filter(|app| installed_client_ids.contains(*app))
+            .cloned()
+            .collect::<Vec<_>>()
+            .join("、");
+        match result {
+            Ok(result) if result.ok => checks.push(diagnostic_check(
+                &format!("provider-{}", provider.id),
                 "供应商",
-                "warning",
-                &format!("{} 没有当前供应商", client.name),
-                "启动时将使用客户端自身的登录状态或默认配置",
-                "在客户端页面选择一个供应商",
-            ));
+                "pass",
+                &format!("{} 连接正常", provider.name),
+                &format!("{} · {} ms · {}", apps, result.latency_ms, result.message),
+                "",
+            )),
+            Ok(result) => checks.push(diagnostic_check(
+                &format!("provider-{}", provider.id),
+                "供应商",
+                "error",
+                &format!("{} 无法使用", provider.name),
+                &result.message,
+                "编辑供应商的请求地址或 API Key 后重试",
+            )),
+            Err(error) => checks.push(diagnostic_check(
+                &format!("provider-{}", provider.id),
+                "供应商",
+                "error",
+                &format!("{} 检查失败", provider.name),
+                &error,
+                "检查供应商配置后重试",
+            )),
         }
     }
 
@@ -3211,7 +3186,13 @@ async fn run_diagnostics() -> Result<DiagnosticsReport, String> {
             "",
         ));
     }
-    for server in mcp_servers.iter().filter(|server| server.enabled) {
+    for server in mcp_servers.iter().filter(|server| {
+        server.enabled
+            && server
+                .apps
+                .iter()
+                .any(|app| installed_client_ids.contains(app))
+    }) {
         let validation = if server.apps.is_empty() {
             Err("没有关联任何客户端".to_string())
         } else if server.transport == "stdio" && server.command.trim().is_empty() {
@@ -3274,7 +3255,7 @@ async fn run_diagnostics() -> Result<DiagnosticsReport, String> {
             "warning",
             "统计检查失败",
             &error,
-            "重新检测或查看诊断包",
+            "重新运行诊断",
         )),
     }
 
@@ -3309,7 +3290,21 @@ fn finalize_diagnostics(checks: Vec<DiagnosticCheck>) -> DiagnosticsReport {
         .iter()
         .filter(|check| check.status == "error")
         .count();
-    let penalty = failed.saturating_mul(18) + warnings.saturating_mul(5);
+    let mut category_penalties = BTreeMap::<&str, usize>::new();
+    for check in &checks {
+        let penalty = match check.status.as_str() {
+            "error" => 20,
+            "warning" => 5,
+            _ => 0,
+        };
+        if penalty > 0 {
+            category_penalties
+                .entry(check.category.as_str())
+                .and_modify(|current| *current = (*current).max(penalty))
+                .or_insert(penalty);
+        }
+    }
+    let penalty = category_penalties.values().sum::<usize>();
     DiagnosticsReport {
         generated_at: now_rfc3339(),
         score: 100usize.saturating_sub(penalty).min(100) as u8,
@@ -3329,76 +3324,6 @@ fn probe_directory_writable(path: &Path) -> Result<(), String> {
     ));
     fs::write(&probe, b"ok").map_err(|err| format!("无法写入 {}: {}", path.display(), err))?;
     fs::remove_file(&probe).map_err(|err| format!("无法清理诊断文件: {}", err))
-}
-
-#[tauri::command]
-async fn export_diagnostics() -> Result<DiagnosticsResult, String> {
-    let dirs = agentdock_dirs()?;
-    ensure_dirs(&dirs)?;
-    let path = dirs.data_dir.join(format!(
-        "diagnostics-{}.json",
-        OffsetDateTime::now_utc().unix_timestamp()
-    ));
-    let providers = list_providers()?;
-    let provider_summaries = providers
-        .iter()
-        .map(|provider| {
-            serde_json::json!({
-                "id": provider.id,
-                "name": provider.name,
-                "providerType": provider.provider_type,
-                "baseUrl": sanitize_url_for_diagnostics(&provider.base_url),
-                "apiFormat": provider.api_format,
-                "enabledApps": provider.enabled_apps,
-                "activeApps": provider.active_apps,
-                "apiKeyConfigured": provider.api_key_configured,
-                "updatedAt": provider.updated_at,
-            })
-        })
-        .collect::<Vec<_>>();
-    let mcp_summaries = list_mcp_servers()?
-        .iter()
-        .map(|server| {
-            serde_json::json!({
-                "id": server.id,
-                "name": server.name,
-                "transport": server.transport,
-                "targetConfigured": !server.command.trim().is_empty(),
-                "argsCount": server.args.len(),
-                "envKeys": server.env.keys().collect::<Vec<_>>(),
-                "headerKeys": server.headers.keys().collect::<Vec<_>>(),
-                "apps": server.apps,
-                "enabled": server.enabled,
-                "updatedAt": server.updated_at,
-            })
-        })
-        .collect::<Vec<_>>();
-    let skill_summaries = list_skills()?
-        .iter()
-        .map(|skill| {
-            serde_json::json!({
-                "id": skill.id,
-                "name": skill.name,
-                "installed": skill.installed,
-                "apps": skill.apps,
-                "updatedAt": skill.updated_at,
-            })
-        })
-        .collect::<Vec<_>>();
-    let payload = serde_json::json!({
-        "exportedAt": now_rfc3339(),
-        "diagnostics": run_diagnostics().await?,
-        "desktopStatus": desktop_status()?,
-        "ready": run_ready_check()?,
-        "providers": provider_summaries,
-        "managedClients": list_managed_clients()?,
-        "skills": skill_summaries,
-        "mcpServers": mcp_summaries
-    });
-    write_json(&path, &payload)?;
-    Ok(DiagnosticsResult {
-        path: path.display().to_string(),
-    })
 }
 
 #[tauri::command]
@@ -6175,7 +6100,6 @@ pub fn run() {
             apply_active_provider_configs,
             apply_provider_config,
             run_diagnostics,
-            export_diagnostics,
             launch_client,
             open_path,
             open_external,
@@ -8711,17 +8635,6 @@ fn normalize_base_url(url: &str) -> String {
     url.trim().trim_end_matches('/').to_string()
 }
 
-fn sanitize_url_for_diagnostics(url: &str) -> String {
-    let Ok(mut parsed) = reqwest::Url::parse(url) else {
-        return "已配置（格式无法解析）".to_string();
-    };
-    let _ = parsed.set_username("");
-    let _ = parsed.set_password(None);
-    parsed.set_query(None);
-    parsed.set_fragment(None);
-    parsed.to_string()
-}
-
 fn ensure_v1_url(url: &str) -> String {
     let normalized = normalize_base_url(url);
     let is_origin_only = reqwest::Url::parse(&normalized)
@@ -9574,16 +9487,6 @@ requires_openai_auth = true"#;
     }
 
     #[test]
-    fn diagnostics_remove_url_credentials_and_query_values() {
-        assert_eq!(
-            sanitize_url_for_diagnostics(
-                "https://user:secret@api.example.com/v1?api_key=hidden#private"
-            ),
-            "https://api.example.com/v1"
-        );
-    }
-
-    #[test]
     fn rejects_legacy_placeholder_launchers() {
         let root = env::temp_dir().join(format!("agentdock-test-{}", std::process::id()));
         let launcher = root.join("codex");
@@ -9989,16 +9892,18 @@ requires_openai_auth = true"#;
     }
 
     #[test]
-    fn diagnostic_score_penalizes_errors_more_than_warnings() {
+    fn diagnostic_score_penalizes_each_affected_category_once() {
         let report = finalize_diagnostics(vec![
             diagnostic_check("ok", "系统", "pass", "正常", "", ""),
             diagnostic_check("warn", "客户端", "warning", "警告", "", ""),
+            diagnostic_check("warn-2", "客户端", "warning", "另一个警告", "", ""),
             diagnostic_check("error", "供应商", "error", "错误", "", ""),
+            diagnostic_check("error-2", "供应商", "error", "另一个错误", "", ""),
         ]);
         assert_eq!(report.passed, 1);
-        assert_eq!(report.warnings, 1);
-        assert_eq!(report.failed, 1);
-        assert_eq!(report.score, 77);
+        assert_eq!(report.warnings, 2);
+        assert_eq!(report.failed, 2);
+        assert_eq!(report.score, 75);
     }
 
     #[test]

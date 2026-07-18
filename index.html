@@ -608,14 +608,14 @@
         <section class="view" data-view="logs">
           <div class="page-head">
             <div><h2>诊断中心</h2><p>检查本机目录、客户端、供应商连接、MCP 和统计数据，不读取或展示密钥</p></div>
-            <div class="actions"><button class="btn primary" data-action="run-diagnostics"><i data-lucide="scan-heart"></i>重新检测</button><button class="btn" data-action="export-diagnostics"><i data-lucide="download"></i>导出诊断包</button><button class="icon-btn" data-action="open-data-dir" title="打开数据目录" aria-label="打开数据目录"><i data-lucide="folder-open"></i></button></div>
+            <div class="actions"><button class="btn primary" data-action="run-diagnostics"><i data-lucide="scan-heart"></i>重新检测</button><button class="icon-btn" data-action="open-data-dir" title="打开数据目录" aria-label="打开数据目录"><i data-lucide="folder-open"></i></button></div>
           </div>
           <section class="diagnostic-overview" aria-live="polite">
             <div class="diagnostic-score"><span>健康分</span><strong id="diagnostic-score">--</strong><small id="diagnostic-state">等待检测</small></div>
-            <div class="diagnostic-counts">
-              <div><span class="diagnostic-count-icon pass"><i data-lucide="circle-check"></i></span><span><strong id="diagnostic-passed">--</strong><small>通过</small></span></div>
-              <div><span class="diagnostic-count-icon warning"><i data-lucide="triangle-alert"></i></span><span><strong id="diagnostic-warnings">--</strong><small>警告</small></span></div>
-              <div><span class="diagnostic-count-icon error"><i data-lucide="circle-x"></i></span><span><strong id="diagnostic-failed">--</strong><small>错误</small></span></div>
+            <div class="diagnostic-counts" aria-label="检查状态">
+              <button type="button" data-action="focus-diagnostic-status" data-id="pass" aria-pressed="false" disabled><span class="diagnostic-count-icon pass"><i data-lucide="circle-check"></i></span><span><strong id="diagnostic-passed">--</strong><small>通过</small></span></button>
+              <button type="button" data-action="focus-diagnostic-status" data-id="warning" aria-pressed="false" disabled><span class="diagnostic-count-icon warning"><i data-lucide="triangle-alert"></i></span><span><strong id="diagnostic-warnings">--</strong><small>警告</small></span></button>
+              <button type="button" data-action="focus-diagnostic-status" data-id="error" aria-pressed="false" disabled><span class="diagnostic-count-icon error"><i data-lucide="circle-x"></i></span><span><strong id="diagnostic-failed">--</strong><small>错误</small></span></button>
             </div>
             <div class="diagnostic-timestamp"><i data-lucide="clock-3"></i><span id="diagnostic-time">尚未运行主动检查</span></div>
           </section>
@@ -1186,14 +1186,14 @@
         return { score: blockers.length ? 48 : 100, blockers, warnings: [], clientsReady, providersReady };
       }
       if (command === "run_diagnostics") return {
-        generatedAt: new Date().toISOString(), score: 90, passed: 6, warnings: 2, failed: 0,
+        generatedAt: new Date().toISOString(), score: 75, passed: 6, warnings: 1, failed: 1,
         checks: [
           { id: "system-platform", category: "系统", status: "pass", title: "桌面运行环境", detail: "AgentDock 0.1.16 · macOS arm64", action: "" },
           { id: "system-data-dir", category: "系统", status: "pass", title: "数据目录可写", detail: "/AgentDock/data", action: "" },
           { id: "client-claude", category: "客户端", status: "pass", title: "Claude Desktop 可正常启动", detail: "1.0.2 · 系统安装", action: "" },
-          { id: "client-codex", category: "客户端", status: "warning", title: "Codex 尚未安装", detail: "这是推荐客户端，可由 AgentDock 自动安装", action: "前往客户端页面点击一键安装" },
+          { id: "client-codex-update", category: "客户端", status: "warning", title: "Codex 有新版本", detail: "当前 0.1.0，最新 0.2.0", action: "前往客户端页面点击更新" },
           { id: "provider-packy", category: "供应商", status: "pass", title: "PackyCode 连接正常", detail: "Codex · 86 ms · 连接测试通过", action: "" },
-          { id: "provider-active-claude", category: "供应商", status: "warning", title: "Claude Desktop 没有当前供应商", detail: "启动时将使用客户端自身的登录状态", action: "在客户端页面选择一个供应商" },
+          { id: "provider-mirror", category: "供应商", status: "error", title: "备用线路无法使用", detail: "连接超时", action: "编辑供应商的请求地址或 API Key 后重试" },
           { id: "mcp-filesystem", category: "MCP", status: "pass", title: "Filesystem 配置有效", detail: "STDIO · 已启用到 2 个客户端", action: "" },
           { id: "usage-data", category: "统计", status: "pass", title: "本地统计数据可读取", detail: "已识别：Codex 会话、Claude Code 会话", action: "" }
         ]
@@ -1240,7 +1240,6 @@
         const totalTokens = trend.reduce((sum, item) => sum + item.totalTokens, 0); const requests = trend.reduce((sum, item) => sum + item.requests, 0); const costUsd = trend.reduce((sum, item) => sum + item.costUsd, 0);
         return { days, from: trend[0].date, to: trend.at(-1).date, summary: { totalTokens, inputTokens: Math.round(totalTokens * .62), outputTokens: Math.round(totalTokens * .25), cachedTokens: Math.round(totalTokens * .13), requests, costUsd, unpricedRequests: 3 }, trend, byClient: [{ id: "codex", name: "Codex", totalTokens: Math.round(totalTokens * .58), requests: Math.round(requests * .58), costUsd: costUsd * .58, share: .58 }, { id: "claude-code", name: "Claude Code", totalTokens: Math.round(totalTokens * .31), requests: Math.round(requests * .31), costUsd: costUsd * .31, share: .31 }, { id: "opencode", name: "OpenCode", totalTokens: Math.round(totalTokens * .11), requests: Math.round(requests * .11), costUsd: costUsd * .11, share: .11 }], byProvider: [{ id: "PackyCode", name: "PackyCode", totalTokens: Math.round(totalTokens * .67), requests: Math.round(requests * .67), costUsd: costUsd * .67, share: .67 }, { id: "未识别供应商", name: "未识别供应商", totalTokens: Math.round(totalTokens * .33), requests: Math.round(requests * .33), costUsd: costUsd * .33, share: .33 }], byModel: [{ id: "gpt-5.6-sol", name: "gpt-5.6-sol", totalTokens: Math.round(totalTokens * .61), requests: Math.round(requests * .61), costUsd: costUsd * .61, share: .61 }, { id: "claude-sonnet-5", name: "claude-sonnet-5", totalTokens: Math.round(totalTokens * .39), requests: Math.round(requests * .39), costUsd: costUsd * .39, share: .39 }], sources: ["Codex 会话", "Claude Code 会话", "OpenCode 会话"], errors: [] };
       }
-      if (command === "export_diagnostics") return { path: "/AgentDock/data/diagnostics-preview.json" };
       throw new Error(`预览模式未实现命令: ${command}`);
     }
     const call = (command, args) => state.desktop ? invoke(command, args) : mockInvoke(command, args);
@@ -1675,7 +1674,7 @@
 
     function renderClientLaunchbar(client, clientName, operation) {
       const launching = state.launchingClients.has(client.id);
-      const launchButton = `<button class="btn primary" data-action="launch-client" data-id="${escapeHtml(client.id)}" ${operation || launching ? "disabled" : ""}><i class="${launching ? "spin" : ""}" data-lucide="${launching ? "loader-circle" : "play"}"></i><span>${launching ? tr("client.launching", "正在启动") : trf("client.launch", "启动 {name}", { name: clientName })}</span></button>`;
+      const launchButton = `<button class="btn primary" data-action="launch-client" data-id="${escapeHtml(client.id)}" aria-busy="${launching}" ${operation || launching ? "disabled" : ""}><i class="${launching ? "spin" : ""}" data-lucide="${launching ? "loader-circle" : "play"}"></i><span>${launching ? tr("client.launching", "正在启动") : trf("client.launch", "启动 {name}", { name: clientName })}</span></button>`;
       if (!clientUsesWorkingDirectory(client)) {
         return `<section class="client-launchbar" aria-label="${tr("client.launchMethod", "启动方式")}"><div class="launch-context"><span class="launch-context-icon"><i data-lucide="app-window"></i></span><div class="launch-context-copy"><small>${tr("client.launchMethod", "启动方式")}</small><strong>${tr("client.desktopApp", "桌面应用")}</strong><span title="${escapeHtml(client.executable || "")}">${escapeHtml(client.executable || clientName)}</span></div></div><div class="launch-controls">${launchButton}</div></section>`;
       }
@@ -1831,17 +1830,38 @@
       const report = state.diagnostics; const list = document.getElementById("diagnostic-list");
       if (!report) {
         document.getElementById("diagnostic-score").textContent = state.diagnosticRunning ? "..." : "--"; document.getElementById("diagnostic-state").textContent = state.diagnosticRunning ? tr("正在检测", "正在检测") : tr("等待检测", "等待检测");
-        document.getElementById("diagnostic-passed").textContent = "--"; document.getElementById("diagnostic-warnings").textContent = "--"; document.getElementById("diagnostic-failed").textContent = "--"; document.getElementById("diagnostic-time").textContent = state.diagnosticRunning ? tr("正在连接供应商并检查本机配置", "正在连接供应商并检查本机配置") : tr("尚未运行主动检查", "尚未运行主动检查"); document.getElementById("diagnostic-result-count").textContent = trf("diagnostics.resultCount", "{shown}/{total} 项", { shown: 0, total: 0 });
+        setDiagnosticCount("pass", "--", false); setDiagnosticCount("warning", "--", false); setDiagnosticCount("error", "--", false); document.getElementById("diagnostic-time").textContent = state.diagnosticRunning ? tr("正在连接供应商并检查本机配置", "正在连接供应商并检查本机配置") : tr("尚未运行主动检查", "尚未运行主动检查"); document.getElementById("diagnostic-result-count").textContent = trf("diagnostics.resultCount", "{shown}/{total} 项", { shown: 0, total: 0 });
         list.innerHTML = `<div class="diagnostic-empty"><i class="${state.diagnosticRunning ? "spin" : ""}" data-lucide="${state.diagnosticRunning ? "loader-circle" : "scan-heart"}"></i><strong>${state.diagnosticRunning ? tr("正在执行完整诊断", "正在执行完整诊断") : tr("运行一次诊断以查看本机状态", "运行一次诊断以查看本机状态")}</strong><small>${state.diagnosticRunning ? tr("供应商连接检查可能需要几秒钟", "供应商连接检查可能需要几秒钟") : tr("将检查目录、客户端、供应商、MCP 和统计数据", "将检查目录、客户端、供应商、MCP 和统计数据")}</small></div>`; refreshIcons(); return;
       }
       document.getElementById("diagnostic-score").textContent = report.score; document.getElementById("diagnostic-state").textContent = report.failed ? tr("需要处理", "需要处理") : report.warnings ? tr("基本正常", "基本正常") : tr("运行良好", "运行良好");
-      document.getElementById("diagnostic-passed").textContent = report.passed; document.getElementById("diagnostic-warnings").textContent = report.warnings; document.getElementById("diagnostic-failed").textContent = report.failed;
+      setDiagnosticCount("pass", report.passed, report.passed > 0); setDiagnosticCount("warning", report.warnings, report.warnings > 0); setDiagnosticCount("error", report.failed, report.failed > 0);
       const generated = new Date(report.generatedAt); document.getElementById("diagnostic-time").textContent = Number.isNaN(generated.getTime()) ? report.generatedAt : trf("diagnostics.detectedAt", "检测于 {time}", { time: generated.toLocaleString(activeLocale(), { hour12: false }) });
       const checks = report.checks.filter((check) => (state.diagnosticFilter === "all" || check.status === state.diagnosticFilter) && contextMatches(check.title, check.detail, check.category, check.action));
       document.getElementById("diagnostic-result-count").textContent = trf("diagnostics.resultCount", "{shown}/{total} 项", { shown: checks.length, total: report.checks.length });
       const meta = { pass: ["circle-check", tr("通过", "通过")], warning: ["triangle-alert", tr("警告", "警告")], error: ["circle-x", tr("错误", "错误")] };
-      list.innerHTML = checks.length ? checks.map((check) => { const [icon, label] = meta[check.status] || ["circle-help", check.status]; return `<article class="diagnostic-row ${check.status}"><span class="diagnostic-row-icon"><i data-lucide="${icon}"></i></span><div class="diagnostic-row-copy"><div><span class="diagnostic-category">${escapeHtml(localizeDiagnosticText(check.category))}</span><strong>${escapeHtml(localizeDiagnosticText(check.title))}</strong></div><p>${escapeHtml(localizeDiagnosticText(check.detail))}</p>${check.action ? `<small><i data-lucide="wrench"></i>${escapeHtml(localizeDiagnosticText(check.action))}</small>` : ""}</div><span class="diagnostic-status">${label}</span></article>`; }).join("") : `<div class="diagnostic-empty"><i data-lucide="search-x"></i><strong>${tr("没有匹配的检查项", "没有匹配的检查项")}</strong><small>${tr("调整左侧状态筛选或搜索内容", "调整左侧状态筛选或搜索内容")}</small></div>`;
+      list.innerHTML = checks.length ? checks.map((check) => { const [icon, label] = meta[check.status] || ["circle-help", check.status]; return `<article class="diagnostic-row ${check.status}" data-diagnostic-status="${escapeHtml(check.status)}" tabindex="-1"><span class="diagnostic-row-icon"><i data-lucide="${icon}"></i></span><div class="diagnostic-row-copy"><div><span class="diagnostic-category">${escapeHtml(localizeDiagnosticText(check.category))}</span><strong>${escapeHtml(localizeDiagnosticText(check.title))}</strong></div><p>${escapeHtml(localizeDiagnosticText(check.detail))}</p>${check.action ? `<small><i data-lucide="wrench"></i>${escapeHtml(localizeDiagnosticText(check.action))}</small>` : ""}</div><span class="diagnostic-status">${label}</span></article>`; }).join("") : `<div class="diagnostic-empty"><i data-lucide="search-x"></i><strong>${tr("没有匹配的检查项", "没有匹配的检查项")}</strong><small>${tr("调整左侧状态筛选或搜索内容", "调整左侧状态筛选或搜索内容")}</small></div>`;
       refreshIcons();
+    }
+    function setDiagnosticCount(status, value, enabled) {
+      const number = document.getElementById(status === "pass" ? "diagnostic-passed" : status === "warning" ? "diagnostic-warnings" : "diagnostic-failed");
+      const button = document.querySelector(`[data-action="focus-diagnostic-status"][data-id="${status}"]`);
+      number.textContent = value;
+      button.disabled = !enabled;
+      button.setAttribute("aria-pressed", String(enabled && state.diagnosticFilter === status));
+    }
+    function focusDiagnosticStatus(status) {
+      if (!state.diagnostics || !["pass", "warning", "error"].includes(status)) return;
+      state.diagnosticFilter = status;
+      state.contextQuery = "";
+      const search = document.getElementById("command-search");
+      if (search) search.value = "";
+      renderLogs(); renderSourceSidebar(); refreshIcons();
+      requestAnimationFrame(() => {
+        const row = document.querySelector(`#diagnostic-list [data-diagnostic-status="${status}"]`);
+        const target = row || document.querySelector(".diagnostic-results");
+        target?.scrollIntoView({ behavior: matchMedia("(prefers-reduced-motion: reduce)").matches ? "auto" : "smooth", block: "start" });
+        row?.focus({ preventScroll: true });
+      });
     }
     async function refreshDiagnostics() {
       if (state.diagnosticRunning) return; state.diagnosticRunning = true; state.diagnostics = null; renderLogs(); renderSourceSidebar(); refreshIcons();
@@ -2279,6 +2299,7 @@
       if (action === "set-software-filter") { state.softwareFilter = id; renderSoftware(); renderSourceSidebar(); refreshIcons(); return; }
       if (action === "set-skill-filter") { state.skillFilter = id; renderSkills(); renderSourceSidebar(); refreshIcons(); return; }
       if (action === "set-diagnostic-filter") { state.diagnosticFilter = id; renderLogs(); renderSourceSidebar(); refreshIcons(); return; }
+      if (action === "focus-diagnostic-status") return focusDiagnosticStatus(String(id));
       if (action === "focus-software") { state.softwareFilter = "all"; renderSoftware(); renderSourceSidebar(); refreshIcons(); document.querySelector(`[data-software-id="${CSS.escape(id)}"]`)?.scrollIntoView({ behavior: "smooth", block: "center" }); return; }
       if (action === "focus-skill") { state.skillFilter = "all"; renderSkills(); renderSourceSidebar(); refreshIcons(); document.querySelector(`[data-skill-id="${CSS.escape(id)}"]`)?.scrollIntoView({ behavior: "smooth", block: "center" }); return; }
       if (action === "refresh-catalog") return withBusy(button, async () => { state.softwareCatalog = await call("list_software_catalog"); renderHeader(); renderClients(); renderSoftware(); renderSourceSidebar(); refreshIcons(); notify(tr("action.catalogRefreshed", "版本信息已更新")); });
@@ -2326,7 +2347,6 @@
       if (action === "set-trend-metric") { state.trendMetric = id; renderStats(); return; }
       if (action === "set-breakdown") { state.breakdown = id; renderStats(); renderSourceSidebar(); refreshIcons(); return; }
       if (action === "run-diagnostics") return withBusy(button, async () => { await refreshDiagnostics(); notify(tr("action.diagnosticsComplete", "诊断已完成")); });
-      if (action === "export-diagnostics") return withBusy(button, async () => { const result = await call("export_diagnostics"); addLog("ok", trf("diagnostics.exportPath", "诊断包已导出：{path}", { path: result.path })); notify(tr("action.diagnosticsExported", "诊断包已导出")); });
       if (action === "open-data-dir") return withBusy(button, async () => { const result = await call("open_path", { path: state.status.dataDir }); addLog("info", result.message); });
       if (action === "clear-logs") { state.logs = []; renderLogs(); renderSourceSidebar(); refreshIcons(); notify(tr("action.logsCleared", "日志已清空")); return; }
       throw new Error(trf("error.actionNotImplemented", "按钮动作未实现：{action}", { action }));
