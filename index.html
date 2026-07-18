@@ -133,6 +133,38 @@
     .client-identity h3 { margin: 0; font-size: 19px; font-weight: 700; }
     .client-identity p { margin: 4px 0 0; color: var(--ink-soft); font-size: 12px; overflow-wrap: anywhere; }
     .client-stage-actions { display: flex; flex-wrap: wrap; justify-content: flex-end; gap: 8px; }
+    .client-launchbar { position: relative; z-index: 3; display: flex; min-height: 76px; align-items: center; justify-content: space-between; gap: 18px; padding: 13px 20px 13px 22px; border-bottom: 1px solid var(--line); background: var(--surface); }
+    .launch-context { display: flex; min-width: 0; align-items: center; gap: 12px; }
+    .launch-context-icon { display: grid; width: 36px; height: 36px; flex: 0 0 36px; place-items: center; border-radius: 7px; background: var(--surface-pressed); color: var(--ink-soft); }
+    .launch-context-icon svg { width: 17px; height: 17px; }
+    .launch-context-copy { min-width: 0; }
+    .launch-context-copy > small { display: block; margin-bottom: 2px; color: var(--ink-faint); font-size: 10px; font-weight: 650; text-transform: uppercase; }
+    .launch-context-copy > strong { display: block; font-size: 13px; font-weight: 670; }
+    .launch-context-copy > span { display: block; max-width: min(52vw, 620px); margin-top: 2px; overflow: hidden; color: var(--ink-soft); font: 11px/1.35 var(--mono); text-overflow: ellipsis; white-space: nowrap; }
+    .workspace-picker { display: grid; max-width: min(52vw, 620px); min-height: 38px; min-width: 220px; align-content: center; gap: 1px; border: 0; border-radius: 5px; background: transparent; color: var(--ink); padding: 2px 5px; text-align: left; }
+    .workspace-picker:hover { background: var(--surface-pressed); box-shadow: none; }
+    .workspace-picker strong, .workspace-picker span { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+    .workspace-picker strong { font-size: 13px; font-weight: 670; }
+    .workspace-picker span { color: var(--ink-soft); font: 11px/1.35 var(--mono); }
+    .workspace-picker.empty span { font-family: var(--font); }
+    .launch-controls { display: flex; flex: 0 0 auto; align-items: center; gap: 8px; }
+    .launch-controls > .btn { min-height: 44px; min-width: 138px; }
+    .workspace-menu { position: relative; }
+    .workspace-menu-trigger { display: grid; width: 44px; height: 44px; place-items: center; border: 1px solid var(--line-strong); border-radius: 7px; background: var(--surface); color: var(--ink); padding: 0; }
+    .workspace-menu-trigger:hover { border-color: #9eaaa4; background: var(--surface-raised); }
+    .workspace-menu-trigger svg { width: 16px; height: 16px; transition: transform 180ms ease; }
+    .workspace-menu.open .workspace-menu-trigger svg { transform: rotate(180deg); }
+    .workspace-menu-popover { position: absolute; right: 0; top: calc(100% + 7px); z-index: 20; width: min(360px, calc(100vw - 48px)); overflow: hidden; border: 1px solid var(--line); border-radius: 8px; background: var(--surface); box-shadow: var(--shadow-float); padding: 6px; }
+    .workspace-menu-label { display: block; padding: 6px 9px 5px; color: var(--ink-faint); font-size: 10px; font-weight: 650; }
+    .workspace-menu-item { display: grid; width: 100%; min-height: 44px; grid-template-columns: 18px minmax(0, 1fr) auto; align-items: center; gap: 9px; border: 0; border-radius: 6px; background: transparent; color: var(--ink); padding: 6px 9px; text-align: left; }
+    .workspace-menu-item:hover { background: var(--surface-pressed); box-shadow: none; }
+    .workspace-menu-item svg { width: 16px; height: 16px; color: var(--ink-soft); }
+    .workspace-menu-item span { min-width: 0; }
+    .workspace-menu-item strong, .workspace-menu-item small { display: block; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+    .workspace-menu-item strong { font-size: 12px; font-weight: 640; }
+    .workspace-menu-item small { margin-top: 2px; color: var(--ink-faint); font: 10px/1.3 var(--mono); }
+    .workspace-menu-item > .current-mark { color: var(--accent); }
+    .workspace-menu-rule { height: 1px; margin: 5px 3px; background: var(--line); }
     .provider-section-head { display: flex; align-items: center; justify-content: space-between; gap: 18px; padding: 20px 22px 14px; }
     .provider-section-head h3 { margin: 0; font-size: 15px; font-weight: 670; }
     .provider-section-head p { margin: 3px 0 0; color: var(--ink-soft); font-size: 11px; }
@@ -445,8 +477,11 @@
       :root { --rail: 64px; }
       .content { padding-inline: 16px; }
       .topbar { padding-inline: 16px; }
-      .page-head, .client-stage-head, .provider-section-head { align-items: stretch; flex-direction: column; }
+      .page-head, .client-stage-head, .client-launchbar, .provider-section-head { align-items: stretch; flex-direction: column; }
       .client-stage-actions, .provider-card .row-actions { justify-content: flex-start; }
+      .workspace-picker { max-width: 100%; min-width: 0; width: 100%; }
+      .launch-controls { justify-content: flex-end; }
+      .launch-controls > .btn { flex: 1 1 auto; }
       .provider-card, .data-row { grid-template-columns: 1fr; }
       .two-column, .provider-fields, .form-grid { grid-template-columns: 1fr; }
       .field.full, .advanced-config { grid-column: auto; }
@@ -783,6 +818,7 @@
     import "@fontsource-variable/geist";
     import { invoke } from "@tauri-apps/api/core";
     import { createIcons, icons } from "lucide";
+    import { open as openDialog } from "@tauri-apps/plugin-dialog";
     import { EXTENDED_UI_COPY } from "./i18n.js";
 
     const APP_META = {
@@ -1017,13 +1053,13 @@
       const cached = JSON.parse(localStorage.getItem(STARTUP_CACHE_KEY) || "null");
       if (cached?.version === 2 && cached.data && Date.now() - Number(cached.savedAt || 0) < 30 * 24 * 60 * 60 * 1000) startupCache = cached.data;
     } catch {}
-    const defaultSettings = { language: document.documentElement.lang || "zh-CN", theme: cachedTheme, launchOnStartup: false, silentStartup: false, minimizeToTrayOnClose: false, preferredTerminal: "terminal", visibleClients: [...APP_ORDER], clientOrder: [...APP_ORDER], skillStorageLocation: "agentdock", skillSyncMethod: "copy" };
+    const defaultSettings = { language: document.documentElement.lang || "zh-CN", theme: cachedTheme, launchOnStartup: false, silentStartup: false, minimizeToTrayOnClose: false, preferredTerminal: "terminal", visibleClients: [...APP_ORDER], clientOrder: [...APP_ORDER], currentWorkingDirectory: "", recentWorkingDirectories: [], skillStorageLocation: "agentdock", skillSyncMethod: "copy" };
 
     const state = {
       desktop: Boolean(window.__TAURI_INTERNALS__), status: startupCache?.status || null, settings: { ...defaultSettings, ...(startupCache?.settings || {}), language: defaultSettings.language, theme: defaultSettings.theme }, ready: startupCache?.ready || null, providers: startupCache?.providers || [], skills: startupCache?.skills || [], mcpServers: startupCache?.mcpServers || [], softwareCatalog: startupCache?.softwareCatalog || [], appUpdate: null, appUpdateInstalling: false, backgroundRefreshing: false,
       usageStats: null, usageDays: 7, trendMetric: "totalTokens", breakdown: "client",
       activeView: "clients", activeClient: "codex", contextQuery: "", softwareFilter: "all", skillFilter: "all", diagnosticFilter: "all",
-      inFlightOperations: new Set(), clientOperations: new Map(), settingsRevision: 0, settingsSaveChain: Promise.resolve(), logs: [], diagnostics: null, diagnosticRunning: false, ccSwitchImport: null, ccSwitchImportResult: null, ccSwitchImportChecking: false, editingProviderId: null, selectedPresetId: "custom", providerFormDirty: false, editingMcpId: null, selectedMcpPreset: "custom", inspectingMcpId: null, mcpToolsResult: null, mcpToolsError: "", activeMcpToolName: "", mcpToolsRequest: 0, configManuallyEdited: false, configImportRequest: 0, confirmResolve: null
+      inFlightOperations: new Set(), clientOperations: new Map(), launchingClients: new Set(), workspaceMenuOpen: false, settingsRevision: 0, settingsSaveChain: Promise.resolve(), logs: [], diagnostics: null, diagnosticRunning: false, ccSwitchImport: null, ccSwitchImportResult: null, ccSwitchImportChecking: false, editingProviderId: null, selectedPresetId: "custom", providerFormDirty: false, editingMcpId: null, selectedMcpPreset: "custom", inspectingMcpId: null, mcpToolsResult: null, mcpToolsError: "", activeMcpToolName: "", mcpToolsRequest: 0, configManuallyEdited: false, configImportRequest: 0, confirmResolve: null
     };
     try {
       const cachedTheme = localStorage.getItem("agentdock-theme") || "system";
@@ -1057,6 +1093,9 @@
     const errorText = (error) => typeof error === "string" ? error : error?.message || String(error);
     const clientMeta = (id) => APP_META[id] || { name: id, short: id.slice(0, 2).toUpperCase(), logo: "/client-logos/codex.svg", autoInstall: false };
     const selectedClient = () => state.status?.clients.find((client) => client.id === state.activeClient);
+    const clientUsesWorkingDirectory = (client) => client?.id !== "claude-desktop" && !String(client?.executable || "").toLowerCase().endsWith(".app");
+    const directoryName = (path) => String(path || "").split(/[\\/]/).filter(Boolean).at(-1) || String(path || "");
+    const launchRequestId = () => globalThis.crypto?.randomUUID?.() || `launch-${Date.now()}-${Math.random().toString(16).slice(2)}`;
     const clientLogo = (id, extra = "") => { const meta = clientMeta(id); return `<img class="client-logo logo-${escapeHtml(id)} ${extra}" src="${meta.logo}" alt="${escapeHtml(meta.name)} Logo" />`; };
     const formatNumber = (value) => new Intl.NumberFormat(activeLocale(), { notation: Number(value) >= 100000 ? "compact" : "standard", maximumFractionDigits: 1 }).format(Number(value) || 0);
     const formatCost = (value) => `$${Number(value || 0).toLocaleString("en-US", { minimumFractionDigits: 2, maximumFractionDigits: Number(value) < 1 ? 4 : 2 })}`;
@@ -1174,7 +1213,7 @@
       if (command === "apply_provider_config" || command === "apply_active_provider_configs") return { providerId: args.providerId || "active", backupDir: "/backup", writtenFiles: ["provider.json", "provider.env"] };
       if (command === "install_client") { await new Promise((resolve) => setTimeout(resolve, 1500)); const client = mock.status.clients.find((item) => item.id === args.clientId); if (!client) throw new Error("未找到客户端"); const catalog = mock.softwareCatalog.find((item) => item.clientId === args.clientId); const configPaths = { antigravity: "~/.agy", grok: "~/.grok", opencode: "~/.config/opencode" }; client.installed = true; client.version = catalog?.latestVersion || "managed-preview"; client.managedByAgentdock = true; client.executable = `/AgentDock/${client.id}`; client.configPath = configPaths[client.id] || `/AgentDock/${client.id}/config`; if (catalog) { catalog.installed = true; catalog.currentVersion = client.version; catalog.updateAvailable = false; catalog.managedByAgentdock = true; } return { client, message: `${client.name} 已安装或更新` }; }
       if (command === "uninstall_client") { const client = mock.status.clients.find((item) => item.id === args.clientId); client.installed = false; client.version = null; client.managedByAgentdock = false; client.executable = null; client.configPath = null; return { ok: true, message: `${client.name} 已卸载` }; }
-      if (command === "launch_client") return { launched: true, message: "客户端已启动" };
+      if (command === "launch_client") { await new Promise((resolve) => setTimeout(resolve, 600)); return { launched: true, message: "客户端已启动", clientId: args.clientId, workingDirectory: args.workingDirectory || null, requestId: args.requestId }; }
       if (command === "open_path") return { ok: true, message: `已打开 ${args.path}` };
       if (command === "open_external") return { ok: true, message: `已打开 ${args.url}` };
       if (command === "list_skills") return structuredClone(mock.skills);
@@ -1296,11 +1335,11 @@
     async function withBusy(button, task, operationKey = null) {
       const key = operationKey || (button ? `${button.dataset.action || "action"}:${button.dataset.id || button.dataset.field || "global"}` : Symbol("operation"));
       if (state.inFlightOperations.has(key)) { notify(tr("该操作正在进行中", "该操作正在进行中")); return; }
-      state.inFlightOperations.add(key); const original = button?.innerHTML;
-      if (button) { button.disabled = true; button.innerHTML = `<i data-lucide="loader-circle"></i><span>${tr("处理中", "处理中")}</span>`; refreshIcons(); }
+      state.inFlightOperations.add(key); const original = button?.innerHTML; const originalWidth = button?.style.width;
+      if (button) { button.style.width = `${Math.ceil(button.getBoundingClientRect().width)}px`; button.disabled = true; button.innerHTML = `<i class="spin" data-lucide="loader-circle"></i><span>${tr("处理中", "处理中")}</span>`; refreshIcons(); }
       try { await task(); }
       catch (error) { const message = errorText(error); addLog("error", message); notify(message, "error"); showProviderError(message); }
-      finally { state.inFlightOperations.delete(key); if (button && document.body.contains(button)) { button.disabled = false; button.innerHTML = original; refreshIcons(); } }
+      finally { state.inFlightOperations.delete(key); if (button && document.body.contains(button)) { button.disabled = false; button.innerHTML = original; button.style.width = originalWidth; refreshIcons(); } }
     }
 
     const clientOperation = (clientId) => state.clientOperations.get(clientId) || null;
@@ -1477,7 +1516,9 @@
       const visibleSet = new Set((settings.visibleClients || []).filter((id) => APP_META[id]));
       const visibleClients = order.filter((id) => visibleSet.has(id));
       if (!visibleClients.length) visibleClients.push(order[0]);
-      return { ...settings, clientOrder: order, visibleClients, silentStartup: settings.launchOnStartup ? Boolean(settings.silentStartup) : false };
+      const currentWorkingDirectory = typeof settings.currentWorkingDirectory === "string" ? settings.currentWorkingDirectory : "";
+      const recentWorkingDirectories = [...new Set([currentWorkingDirectory, ...(settings.recentWorkingDirectories || [])].filter((path) => typeof path === "string" && path))].slice(0, 8);
+      return { ...settings, clientOrder: order, visibleClients, currentWorkingDirectory, recentWorkingDirectories, silentStartup: settings.launchOnStartup ? Boolean(settings.silentStartup) : false };
     }
 
     function queueSettingsSave(updates) {
@@ -1495,6 +1536,46 @@
         }
       });
       return state.settingsSaveChain;
+    }
+
+    async function rememberWorkingDirectory(path) {
+      const recentWorkingDirectories = [path, ...(state.settings?.recentWorkingDirectories || []).filter((item) => item !== path)].slice(0, 8);
+      await queueSettingsSave({ currentWorkingDirectory: path, recentWorkingDirectories });
+      return state.settings?.currentWorkingDirectory || "";
+    }
+
+    async function chooseWorkingDirectory() {
+      const selected = state.desktop ? await openDialog({
+        directory: true,
+        multiple: false,
+        title: tr("client.projectPickerTitle", "选择启动客户端的项目目录"),
+        ...(state.settings?.currentWorkingDirectory ? { defaultPath: state.settings.currentWorkingDirectory } : {})
+      }) : "/Users/demo/Projects/agentdock";
+      if (!selected || Array.isArray(selected)) return "";
+      return rememberWorkingDirectory(selected);
+    }
+
+    async function runClientLaunch(clientId) {
+      if (state.launchingClients.has(clientId)) { notify(tr("该操作正在进行中", "该操作正在进行中")); return; }
+      const client = state.status?.clients.find((item) => item.id === clientId);
+      if (!client?.installed) throw new Error(tr("客户端还未安装", "客户端还未安装"));
+      state.launchingClients.add(clientId); renderClients(); renderSourceSidebar(); refreshIcons();
+      try {
+        let workingDirectory = clientUsesWorkingDirectory(client) ? state.settings?.currentWorkingDirectory || "" : null;
+        if (clientUsesWorkingDirectory(client) && !workingDirectory) {
+          workingDirectory = await chooseWorkingDirectory();
+          if (!workingDirectory) return;
+        }
+        const requestId = launchRequestId();
+        const result = await call("launch_client", { clientId, workingDirectory, requestId });
+        if (result.clientId !== clientId || result.requestId !== requestId) throw new Error(tr("客户端启动响应不匹配，请重试", "客户端启动响应不匹配，请重试"));
+        addLog("ok", result.message);
+        notify(result.workingDirectory ? trf("action.clientLaunchedAt", "{name} 已在 {directory} 启动", { name: clientMeta(clientId).name, directory: result.workingDirectory }) : trf("action.clientLaunched", "{name} 已启动", { name: clientMeta(clientId).name }));
+      } catch (error) {
+        const message = errorText(error); addLog("error", message); notify(message, "error");
+      } finally {
+        state.launchingClients.delete(clientId); renderClients(); renderSourceSidebar(); refreshIcons();
+      }
     }
 
     const contextMatches = (...values) => {
@@ -1523,8 +1604,8 @@
         const detecting = !state.status;
         const clients = visibleClientIds().map((id) => ({ id, meta: clientMeta(id), client: state.status?.clients.find((item) => item.id === id), catalog: state.softwareCatalog.find((item) => item.clientId === id) })).filter(({ id, meta }) => contextMatches(id, meta.name));
         const rows = clients.map(({ id, meta, client, catalog }) => {
-          const operation = clientOperation(id); const installed = Boolean(client?.installed); const update = Boolean(catalog?.updateAvailable); const status = operation ? clientOperationLabel(operation) : detecting ? tr("正在检测", "正在检测") : installed ? `${escapeHtml(client.version || tr("已安装", "已安装"))}${update ? tr("status.updateSuffix", " · 可更新") : ""}` : meta.autoInstall ? tr("可一键安装", "可一键安装") : tr("未检测到", "未检测到");
-          return `<button class="source-item ${state.activeClient === id ? "active" : ""}" data-action="select-client" data-id="${id}" aria-pressed="${state.activeClient === id}">${clientLogo(id)}<span class="source-copy"><strong>${escapeHtml(meta.name)}</strong><small>${status}</small></span><i class="source-state ${operation || detecting ? "busy" : update ? "warn" : installed ? "ok" : ""}"></i></button>`;
+          const operation = clientOperation(id); const launching = state.launchingClients.has(id); const installed = Boolean(client?.installed); const update = Boolean(catalog?.updateAvailable); const status = operation ? clientOperationLabel(operation) : launching ? tr("client.launching", "正在启动") : detecting ? tr("正在检测", "正在检测") : installed ? `${escapeHtml(client.version || tr("已安装", "已安装"))}${update ? tr("status.updateSuffix", " · 可更新") : ""}` : meta.autoInstall ? tr("可一键安装", "可一键安装") : tr("未检测到", "未检测到");
+          return `<button class="source-item ${state.activeClient === id ? "active" : ""}" data-action="select-client" data-id="${id}" aria-pressed="${state.activeClient === id}">${clientLogo(id)}<span class="source-copy"><strong>${escapeHtml(meta.name)}</strong><small>${status}</small></span><i class="source-state ${operation || launching || detecting ? "busy" : update ? "warn" : installed ? "ok" : ""}"></i></button>`;
         }).join("");
         list.innerHTML = `<div class="source-group-label"><span>${tr("支持的客户端", "支持的客户端")}</span><b>${clients.length}</b></div>${rows || `<div class="source-empty"><i data-lucide="search-x"></i>${tr("没有匹配的客户端", "没有匹配的客户端")}</div>`}`;
       } else if (state.activeView === "software") {
@@ -1584,12 +1665,26 @@
       const visible = visibleClientIds();
       if (!visible.includes(state.activeClient)) state.activeClient = visible[0];
       switcher.innerHTML = visible.map((id) => {
-        const meta = clientMeta(id); const client = state.status?.clients.find((item) => item.id === id); const installed = Boolean(client?.installed); const operation = clientOperation(id); const detecting = !state.status;
+        const meta = clientMeta(id); const client = state.status?.clients.find((item) => item.id === id); const installed = Boolean(client?.installed); const operation = clientOperation(id); const launching = state.launchingClients.has(id); const detecting = !state.status;
         return `<button class="client-tab ${state.activeClient === id ? "active" : ""}" data-action="select-client" data-id="${id}" aria-pressed="${state.activeClient === id}">
-          ${clientLogo(id)}<span class="client-dot ${operation || detecting ? "busy" : installed ? "on" : ""}"></span><strong>${meta.name}</strong><small>${operation ? clientOperationLabel(operation) : detecting ? tr("正在检测", "正在检测") : installed ? tr("已安装", "已安装") : meta.autoInstall ? tr("可一键安装", "可一键安装") : tr("未检测到", "未检测到")}</small>
+          ${clientLogo(id)}<span class="client-dot ${operation || launching || detecting ? "busy" : installed ? "on" : ""}"></span><strong>${meta.name}</strong><small>${operation ? clientOperationLabel(operation) : launching ? tr("client.launching", "正在启动") : detecting ? tr("正在检测", "正在检测") : installed ? tr("已安装", "已安装") : meta.autoInstall ? tr("可一键安装", "可一键安装") : tr("未检测到", "未检测到")}</small>
         </button>`;
       }).join("");
       renderClientStage();
+    }
+
+    function renderClientLaunchbar(client, clientName, operation) {
+      const launching = state.launchingClients.has(client.id);
+      const launchButton = `<button class="btn primary" data-action="launch-client" data-id="${escapeHtml(client.id)}" ${operation || launching ? "disabled" : ""}><i class="${launching ? "spin" : ""}" data-lucide="${launching ? "loader-circle" : "play"}"></i><span>${launching ? tr("client.launching", "正在启动") : trf("client.launch", "启动 {name}", { name: clientName })}</span></button>`;
+      if (!clientUsesWorkingDirectory(client)) {
+        return `<section class="client-launchbar" aria-label="${tr("client.launchMethod", "启动方式")}"><div class="launch-context"><span class="launch-context-icon"><i data-lucide="app-window"></i></span><div class="launch-context-copy"><small>${tr("client.launchMethod", "启动方式")}</small><strong>${tr("client.desktopApp", "桌面应用")}</strong><span title="${escapeHtml(client.executable || "")}">${escapeHtml(client.executable || clientName)}</span></div></div><div class="launch-controls">${launchButton}</div></section>`;
+      }
+      const current = state.settings?.currentWorkingDirectory || "";
+      const recent = state.settings?.recentWorkingDirectories || [];
+      const pickerTitle = current ? tr("client.changeProject", "更改当前项目") : tr("client.chooseProject", "选择项目目录");
+      const menuItems = recent.map((path) => `<button class="workspace-menu-item" data-action="set-working-directory" data-path="${escapeHtml(path)}" title="${escapeHtml(path)}"><i data-lucide="folder"></i><span><strong>${escapeHtml(directoryName(path))}</strong><small>${escapeHtml(path)}</small></span>${path === current ? `<i class="current-mark" data-lucide="check"></i>` : ""}</button>`).join("");
+      const menuLabel = tr("client.projectMenu", "选择最近项目");
+      return `<section class="client-launchbar" aria-label="${tr("client.currentProject", "当前项目")}"><div class="launch-context"><span class="launch-context-icon"><i data-lucide="folder-kanban"></i></span><div class="launch-context-copy"><small>${tr("client.currentProject", "当前项目")}</small><button class="workspace-picker ${current ? "" : "empty"}" data-action="choose-working-directory" title="${pickerTitle}"><strong>${escapeHtml(current ? directoryName(current) : tr("client.chooseProject", "选择项目目录"))}</strong><span>${escapeHtml(current || tr("client.noProject", "尚未选择项目"))}</span></button></div></div><div class="launch-controls"><div class="workspace-menu ${state.workspaceMenuOpen ? "open" : ""}"><button class="workspace-menu-trigger" type="button" data-action="toggle-workspace-menu" title="${menuLabel}" aria-label="${menuLabel}" aria-expanded="${state.workspaceMenuOpen}"><i data-lucide="chevron-down"></i></button><div class="workspace-menu-popover" ${state.workspaceMenuOpen ? "" : "hidden"}>${menuItems ? `<span class="workspace-menu-label">${tr("client.recentProjects", "最近项目")}</span>${menuItems}<div class="workspace-menu-rule"></div>` : ""}<button class="workspace-menu-item" data-action="choose-working-directory"><i data-lucide="folder-search-2"></i><span><strong>${tr("client.chooseAnotherProject", "选择其他目录")}</strong></span></button></div></div>${launchButton}</div></section>`;
     }
 
     function renderClientStage() {
@@ -1607,10 +1702,10 @@
         ${client.configPath ? `<button class="icon-btn" data-action="open-path" data-path="${escapeHtml(client.configPath)}" title="${tr("打开配置位置", "打开配置位置")}" aria-label="${tr("打开配置位置", "打开配置位置")}"><i data-lucide="folder-open"></i></button>` : ""}
         ${(operation?.mode === "update" || catalog?.updateAvailable && catalog.installSupported) ? `<button class="btn" data-action="install-client" data-id="${client.id}" ${operation ? "disabled" : ""}><i class="${operation ? "spin" : ""}" data-lucide="${operation ? "loader-circle" : "arrow-up-circle"}"></i>${operation ? clientOperationLabel(operation) : trf("client.updateTo", "更新到 {version}", { version: escapeHtml(catalog.latestVersion || tr("最新版", "最新版")) })}</button>` : ""}
         <button class="icon-btn" data-action="refresh-catalog" title="${trf("client.checkUpdate", "检查 {name} 更新", { name: clientName })}" aria-label="${trf("client.checkUpdate", "检查 {name} 更新", { name: clientName })}" ${operation ? "disabled" : ""}><i data-lucide="refresh-cw"></i></button>
-        ${client.managedByAgentdock ? `<button class="icon-btn" data-action="uninstall-client" data-id="${client.id}" title="${tr("卸载", "卸载")}" aria-label="${trf("client.uninstall", "卸载 {name}", { name: clientName })}" ${operation ? "disabled" : ""}><i data-lucide="trash-2"></i></button>` : ""}
-        <button class="btn primary" data-action="launch-client" data-id="${client.id}" ${operation ? "disabled" : ""}><i data-lucide="play"></i>${trf("client.launch", "启动 {name}", { name: clientName })}</button>` : meta.autoInstall ? `<button class="btn primary" data-action="install-client" data-id="${client.id}" ${operation ? "disabled" : ""}><i class="${operation ? "spin" : ""}" data-lucide="${operation ? "loader-circle" : "download"}"></i>${operation ? clientOperationLabel(operation) : trf("client.install", "一键安装 {name}", { name: clientName })}</button>` : `<span class="badge">${tr("当前仅支持本机检测", "当前仅支持本机检测")}</span>`;
+        ${client.managedByAgentdock ? `<button class="icon-btn" data-action="uninstall-client" data-id="${client.id}" title="${tr("卸载", "卸载")}" aria-label="${trf("client.uninstall", "卸载 {name}", { name: clientName })}" ${operation ? "disabled" : ""}><i data-lucide="trash-2"></i></button>` : ""}` : meta.autoInstall ? `<button class="btn primary" data-action="install-client" data-id="${client.id}" ${operation ? "disabled" : ""}><i class="${operation ? "spin" : ""}" data-lucide="${operation ? "loader-circle" : "download"}"></i>${operation ? clientOperationLabel(operation) : trf("client.install", "一键安装 {name}", { name: clientName })}</button>` : `<span class="badge">${tr("当前仅支持本机检测", "当前仅支持本机检测")}</span>`;
       stage.innerHTML = `
         <div class="client-stage-head"><div class="client-identity">${clientLogo(client.id)}<div><h3>${clientName}</h3><p>${client.installed ? `${escapeHtml(client.version || tr("已安装", "已安装"))}${client.managedByAgentdock ? tr("client.managed", " · AgentDock 托管") : tr("client.systemInstall", " · 本机安装")}` : tr("未检测到可执行程序", "未检测到可执行程序")}</p></div></div><div class="client-stage-actions">${clientActions}</div></div>
+        ${client.installed ? renderClientLaunchbar(client, clientName, operation) : ""}
         <section class="client-readiness" aria-label="${tr("客户端就绪状态", "客户端就绪状态")}">
           <div class="readiness-item"><span class="readiness-icon ${client.installed ? "" : "muted"}"><i data-lucide="${client.installed ? "circle-check" : "circle-dashed"}"></i></span><div><strong>${client.installed ? tr("客户端可用", "客户端可用") : tr("等待安装", "等待安装")}</strong><small>${client.installed ? tr("可执行文件与配置目录已检测", "可执行文件与配置目录已检测") : tr("安装时会自动处理下载源和依赖", "安装时会自动处理下载源和依赖")}</small></div></div>
           <div class="readiness-item"><span class="readiness-icon ${usableProviders.length ? "" : "warn"}"><i data-lucide="key-round"></i></span><div><strong>${trf("count.providers", "{count} 个供应商", { count: usableProviders.length })}</strong><small>${currentProvider ? trf("provider.current", "当前使用 {name}", { name: escapeHtml(currentProvider.name) }) : tr("添加供应商后即可调用模型", "添加供应商后即可调用模型")}</small></div></div>
@@ -1977,7 +2072,7 @@
         }
         closeProviderEditor();
       }
-      state.activeClient = id; renderClients(); renderSourceSidebar(); refreshIcons();
+      state.workspaceMenuOpen = false; state.activeClient = id; renderClients(); renderSourceSidebar(); refreshIcons();
     }
     function applyPreset(preset) {
       if (!preset) return; state.selectedPresetId = preset.id; const form = document.getElementById("provider-form");
@@ -2189,7 +2284,10 @@
       if (action === "refresh-catalog") return withBusy(button, async () => { state.softwareCatalog = await call("list_software_catalog"); renderHeader(); renderClients(); renderSoftware(); renderSourceSidebar(); refreshIcons(); notify(tr("action.catalogRefreshed", "版本信息已更新")); });
       if (action === "quick-setup") return withBusy(button, async () => { for (const clientId of ["codex", "claude-code"]) if (!state.status.clients.some((client) => client.id === clientId && client.installed)) { const result = await call("install_client", { clientId }); addLog("ok", result.message); } await loadAll({ quiet: true }); notify(tr("推荐客户端已处理", "推荐客户端已处理")); });
       if (action === "install-client") return runClientInstall(id);
-      if (action === "launch-client") return withBusy(button, async () => { const result = await call("launch_client", { clientId: id }); addLog("ok", result.message); notify(trf("action.clientLaunched", "{name} 已启动", { name: clientMeta(id).name })); });
+      if (action === "launch-client") return runClientLaunch(String(id));
+      if (action === "toggle-workspace-menu") { state.workspaceMenuOpen = !state.workspaceMenuOpen; renderClientStage(); refreshIcons(); return; }
+      if (action === "choose-working-directory") { state.workspaceMenuOpen = false; renderClientStage(); refreshIcons(); return chooseWorkingDirectory(); }
+      if (action === "set-working-directory") { state.workspaceMenuOpen = false; renderClientStage(); refreshIcons(); return rememberWorkingDirectory(button.dataset.path); }
       if (action === "open-path") return withBusy(button, async () => { const result = await call("open_path", { path: button.dataset.path }); addLog("info", result.message); });
       if (action === "uninstall-client") { const name = clientMeta(id).name; if (!await confirmAction(trf("confirm.uninstallClient", "卸载 {name}", { name }), tr("confirm.uninstallClientMessage", "只会删除 AgentDock 托管的客户端文件，供应商配置会保留。"), tr("confirm.uninstall", "确认卸载"))) return; notify(trf("action.uninstalling", "正在卸载 {name}", { name })); return withBusy(button, async () => { const result = await call("uninstall_client", { clientId: id }); addLog("warn", result.message); notify(trf("action.uninstalled", "{name} 已卸载", { name })); await loadAll({ quiet: true }); }); }
       if (action === "open-provider-editor") return openProviderEditor();
@@ -2235,6 +2333,7 @@
     }
 
     document.addEventListener("click", (event) => {
+      if (state.workspaceMenuOpen && !event.target.closest(".workspace-menu")) { state.workspaceMenuOpen = false; renderClientStage(); refreshIcons(); }
       const viewButton = event.target.closest("[data-view-button]"); if (viewButton) return showView(viewButton.dataset.viewButton);
       const button = event.target.closest("button[data-action]"); if (!button) return; event.preventDefault();
       handleAction(button.dataset.action, button).catch((error) => { const message = errorText(error); addLog("error", message); notify(message, "error"); showProviderError(message); });
@@ -2284,6 +2383,7 @@
     document.addEventListener("keydown", (event) => {
       if ((event.metaKey || event.ctrlKey) && event.key.toLowerCase() === "k") { event.preventDefault(); const search = document.getElementById("command-search"); if (!search.disabled) { search.focus(); search.select(); } return; }
       if (event.key !== "Escape") return;
+      if (state.workspaceMenuOpen) { state.workspaceMenuOpen = false; renderClientStage(); refreshIcons(); return; }
       const search = document.getElementById("command-search"); if (document.activeElement === search && search.value) { search.value = ""; search.dispatchEvent(new Event("input", { bubbles: true })); return; }
       if (!document.getElementById("mcp-wizard-layer").hidden) { closeMcpWizard(); return; }
       if (!document.getElementById("mcp-tools-view").hidden) { closeMcpTools(); return; }

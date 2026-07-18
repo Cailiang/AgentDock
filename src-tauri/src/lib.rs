@@ -94,6 +94,8 @@ pub struct AppSettings {
     preferred_terminal: String,
     visible_clients: Vec<String>,
     client_order: Vec<String>,
+    current_working_directory: String,
+    recent_working_directories: Vec<String>,
     skill_storage_location: String,
     skill_sync_method: String,
 }
@@ -113,6 +115,8 @@ impl Default for AppSettings {
             preferred_terminal: default_terminal().to_string(),
             visible_clients: clients.clone(),
             client_order: clients,
+            current_working_directory: String::new(),
+            recent_working_directories: Vec::new(),
             skill_storage_location: "agentdock".to_string(),
             skill_sync_method: "copy".to_string(),
         }
@@ -374,6 +378,9 @@ pub struct DiagnosticsReport {
 pub struct LaunchClientResult {
     launched: bool,
     message: String,
+    client_id: String,
+    working_directory: Option<String>,
+    request_id: String,
 }
 
 #[derive(Debug, Serialize)]
@@ -2103,17 +2110,7 @@ async fn fetch_provider_models(
         .build()
         .map_err(|err| format!("创建模型请求失败: {}", err))?;
     let key = api_key.unwrap_or_default();
-    let mut endpoints = vec![format!("{}/models", normalized_url)];
-    let v1_endpoint = format!("{}/models", ensure_v1_url(&normalized_url));
-    if !endpoints.contains(&v1_endpoint) {
-        endpoints.push(v1_endpoint);
-    }
-    if app_id == "antigravity" {
-        let gemini_endpoint = format!("{}/v1beta/models", normalized_url);
-        if !endpoints.contains(&gemini_endpoint) {
-            endpoints.push(gemini_endpoint);
-        }
-    }
+    let endpoints = provider_model_endpoints(&normalized_url, app_id == "antigravity");
 
     for endpoint in endpoints {
         let mut request = client
@@ -2152,6 +2149,24 @@ async fn fetch_provider_models(
         models: fallback,
         source: "客户端推荐（供应商接口不可用）".to_string(),
     })
+}
+
+fn provider_model_endpoints(base_url: &str, gemini: bool) -> Vec<String> {
+    let base_url = base_url.trim_end_matches('/');
+    let mut endpoints = vec![format!("{}/models", base_url)];
+    if !base_url.ends_with("/v1beta") {
+        endpoints.push(format!("{}/models", ensure_v1_url(base_url)));
+    }
+    if gemini {
+        let gemini_base = if base_url.ends_with("/v1beta") {
+            base_url.to_string()
+        } else {
+            format!("{}/v1beta", base_url)
+        };
+        endpoints.push(format!("{}/models", gemini_base));
+    }
+    endpoints.dedup();
+    endpoints
 }
 
 #[tauri::command]
@@ -2698,49 +2713,57 @@ async fn test_provider(provider_id: String) -> Result<ProviderTestResult, String
         });
     }
 
-    let endpoint = format!("{}/models", ensure_v1_url(&base_url));
+    let is_gemini = provider.api_format == "gemini"
+        || provider.provider_type == "gemini"
+        || provider.enabled_apps.iter().any(|app| app == "antigravity");
+    let endpoints = provider_model_endpoints(&base_url, is_gemini);
     let client = reqwest::Client::builder()
+        .connect_timeout(std::time::Duration::from_secs(5))
         .timeout(std::time::Duration::from_secs(12))
+        .user_agent(format!("AgentDock/{}", env!("CARGO_PKG_VERSION")))
         .build()
         .map_err(|err| format!("创建网络请求失败: {}", err))?;
-    let mut request = client
-        .get(&endpoint)
-        .header("accept", "application/json")
-        .header("anthropic-version", "2023-06-01");
-    if !api_key.is_empty() {
-        request = request.bearer_auth(&api_key).header("x-api-key", &api_key);
-    }
-
-    let response = match request.send().await {
-        Ok(response) => response,
-        Err(error) => {
+    let mut last_failure = None;
+    for endpoint in endpoints {
+        let mut request = client
+            .get(&endpoint)
+            .header("accept", "application/json")
+            .header("anthropic-version", "2023-06-01");
+        if !api_key.is_empty() {
+            request = request
+                .bearer_auth(&api_key)
+                .header("x-api-key", &api_key)
+                .header("x-goog-api-key", &api_key);
+        }
+        let response = match request.send().await {
+            Ok(response) => response,
+            Err(error) => {
+                last_failure = Some(provider_request_error(&error));
+                continue;
+            }
+        };
+        let status = response.status();
+        if status.is_success() {
             return Ok(ProviderTestResult {
-                ok: false,
-                latency_ms: start.elapsed().as_millis(),
-                message: provider_request_error(&error),
+                ok: true,
+                latency_ms: start.elapsed().as_millis().max(1),
+                message: format!("{} 连接成功，模型接口返回 {}", provider.name, status),
             });
         }
-    };
-    let status = response.status();
-    if status.is_success() {
-        return Ok(ProviderTestResult {
-            ok: true,
-            latency_ms: start.elapsed().as_millis().max(1),
-            message: format!("{} 连接成功，模型接口返回 {}", provider.name, status),
+
+        let response_text = response.text().await.unwrap_or_default();
+        let detail = response_text.chars().take(180).collect::<String>();
+        last_failure = Some(if detail.is_empty() {
+            format!("连接返回 {}，请检查地址、协议和密钥", status)
+        } else {
+            format!("连接返回 {}: {}", status, detail)
         });
     }
-
-    let response_text = response.text().await.unwrap_or_default();
-    let detail = response_text.chars().take(180).collect::<String>();
 
     Ok(ProviderTestResult {
         ok: false,
         latency_ms: start.elapsed().as_millis().max(1),
-        message: if detail.is_empty() {
-            format!("连接返回 {}，请检查地址、协议和密钥", status)
-        } else {
-            format!("连接返回 {}: {}", status, detail)
-        },
+        message: last_failure.unwrap_or_else(|| "供应商没有可测试的模型接口".to_string()),
     })
 }
 
@@ -3379,18 +3402,33 @@ async fn export_diagnostics() -> Result<DiagnosticsResult, String> {
 }
 
 #[tauri::command]
-fn launch_client(client_id: String) -> Result<LaunchClientResult, String> {
+fn launch_client(
+    client_id: String,
+    working_directory: Option<String>,
+    request_id: String,
+) -> Result<LaunchClientResult, String> {
     let dirs = agentdock_dirs()?;
     ensure_dirs(&dirs)?;
-    let clients = refresh_client_detection();
-    let client = clients
-        .iter()
-        .find(|client| client.id == client_id)
+    validate_launch_request(&client_id, &request_id)?;
+    let client = cached_client_for_launch(&client_id)
+        .or_else(|| {
+            refresh_client_detection()
+                .into_iter()
+                .find(|client| client.id == client_id)
+        })
         .ok_or_else(|| "未找到客户端".to_string())?;
     let executable = client
         .executable
         .as_ref()
         .ok_or_else(|| "客户端还未安装".to_string())?;
+    let uses_working_directory = client_uses_working_directory(&client_id, Path::new(executable));
+    let working_directory = if uses_working_directory {
+        Some(validate_working_directory(
+            working_directory.as_deref().unwrap_or_default(),
+        )?)
+    } else {
+        None
+    };
 
     let active_provider = list_providers()?.into_iter().find(|provider| {
         provider
@@ -3399,7 +3437,10 @@ fn launch_client(client_id: String) -> Result<LaunchClientResult, String> {
             .any(|active_app| active_app == &client_id)
     });
     let environment = match active_provider.as_ref() {
-        Some(provider) => provider_launch_environment(&dirs, &client_id, provider)?,
+        Some(provider) => {
+            ensure_provider_launch_config(&dirs, &client_id, provider)?;
+            provider_launch_environment(&dirs, &client_id, provider)?
+        }
         None => BTreeMap::new(),
     };
     if client_id == "antigravity"
@@ -3418,18 +3459,87 @@ fn launch_client(client_id: String) -> Result<LaunchClientResult, String> {
     if is_macos_app_bundle(Path::new(executable)) {
         launch_macos_app_bundle(Path::new(executable))?;
     } else {
-        launch_in_terminal(&dirs, &client_id, executable, &environment)?;
+        launch_in_terminal(
+            &dirs,
+            &client_id,
+            executable,
+            &environment,
+            working_directory
+                .as_deref()
+                .ok_or_else(|| "启动命令行客户端前，请先选择项目目录".to_string())?,
+            &request_id,
+        )?;
     }
     #[cfg(not(target_os = "macos"))]
-    launch_in_terminal(&dirs, &client_id, executable, &environment)?;
+    if uses_working_directory {
+        launch_in_terminal(
+            &dirs,
+            &client_id,
+            executable,
+            &environment,
+            working_directory
+                .as_deref()
+                .ok_or_else(|| "启动命令行客户端前，请先选择项目目录".to_string())?,
+            &request_id,
+        )?;
+    } else {
+        launch_desktop_client(Path::new(executable))?;
+    }
+
+    let working_directory_display = working_directory
+        .as_ref()
+        .map(|path| path.display().to_string());
 
     Ok(LaunchClientResult {
         launched: true,
-        message: match active_provider {
-            Some(provider) => format!("已使用 {} 启动 {}", provider.name, client.name),
-            None => format!("已启动 {}", client.name),
+        message: match (active_provider, working_directory_display.as_deref()) {
+            (Some(provider), Some(directory)) => {
+                format!(
+                    "已使用 {} 在 {} 启动 {}",
+                    provider.name, directory, client.name
+                )
+            }
+            (None, Some(directory)) => format!("已在 {} 启动 {}", directory, client.name),
+            (Some(provider), None) => format!("已使用 {} 启动 {}", provider.name, client.name),
+            (None, None) => format!("已启动 {}", client.name),
         },
+        client_id,
+        working_directory: working_directory_display,
+        request_id,
     })
+}
+
+fn validate_launch_request(client_id: &str, request_id: &str) -> Result<(), String> {
+    if !supported_provider_apps().contains(&client_id) {
+        return Err("不支持的客户端".to_string());
+    }
+    if !(8..=80).contains(&request_id.len())
+        || !request_id
+            .chars()
+            .all(|character| character.is_ascii_alphanumeric() || matches!(character, '-' | '_'))
+    {
+        return Err("客户端启动请求无效，请重试".to_string());
+    }
+    Ok(())
+}
+
+fn client_uses_working_directory(client_id: &str, executable: &Path) -> bool {
+    if client_id == "claude-desktop" {
+        return false;
+    }
+    #[cfg(target_os = "macos")]
+    if is_macos_app_bundle(executable) {
+        return false;
+    }
+    true
+}
+
+#[cfg(not(target_os = "macos"))]
+fn launch_desktop_client(path: &Path) -> Result<(), String> {
+    Command::new(path)
+        .spawn()
+        .map(|_| ())
+        .map_err(|error| format!("无法启动 {}: {}", path.display(), error))
 }
 
 #[cfg(target_os = "macos")]
@@ -3456,6 +3566,24 @@ fn antigravity_proxy_runtime_ready(executable: &str) -> bool {
     fs::read_to_string(executable)
         .map(|content| content.contains("GOOGLE_GEMINI_BASE_URL") && content.contains("gemini-cli"))
         .unwrap_or(false)
+}
+
+fn ensure_provider_launch_config(
+    dirs: &AgentDockDirs,
+    app_id: &str,
+    provider: &ProviderProfile,
+) -> Result<(), String> {
+    if app_id == "codex" && provider.provider_type != "official" {
+        let codex_home = dirs.managed_configs_dir.join("codex");
+        if !codex_home_is_ready(&codex_home) {
+            apply_provider_for_app(provider, app_id)?;
+        }
+    }
+    Ok(())
+}
+
+fn codex_home_is_ready(path: &Path) -> bool {
+    path.join("config.toml").is_file() && path.join("auth.json").is_file()
 }
 
 fn provider_launch_environment(
@@ -3612,24 +3740,38 @@ fn launch_in_terminal(
     client_id: &str,
     executable: &str,
     environment: &BTreeMap<String, String>,
+    working_directory: &Path,
+    request_id: &str,
 ) -> Result<(), String> {
     let settings = read_app_settings(dirs)?;
     #[cfg(target_os = "macos")]
     {
-        let launcher = write_unix_launcher(dirs, client_id, executable, environment)?;
-        let result = launch_macos_terminal(&settings.preferred_terminal, &launcher);
-        if result.is_err() && settings.preferred_terminal != "terminal" {
-            launch_macos_terminal("terminal", &launcher)?;
-        } else {
-            result?;
-        }
-        return Ok(());
+        let launcher = write_unix_launcher(
+            dirs,
+            client_id,
+            executable,
+            environment,
+            working_directory,
+            request_id,
+        )?;
+        return launch_macos_terminal_with_fallback(
+            &settings.preferred_terminal,
+            &launcher,
+            std::time::Duration::from_secs(20),
+        );
     }
 
     #[cfg(windows)]
     {
         use std::os::windows::process::CommandExt;
-        let launcher = write_powershell_launcher(dirs, client_id, executable, environment)?;
+        let launcher = write_powershell_launcher(
+            dirs,
+            client_id,
+            executable,
+            environment,
+            working_directory,
+            request_id,
+        )?;
         let powershell_args = [
             "-NoExit",
             "-NoProfile",
@@ -3661,7 +3803,14 @@ fn launch_in_terminal(
 
     #[cfg(all(unix, not(target_os = "macos")))]
     {
-        let launcher = write_unix_launcher(dirs, client_id, executable, environment)?;
+        let launcher = write_unix_launcher(
+            dirs,
+            client_id,
+            executable,
+            environment,
+            working_directory,
+            request_id,
+        )?;
         let terminal_args = |terminal: &str| -> &'static [&'static str] {
             match terminal {
                 "gnome-terminal" => &["--"],
@@ -3689,20 +3838,86 @@ fn launch_in_terminal(
 }
 
 #[cfg(target_os = "macos")]
+fn launch_macos_terminal_with_fallback(
+    preferred: &str,
+    launcher: &Path,
+    confirmation_timeout: std::time::Duration,
+) -> Result<(), String> {
+    let preferred_result = launch_macos_terminal(preferred, launcher);
+    if preferred_result.is_ok() {
+        if wait_for_launcher_consumption(launcher, confirmation_timeout) {
+            return Ok(());
+        }
+        let _ = fs::remove_file(launcher);
+        return Err(format!(
+            "首选终端已打开，但客户端命令未执行；请检查终端是否允许打开 {}",
+            launcher.display()
+        ));
+    }
+
+    let preferred_error = preferred_result.unwrap_err();
+    if should_fallback_to_macos_terminal(preferred, true) {
+        let fallback_result = launch_macos_terminal("terminal", launcher);
+        if fallback_result.is_ok() && wait_for_launcher_consumption(launcher, confirmation_timeout)
+        {
+            return Ok(());
+        }
+        let _ = fs::remove_file(launcher);
+        return match fallback_result {
+            Err(error) => Err(format!(
+                "{}；系统 Terminal 回退失败：{}",
+                preferred_error, error
+            )),
+            Ok(()) => Err(format!(
+                "终端已打开，但客户端命令未执行；请检查 Terminal 是否允许打开 {}",
+                launcher.display()
+            )),
+        };
+    }
+
+    let _ = fs::remove_file(launcher);
+    Err(preferred_error)
+}
+
+#[cfg(target_os = "macos")]
+fn should_fallback_to_macos_terminal(preferred: &str, preferred_launch_failed: bool) -> bool {
+    preferred != "terminal" && preferred_launch_failed
+}
+
+#[cfg(target_os = "macos")]
+fn wait_for_launcher_consumption(path: &Path, timeout: std::time::Duration) -> bool {
+    let started = Instant::now();
+    while path.exists() && started.elapsed() < timeout {
+        std::thread::sleep(std::time::Duration::from_millis(25));
+    }
+    !path.exists()
+}
+
+#[cfg(target_os = "macos")]
 fn launch_macos_terminal(preferred: &str, launcher: &Path) -> Result<(), String> {
     match preferred {
-        "iterm2" => run_macos_terminal_script(&macos_iterm_script(launcher), "iTerm2"),
+        "iterm2" => launch_macos_iterm(launcher),
         "alacritty" => launch_macos_terminal_app("Alacritty", launcher, true),
         "kitty" => launch_macos_terminal_app("kitty", launcher, false),
         "ghostty" => launch_macos_terminal_app("Ghostty", launcher, true),
         "wezterm" => launch_macos_terminal_app("WezTerm", launcher, true),
-        _ => run_macos_terminal_script(&macos_terminal_script(launcher), "Terminal.app"),
+        _ => launch_macos_terminal_file("Terminal", launcher),
     }
 }
 
 #[cfg(target_os = "macos")]
-fn applescript_string(value: &str) -> String {
-    format!("\"{}\"", value.replace('\\', "\\\\").replace('"', "\\\""))
+fn launch_macos_terminal_file(app: &str, launcher: &Path) -> Result<(), String> {
+    let status = Command::new("open")
+        .arg("-a")
+        .arg(app)
+        .arg(launcher)
+        .status()
+        .map_err(|err| format!("启动 {} 失败: {}", app, err))?;
+    if status.success() {
+        Ok(())
+    } else {
+        Err(format!("启动 {} 失败: {}", app, status))
+    }
 }
 
 #[cfg(target_os = "macos")]
@@ -3711,66 +3926,48 @@ fn macos_launcher_command(launcher: &Path) -> String {
 }
 
 #[cfg(target_os = "macos")]
-fn macos_terminal_script(launcher: &Path) -> String {
-    format!(
-        r#"set launcher_command to {}
-set was_running to application "Terminal" is running
-tell application "Terminal"
-    if was_running then
-        activate
-        do script launcher_command
-    else
-        launch
-        do script launcher_command
-        activate
+fn macos_iterm_script() -> &'static str {
+    r#"on run argv
+    set launcher_command to item 1 of argv
+    set had_windows to false
+    if application "iTerm" is running then
+        tell application "iTerm" to set had_windows to (count of windows) > 0
     end if
-end tell"#,
-        applescript_string(&macos_launcher_command(launcher))
-    )
-}
 
-#[cfg(target_os = "macos")]
-fn macos_iterm_script(launcher: &Path) -> String {
-    format!(
-        r#"set launcher_command to {}
-set was_running to application "iTerm" is running
-tell application "iTerm"
-    if was_running then
-        activate
-        if (count of windows) = 0 then
-            create window with default profile
-        else
-            tell current window to create tab with default profile
+    tell application "iTerm"
+        if had_windows then
+            set launched_window to create window with default profile
+            tell current session of launched_window to write text launcher_command
+            activate
+            return
         end if
-    else
+
         activate
         set waited to 0
-        repeat while (count of windows) = 0
+        repeat while (count of windows) = 0 and waited < 100
             delay 0.1
             set waited to waited + 1
-            if waited >= 30 then exit repeat
         end repeat
-        if (count of windows) = 0 then create window with default profile
-    end if
-    tell current session of current window to write text launcher_command
-end tell"#,
-        applescript_string(&macos_launcher_command(launcher))
-    )
+        if (count of windows) = 0 then error "iTerm2 did not create a default window"
+        tell current session of current window to write text launcher_command
+    end tell
+end run"#
 }
 
 #[cfg(target_os = "macos")]
-fn run_macos_terminal_script(script: &str, label: &str) -> Result<(), String> {
+fn launch_macos_iterm(launcher: &Path) -> Result<(), String> {
     let output = Command::new("osascript")
         .arg("-e")
-        .arg(script)
+        .arg(macos_iterm_script())
+        .arg("--")
+        .arg(macos_launcher_command(launcher))
         .output()
-        .map_err(|err| format!("启动 {} 失败: {}", label, err))?;
+        .map_err(|err| format!("启动 iTerm2 失败: {}", err))?;
     if output.status.success() {
         Ok(())
     } else {
         Err(format!(
-            "启动 {} 失败: {}",
-            label,
+            "启动 iTerm2 失败: {}",
             String::from_utf8_lossy(&output.stderr).trim()
         ))
     }
@@ -3805,19 +4002,34 @@ fn write_unix_launcher(
     client_id: &str,
     executable: &str,
     environment: &BTreeMap<String, String>,
+    working_directory: &Path,
+    request_id: &str,
 ) -> Result<PathBuf, String> {
-    let path = dirs
-        .runtime_dir
-        .join(format!("launch-{}.command", slugify(client_id)));
+    let path = launch_script_path(&dirs.runtime_dir, client_id, request_id, "command");
+    let content = unix_launcher_content(executable, environment, working_directory)?;
+    fs::write(&path, content).map_err(|err| format!("写入客户端启动器失败: {}", err))?;
+    make_private_executable(&path)?;
+    Ok(path)
+}
+
+#[cfg(unix)]
+fn unix_launcher_content(
+    executable: &str,
+    environment: &BTreeMap<String, String>,
+    working_directory: &Path,
+) -> Result<String, String> {
     let mut content = String::from("#!/bin/sh\n");
+    content.push_str(&format!(
+        "cd -- {}\n",
+        shell_quote(&working_directory.to_string_lossy())
+    ));
     for (key, value) in environment {
         validate_launch_value(key, value)?;
         content.push_str(&format!("export {}={}\n", key, shell_quote(value)));
     }
+    content.push_str("/bin/rm -f -- \"$0\"\n");
     content.push_str(&format!("exec {} \"$@\"\n", shell_quote(executable)));
-    fs::write(&path, content).map_err(|err| format!("写入客户端启动器失败: {}", err))?;
-    make_private_executable(&path)?;
-    Ok(path)
+    Ok(content)
 }
 
 #[cfg(windows)]
@@ -3826,18 +4038,38 @@ fn write_powershell_launcher(
     client_id: &str,
     executable: &str,
     environment: &BTreeMap<String, String>,
+    working_directory: &Path,
+    request_id: &str,
 ) -> Result<PathBuf, String> {
-    let path = dirs
-        .runtime_dir
-        .join(format!("launch-{}.ps1", slugify(client_id)));
-    let mut content = String::new();
+    let path = launch_script_path(&dirs.runtime_dir, client_id, request_id, "ps1");
+    let mut content = format!(
+        "Set-Location -LiteralPath {}\r\n",
+        powershell_quote(&working_directory.to_string_lossy())
+    );
     for (key, value) in environment {
         validate_launch_value(key, value)?;
         content.push_str(&format!("$env:{} = {}\r\n", key, powershell_quote(value)));
     }
+    content.push_str(
+        "Remove-Item -LiteralPath $PSCommandPath -Force -ErrorAction SilentlyContinue\r\n",
+    );
     content.push_str(&format!("& {}\r\n", powershell_quote(executable)));
     fs::write(&path, content).map_err(|err| format!("写入客户端启动器失败: {}", err))?;
     Ok(path)
+}
+
+fn launch_script_path(
+    runtime_dir: &Path,
+    client_id: &str,
+    request_id: &str,
+    extension: &str,
+) -> PathBuf {
+    runtime_dir.join(format!(
+        "launch-{}-{}.{}",
+        slugify(client_id),
+        slugify(request_id),
+        extension
+    ))
 }
 
 fn validate_launch_value(key: &str, value: &str) -> Result<(), String> {
@@ -4359,7 +4591,6 @@ fn command_search_paths() -> Vec<PathBuf> {
     let mut paths = Vec::new();
     if let Some(home) = dirs_home() {
         paths.extend([
-            home.join(".grok/bin"),
             home.join(".local/bin"),
             home.join(".cargo/bin"),
             home.join(".npm-global/bin"),
@@ -4395,6 +4626,9 @@ fn command_search_paths() -> Vec<PathBuf> {
     ]);
     if let Some(current) = env::var_os("PATH") {
         paths.extend(env::split_paths(&current));
+    }
+    if let Some(grok_bin) = dirs_home().map(|home| home.join(".grok/bin")) {
+        paths.retain(|path| path != &grok_bin);
     }
     let mut seen = HashSet::new();
     paths.retain(|path| seen.insert(path.clone()));
@@ -5885,6 +6119,7 @@ fn round_cost(value: f64) -> f64 {
 
 pub fn run() {
     let app = tauri::Builder::default()
+        .plugin(tauri_plugin_dialog::init())
         .setup(|app| {
             TRAY_AVAILABLE.store(setup_tray(app).is_ok(), Ordering::Relaxed);
             let settings = agentdock_dirs()
@@ -6120,6 +6355,24 @@ fn normalize_app_settings(mut settings: AppSettings) -> AppSettings {
         settings.silent_startup = false;
     }
 
+    settings.current_working_directory =
+        normalize_working_directory(&settings.current_working_directory).unwrap_or_default();
+    let mut recent_directories = Vec::new();
+    if !settings.current_working_directory.is_empty() {
+        recent_directories.push(settings.current_working_directory.clone());
+    }
+    for directory in settings.recent_working_directories {
+        if let Some(directory) = normalize_working_directory(&directory) {
+            if !recent_directories.contains(&directory) {
+                recent_directories.push(directory);
+            }
+        }
+        if recent_directories.len() >= 8 {
+            break;
+        }
+    }
+    settings.recent_working_directories = recent_directories;
+
     let supported = supported_provider_apps();
     let supported_set = supported.into_iter().collect::<HashSet<_>>();
     let mut seen = HashSet::new();
@@ -6149,6 +6402,28 @@ fn normalize_app_settings(mut settings: AppSettings) -> AppSettings {
         }
     }
     settings
+}
+
+fn validate_working_directory(value: &str) -> Result<PathBuf, String> {
+    let value = value.trim();
+    if value.is_empty() {
+        return Err("启动命令行客户端前，请先选择项目目录".to_string());
+    }
+    let path = PathBuf::from(value);
+    if !path.is_absolute() {
+        return Err("项目目录必须使用绝对路径，请重新选择".to_string());
+    }
+    if !path.is_dir() {
+        return Err("项目目录不存在，请重新选择".to_string());
+    }
+    fs::read_dir(&path).map_err(|_| "无法读取项目目录，请重新选择".to_string())?;
+    fs::canonicalize(&path).map_err(|_| "无法读取项目目录，请重新选择".to_string())
+}
+
+fn normalize_working_directory(value: &str) -> Option<String> {
+    validate_working_directory(value)
+        .ok()
+        .map(|path| path.display().to_string())
 }
 
 fn terminal_options() -> &'static [&'static str] {
@@ -6560,6 +6835,20 @@ fn refresh_client_detection() -> Vec<ClientStatus> {
     clients
 }
 
+fn cached_client_for_launch(client_id: &str) -> Option<ClientStatus> {
+    client_detection_cache()
+        .lock()
+        .ok()
+        .and_then(|cache| cache.as_ref().map(|(_, clients)| clients.clone()))
+        .and_then(|clients| clients.into_iter().find(|client| client.id == client_id))
+        .filter(|client| {
+            client
+                .executable
+                .as_deref()
+                .is_some_and(|executable| Path::new(executable).exists())
+        })
+}
+
 fn cached_client_detection() -> Vec<ClientStatus> {
     if let Ok(cache) = client_detection_cache().lock() {
         if let Some((detected_at, clients)) = cache.as_ref() {
@@ -6612,9 +6901,10 @@ fn detect_client(
 }
 
 fn detect_external_client(id: &str, executable_names: &[&str]) -> (Option<String>, Option<String>) {
+    let search_paths = client_command_search_paths(id);
     if let Some(path) = executable_names
         .iter()
-        .find_map(|name| find_executable(name))
+        .find_map(|name| find_executable_in_paths(name, &search_paths))
     {
         let executable = path.display().to_string();
         let version = command_version(&executable)
@@ -6642,8 +6932,20 @@ fn managed_client_is_runnable(client: &ManagedClientRecord) -> bool {
         .unwrap_or(true)
 }
 
+#[cfg(any(test, windows, all(unix, not(target_os = "macos"))))]
 fn find_executable(name: &str) -> Option<PathBuf> {
     find_executable_in_paths(name, &command_search_paths())
+}
+
+fn client_command_search_paths(client_id: &str) -> Vec<PathBuf> {
+    let mut paths = command_search_paths();
+    if client_id == "grok" {
+        if let Some(grok_bin) = dirs_home().map(|home| home.join(".grok/bin")) {
+            paths.retain(|path| path != &grok_bin);
+            paths.insert(0, grok_bin);
+        }
+    }
+    paths
 }
 
 fn find_executable_in_paths(name: &str, paths: &[PathBuf]) -> Option<PathBuf> {
@@ -8680,6 +8982,38 @@ mod tests {
     }
 
     #[test]
+    fn normalizes_and_deduplicates_recent_working_directories() {
+        let root = env::temp_dir().join(format!(
+            "agentdock-working-directories-{}-{}",
+            std::process::id(),
+            OffsetDateTime::now_utc().unix_timestamp_nanos()
+        ));
+        let first = root.join("first");
+        let second = root.join("second");
+        fs::create_dir_all(&first).unwrap();
+        fs::create_dir_all(&second).unwrap();
+
+        let mut settings = AppSettings::default();
+        settings.current_working_directory = second.display().to_string();
+        settings.recent_working_directories = vec![
+            first.display().to_string(),
+            second.display().to_string(),
+            first.display().to_string(),
+            root.join("missing").display().to_string(),
+        ];
+        let settings = normalize_app_settings(settings);
+        let canonical_first = fs::canonicalize(&first).unwrap().display().to_string();
+        let canonical_second = fs::canonicalize(&second).unwrap().display().to_string();
+
+        assert_eq!(settings.current_working_directory, canonical_second);
+        assert_eq!(
+            settings.recent_working_directories,
+            vec![canonical_second, canonical_first]
+        );
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
     fn silent_startup_only_hides_system_launches() {
         let mut settings = AppSettings::default();
         settings.launch_on_startup = true;
@@ -8735,15 +9069,73 @@ mod tests {
 
     #[cfg(target_os = "macos")]
     #[test]
-    fn macos_terminal_scripts_execute_the_private_launcher() {
+    fn macos_iterm_script_reuses_the_default_window_only_when_needed() {
         let launcher = Path::new("/tmp/AgentDock user's launcher.command");
-        let terminal = macos_terminal_script(launcher);
-        let iterm = macos_iterm_script(launcher);
-        for script in [terminal, iterm] {
-            assert!(script.contains("exec sh"));
-            assert!(script.contains("AgentDock user"));
-            assert!(script.contains("launcher.command"));
-        }
+        let command = macos_launcher_command(launcher);
+        let script = macos_iterm_script();
+
+        assert!(command.starts_with("exec sh "));
+        assert!(command.contains("AgentDock user"));
+        assert!(command.contains("user'\"'\"'s"));
+        assert!(command.contains("launcher.command"));
+        assert!(script.contains("if had_windows then"));
+        assert!(script.contains("set launched_window to create window with default profile"));
+        assert!(script
+            .contains("tell current session of launched_window to write text launcher_command"));
+        assert!(script
+            .contains("tell current session of current window to write text launcher_command"));
+        assert!(!script.contains("close every window"));
+    }
+
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn terminal_launch_confirmation_observes_consumed_launchers() {
+        let root = env::temp_dir().join(format!(
+            "agentdock-launch-confirmation-test-{}-{}",
+            std::process::id(),
+            OffsetDateTime::now_utc().unix_timestamp_nanos()
+        ));
+        fs::create_dir_all(&root).unwrap();
+        let consumed = root.join("consumed.command");
+        let pending = root.join("pending.command");
+        fs::write(&pending, "launcher").unwrap();
+
+        assert!(wait_for_launcher_consumption(
+            &consumed,
+            std::time::Duration::from_millis(10)
+        ));
+        assert!(!wait_for_launcher_consumption(
+            &pending,
+            std::time::Duration::from_millis(10)
+        ));
+
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn macos_terminal_fallback_requires_an_explicit_launch_error() {
+        assert!(!should_fallback_to_macos_terminal("iterm2", false));
+        assert!(should_fallback_to_macos_terminal("iterm2", true));
+        assert!(!should_fallback_to_macos_terminal("terminal", true));
+    }
+
+    #[test]
+    fn codex_launch_home_requires_both_config_files() {
+        let root = env::temp_dir().join(format!(
+            "agentdock-codex-launch-home-test-{}-{}",
+            std::process::id(),
+            OffsetDateTime::now_utc().unix_timestamp_nanos()
+        ));
+        fs::create_dir_all(&root).unwrap();
+        assert!(!codex_home_is_ready(&root));
+
+        fs::write(root.join("config.toml"), "model = \"test\"").unwrap();
+        assert!(!codex_home_is_ready(&root));
+
+        fs::write(root.join("auth.json"), "{}").unwrap();
+        assert!(codex_home_is_ready(&root));
+        fs::remove_dir_all(root).unwrap();
     }
 
     #[test]
@@ -9273,9 +9665,31 @@ requires_openai_auth = true"#;
     }
 
     #[test]
-    fn includes_official_grok_install_directory_in_command_paths() {
+    fn isolates_official_grok_install_directory_from_other_clients() {
         let home = dirs_home().expect("home directory should be available");
-        assert!(command_search_paths().contains(&home.join(".grok/bin")));
+        let grok_bin = home.join(".grok/bin");
+        assert_eq!(client_command_search_paths("grok").first(), Some(&grok_bin));
+        assert!(!client_command_search_paths("codex").contains(&grok_bin));
+        assert!(!command_search_paths().contains(&grok_bin));
+    }
+
+    #[test]
+    fn builds_protocol_aware_provider_model_endpoints() {
+        assert_eq!(
+            provider_model_endpoints("https://proxy.example.com/api", true),
+            vec![
+                "https://proxy.example.com/api/models",
+                "https://proxy.example.com/api/v1beta/models"
+            ]
+        );
+        assert_eq!(
+            provider_model_endpoints("https://proxy.example.com/v1beta", true),
+            vec!["https://proxy.example.com/v1beta/models"]
+        );
+        assert_eq!(
+            provider_model_endpoints("https://proxy.example.com/v1", false),
+            vec!["https://proxy.example.com/v1/models"]
+        );
     }
 
     #[test]
@@ -9347,6 +9761,45 @@ requires_openai_auth = true"#;
     fn quotes_shell_values_without_exposing_commands() {
         assert_eq!(shell_quote("simple"), "'simple'");
         assert_eq!(shell_quote("key'with space"), "'key'\"'\"'with space'");
+    }
+
+    #[test]
+    fn launch_requests_require_a_supported_client_and_unique_identifier() {
+        assert!(validate_launch_request("codex", "018f8f48-4d45-7dc8-8a2b-9f54e557a780").is_ok());
+        assert!(validate_launch_request("grok", "request_12345678").is_ok());
+        assert!(validate_launch_request("unknown", "request_12345678").is_err());
+        assert!(validate_launch_request("codex", "previous client").is_err());
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn launchers_are_unique_and_bind_the_requested_client_and_directory() {
+        let runtime = Path::new("/tmp/agentdock-runtime");
+        let codex_path = launch_script_path(runtime, "codex", "request-codex-123", "command");
+        let grok_path = launch_script_path(runtime, "grok", "request-grok-456", "command");
+        let second_codex_path =
+            launch_script_path(runtime, "codex", "request-codex-789", "command");
+        assert_ne!(codex_path, grok_path);
+        assert_ne!(codex_path, second_codex_path);
+        assert!(codex_path
+            .to_string_lossy()
+            .contains("launch-codex-request-codex-123"));
+
+        let working_directory = Path::new("/tmp/project with 'quote'");
+        let content =
+            unix_launcher_content("/usr/local/bin/codex", &BTreeMap::new(), working_directory)
+                .unwrap();
+        assert!(content.contains("cd -- '/tmp/project with '\"'\"'quote'\"'\"''"));
+        assert!(content.contains("/bin/rm -f -- \"$0\""));
+        assert!(content.contains("exec '/usr/local/bin/codex' \"$@\""));
+        assert!(!content.contains("/.grok/bin/grok"));
+    }
+
+    #[test]
+    fn working_directory_validation_rejects_missing_or_relative_paths() {
+        assert!(validate_working_directory("").is_err());
+        assert!(validate_working_directory("relative/project").is_err());
+        assert!(validate_working_directory("/path/that/does/not/exist").is_err());
     }
 
     #[test]
