@@ -14,6 +14,7 @@ usage() {
   printf 'Usage: %s\n' "$(basename "$0")"
   printf '\nPublishes the committed main branch as a GitHub prerelease after verifying the Mac mini deployment.\n'
   printf 'Run npm run release:macmini and commit the verified changes before invoking this script.\n'
+  printf 'A complete bilingual release-notes/v<version>.md file is required.\n'
 }
 
 if [[ $# -gt 0 ]]; then
@@ -49,10 +50,12 @@ gh auth status >/dev/null
 
 VERSION="$(node -p 'require("./package.json").version')"
 TAG="v${VERSION}"
+RELEASE_NOTES="$ROOT_DIR/release-notes/${TAG}.md"
 [[ "$VERSION" =~ ^[0-9]+\.[0-9]+\.[0-9]+([.-][0-9A-Za-z.-]+)?$ ]] || {
   printf 'Invalid package version: %s\n' "$VERSION" >&2
   exit 1
 }
+"$ROOT_DIR/scripts/validate-release-notes.sh" "$RELEASE_NOTES" "$VERSION"
 node - <<'NODE'
 const fs = require("fs");
 const packageVersion = require("./package.json").version;
@@ -102,6 +105,12 @@ verify_release() {
     .tag_name == $tag and
     .draft == false and
     .prerelease == true and
+    (.body | contains("## 中文")) and
+    (.body | contains("### 新增功能")) and
+    (.body | contains("### Bug 修复")) and
+    (.body | contains("## English")) and
+    (.body | contains("### New Features")) and
+    (.body | contains("### Bug Fixes")) and
     (.assets | length) >= 6 and
     any(.assets[]; .name == $expected) and
     all(.assets[]; .size > 0 and (.digest | test("^sha256:[0-9a-f]{64}$")))

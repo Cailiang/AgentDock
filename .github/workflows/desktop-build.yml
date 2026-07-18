@@ -88,6 +88,9 @@ jobs:
       contents: write
 
     steps:
+      - name: Checkout
+        uses: actions/checkout@v7
+
       - name: Download desktop bundles
         uses: actions/download-artifact@v7
         with:
@@ -100,7 +103,9 @@ jobs:
           GH_TOKEN: ${{ github.token }}
         run: |
           version="${GITHUB_REF_NAME#v}"
+          notes_file="release-notes/${GITHUB_REF_NAME}.md"
           expected="AgentDock_${version}_universal.dmg"
+          ./scripts/validate-release-notes.sh "$notes_file" "$version"
           test -n "$(find release-assets -type f -name "$expected" -print -quit)"
           mapfile -d '' assets < <(find release-assets -type f \( \
             -name '*.dmg' -o -name '*.msi' -o -name '*.exe' -o \
@@ -109,6 +114,7 @@ jobs:
           test "${#assets[@]}" -gt 0
           if gh release view "$GITHUB_REF_NAME" --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
             gh release upload "$GITHUB_REF_NAME" "${assets[@]}" --clobber --repo "$GITHUB_REPOSITORY"
+            gh release edit "$GITHUB_REF_NAME" --title "AgentDock ${version}" --notes-file "$notes_file" --prerelease --repo "$GITHUB_REPOSITORY"
           else
-            gh release create "$GITHUB_REF_NAME" "${assets[@]}" --verify-tag --generate-notes --prerelease --title "AgentDock ${version}" --repo "$GITHUB_REPOSITORY"
+            gh release create "$GITHUB_REF_NAME" "${assets[@]}" --verify-tag --notes-file "$notes_file" --prerelease --title "AgentDock ${version}" --repo "$GITHUB_REPOSITORY"
           fi
