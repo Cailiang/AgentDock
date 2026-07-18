@@ -1023,7 +1023,7 @@
       desktop: Boolean(window.__TAURI_INTERNALS__), status: startupCache?.status || null, settings: { ...defaultSettings, ...(startupCache?.settings || {}), language: defaultSettings.language, theme: defaultSettings.theme }, ready: startupCache?.ready || null, providers: startupCache?.providers || [], skills: startupCache?.skills || [], mcpServers: startupCache?.mcpServers || [], softwareCatalog: startupCache?.softwareCatalog || [], appUpdate: null, appUpdateInstalling: false, backgroundRefreshing: false,
       usageStats: null, usageDays: 7, trendMetric: "totalTokens", breakdown: "client",
       activeView: "clients", activeClient: "codex", contextQuery: "", softwareFilter: "all", skillFilter: "all", diagnosticFilter: "all",
-      inFlightOperations: new Set(), clientOperations: new Map(), settingsRevision: 0, settingsSaveChain: Promise.resolve(), logs: [], diagnostics: null, diagnosticRunning: false, ccSwitchImport: null, ccSwitchImportResult: null, ccSwitchImportChecking: false, editingProviderId: null, selectedPresetId: "custom", editingMcpId: null, selectedMcpPreset: "custom", inspectingMcpId: null, mcpToolsResult: null, mcpToolsError: "", activeMcpToolName: "", mcpToolsRequest: 0, configManuallyEdited: false, configImportRequest: 0, confirmResolve: null
+      inFlightOperations: new Set(), clientOperations: new Map(), settingsRevision: 0, settingsSaveChain: Promise.resolve(), logs: [], diagnostics: null, diagnosticRunning: false, ccSwitchImport: null, ccSwitchImportResult: null, ccSwitchImportChecking: false, editingProviderId: null, selectedPresetId: "custom", providerFormDirty: false, editingMcpId: null, selectedMcpPreset: "custom", inspectingMcpId: null, mcpToolsResult: null, mcpToolsError: "", activeMcpToolName: "", mcpToolsRequest: 0, configManuallyEdited: false, configImportRequest: 0, confirmResolve: null
     };
     try {
       const cachedTheme = localStorage.getItem("agentdock-theme") || "system";
@@ -1369,6 +1369,7 @@
     }
 
     const CC_SWITCH_IMPORT_DISMISS_KEY = "agentdock-cc-switch-import-dismissed";
+    const CC_SWITCH_INITIAL_CHECK_KEY = "agentdock-cc-switch-initial-check-complete";
     function ccSwitchImportApps(detection) {
       return Object.entries(detection?.appCounts || {}).map(([app, count]) => `${clientMeta(app).name} ${count}`).join("、");
     }
@@ -1378,6 +1379,7 @@
       if (state.ccSwitchImportResult) {
         const result = state.ccSwitchImportResult; status.textContent = trf("ccSwitch.importedStatus", "已导入 {imported} 个，更新 {updated} 个", { imported: result.imported, updated: result.updated }); return;
       }
+      if (!state.ccSwitchImport) { status.textContent = tr("尚未检查本机配置", "尚未检查本机配置"); return; }
       if (state.ccSwitchImport?.available) {
         status.textContent = trf("ccSwitch.detectedStatus", "检测到 {count} 个可导入供应商 · {source}", { count: state.ccSwitchImport.providerCount, source: state.ccSwitchImport.sourcePath }); return;
       }
@@ -1389,11 +1391,21 @@
     function rememberCcSwitchImportDecision(fingerprint) {
       try { if (fingerprint) localStorage.setItem(CC_SWITCH_IMPORT_DISMISS_KEY, fingerprint); } catch {}
     }
+    function ccSwitchInitialCheckCompleted() {
+      try {
+        if (localStorage.getItem(CC_SWITCH_INITIAL_CHECK_KEY) === "true") return true;
+        if (localStorage.getItem(CC_SWITCH_IMPORT_DISMISS_KEY)) { rememberCcSwitchInitialCheck(); return true; }
+        return false;
+      } catch { return false; }
+    }
+    function rememberCcSwitchInitialCheck() {
+      try { localStorage.setItem(CC_SWITCH_INITIAL_CHECK_KEY, "true"); } catch {}
+    }
     async function checkCcSwitchImport({ force = false } = {}) {
       if (state.ccSwitchImportChecking) return;
       state.ccSwitchImportChecking = true; renderCcSwitchImportStatus();
       try {
-        const detection = await call("detect_cc_switch_config"); state.ccSwitchImport = detection; renderCcSwitchImportStatus();
+        const detection = await call("detect_cc_switch_config"); rememberCcSwitchInitialCheck(); state.ccSwitchImport = detection; renderCcSwitchImportStatus();
         if (!detection.available) { if (force) notify(tr("未检测到 cc-switch 供应商配置", "未检测到 cc-switch 供应商配置")); return; }
         if (!force && ccSwitchImportWasDismissed(detection.fingerprint)) return;
         const apps = ccSwitchImportApps(detection);
@@ -1943,10 +1955,30 @@
       form.elements["advanced-claude-opus"].value = provider?.claudeOpusModel || "claude-opus-4-8";
       document.getElementById("preset-search").value = ""; hideProviderError(); renderPresetGrid(); updateProviderFormPresentation(provider ? findPreset(state.selectedPresetId) : findPreset("custom"));
       if (!provider) applyPreset(findPreset("custom")); else loadProviderConfig(provider);
+      state.providerFormDirty = false;
       loadProviderModels().catch((error) => { document.getElementById("model-source").textContent = errorText(error); });
       setTimeout(() => form.elements["provider-name"].focus(), 120);
     }
-    function closeProviderEditor() { state.configImportRequest += 1; state.editingProviderId = null; const editor = document.getElementById("provider-editor"); if (editor) editor.hidden = true; hideProviderError(); setConfigImportStatus(); }
+    function closeProviderEditor() { state.configImportRequest += 1; state.editingProviderId = null; state.providerFormDirty = false; const editor = document.getElementById("provider-editor"); if (editor) editor.hidden = true; hideProviderError(); setConfigImportStatus(); }
+    async function selectClient(id) {
+      if (!id) return;
+      const editor = document.getElementById("provider-editor");
+      if (editor && !editor.hidden) {
+        if (state.providerFormDirty) {
+          const currentName = clientMeta(state.activeClient).name; const nextName = clientMeta(id).name;
+          const discard = await confirmAction(
+            tr("confirm.unsavedProviderTitle", "放弃未保存的供应商配置？"),
+            trf("confirm.unsavedProviderMessage", "{current} 的供应商配置尚未保存。切换到 {next} 后，这些更改将丢失。", { current: currentName, next: nextName }),
+            tr("confirm.discardAndSwitch", "放弃并切换"),
+            "primary",
+            "file-warning"
+          );
+          if (!discard) return;
+        }
+        closeProviderEditor();
+      }
+      state.activeClient = id; renderClients(); renderSourceSidebar(); refreshIcons();
+    }
     function applyPreset(preset) {
       if (!preset) return; state.selectedPresetId = preset.id; const form = document.getElementById("provider-form");
       form.elements["provider-preset-id"].value = preset.id; form.elements["provider-type"].value = preset.type;
@@ -2147,7 +2179,7 @@
         if (from < 0 || to < 0 || to >= order.length) return;
         [order[from], order[to]] = [order[to], order[from]]; return queueSettingsSave({ clientOrder: order });
       }
-      if (action === "select-client") { state.activeClient = id; renderClients(); renderSourceSidebar(); refreshIcons(); return; }
+      if (action === "select-client") return selectClient(id);
       if (action === "select-software-client") { state.activeClient = id; showView("clients"); renderClients(); refreshIcons(); return; }
       if (action === "set-software-filter") { state.softwareFilter = id; renderSoftware(); renderSourceSidebar(); refreshIcons(); return; }
       if (action === "set-skill-filter") { state.skillFilter = id; renderSkills(); renderSourceSidebar(); refreshIcons(); return; }
@@ -2162,10 +2194,10 @@
       if (action === "uninstall-client") { const name = clientMeta(id).name; if (!await confirmAction(trf("confirm.uninstallClient", "卸载 {name}", { name }), tr("confirm.uninstallClientMessage", "只会删除 AgentDock 托管的客户端文件，供应商配置会保留。"), tr("confirm.uninstall", "确认卸载"))) return; notify(trf("action.uninstalling", "正在卸载 {name}", { name })); return withBusy(button, async () => { const result = await call("uninstall_client", { clientId: id }); addLog("warn", result.message); notify(trf("action.uninstalled", "{name} 已卸载", { name })); await loadAll({ quiet: true }); }); }
       if (action === "open-provider-editor") return openProviderEditor();
       if (action === "close-provider-editor") return closeProviderEditor();
-      if (action === "select-provider-preset") { applyPreset(findPreset(id)); return withBusy(button, loadProviderModels); }
+      if (action === "select-provider-preset") { state.providerFormDirty = true; applyPreset(findPreset(id)); return withBusy(button, loadProviderModels); }
       if (action === "refresh-models") return withBusy(button, loadProviderModels);
       if (action === "toggle-api-key") { const input = document.querySelector('[name="provider-api-key"]'); input.type = input.type === "password" ? "text" : "password"; button.innerHTML = `<i data-lucide="${input.type === "password" ? "eye" : "eye-off"}"></i>`; refreshIcons(); return; }
-      if (action === "reset-provider-config") { regenerateProviderConfig(); notify(tr("action.configRegenerated", "配置文件已从表单重新生成")); return; }
+      if (action === "reset-provider-config") { state.providerFormDirty = true; regenerateProviderConfig(); notify(tr("action.configRegenerated", "配置文件已从表单重新生成")); return; }
       if (action === "save-provider") return withBusy(button, saveProvider);
       if (action === "edit-provider") return openProviderEditor(state.providers.find((provider) => provider.id === id));
       if (action === "activate-provider") return withBusy(button, async () => { const provider = await call("activate_provider", { providerId: id, appId: state.activeClient }); await call("apply_provider_config", { providerId: id, appId: state.activeClient }); addLog("ok", trf("action.applied", "{provider} 已应用到 {client}", { provider: provider.name, client: clientMeta(state.activeClient).name })); notify(trf("action.using", "正在使用 {name}", { name: provider.name })); await loadAll({ quiet: true }); });
@@ -2232,10 +2264,11 @@
     const generatedConfigFields = new Set(["provider-name", "provider-base-url", "provider-model", "provider-api-format", "advanced-codex-model", "advanced-claude-sonnet", "advanced-claude-haiku", "advanced-claude-opus"]);
     providerForm.addEventListener("submit", (event) => event.preventDefault());
     providerForm.addEventListener("input", (event) => {
+      state.providerFormDirty = true;
       if (["provider-auth-config", "provider-main-config"].includes(event.target.name)) return setConfigEditState(true);
       if (generatedConfigFields.has(event.target.name) && !state.configManuallyEdited) regenerateProviderConfig();
     });
-    providerForm.addEventListener("change", (event) => { if (generatedConfigFields.has(event.target.name) && !state.configManuallyEdited) regenerateProviderConfig(); });
+    providerForm.addEventListener("change", (event) => { state.providerFormDirty = true; if (generatedConfigFields.has(event.target.name) && !state.configManuallyEdited) regenerateProviderConfig(); });
     for (const name of ["provider-auth-config", "provider-main-config"]) {
       providerForm.elements[name].addEventListener("paste", (event) => {
         const pasted = event.clipboardData?.getData("text/plain") || "";
@@ -2261,7 +2294,7 @@
     async function boot() {
       applyAppearance(); renderAll(); addLog("info", state.desktop ? "正在连接 AgentDock 本机服务" : "已进入浏览器交互预览模式");
       await new Promise((resolve) => requestAnimationFrame(() => resolve()));
-      try { await loadAll({ quiet: true }); addLog("ok", `AgentDock ${state.status.appVersion} 已启动`); void checkForAppUpdate(); void checkCcSwitchImport(); }
+      try { await loadAll({ quiet: true }); addLog("ok", `AgentDock ${state.status.appVersion} 已启动`); void checkForAppUpdate(); if (!ccSwitchInitialCheckCompleted()) { rememberCcSwitchInitialCheck(); void checkCcSwitchImport(); } }
       catch (error) { const message = errorText(error); document.getElementById("backend-state").className = "badge danger"; document.getElementById("backend-state").innerHTML = `<i data-lucide="circle-x"></i>${tr("本机服务连接失败", "本机服务连接失败")}`; addLog("error", message); notify(message, "error"); refreshIcons(); }
     }
     boot();

@@ -5884,7 +5884,7 @@ fn round_cost(value: f64) -> f64 {
 }
 
 pub fn run() {
-    tauri::Builder::default()
+    let app = tauri::Builder::default()
         .setup(|app| {
             TRAY_AVAILABLE.store(setup_tray(app).is_ok(), Ordering::Relaxed);
             let settings = agentdock_dirs()
@@ -5895,6 +5895,8 @@ pub fn run() {
                 || should_show_main_window(&settings, system_startup)
             {
                 show_main_window(app.handle());
+            } else {
+                set_dock_visibility(app.handle(), false);
             }
             Ok(())
         })
@@ -5907,6 +5909,7 @@ pub fn run() {
                 if minimize && TRAY_AVAILABLE.load(Ordering::Relaxed) {
                     api.prevent_close();
                     let _ = window.hide();
+                    set_dock_visibility(window.app_handle(), false);
                 } else {
                     api.prevent_close();
                     window.app_handle().exit(0);
@@ -5956,17 +5959,35 @@ pub fn run() {
             sync_mcp_servers,
             get_usage_stats
         ])
-        .run(tauri::generate_context!())
-        .expect("failed to run AgentDock");
+        .build(tauri::generate_context!())
+        .expect("failed to build AgentDock");
+
+    app.run(|app, event| {
+        #[cfg(target_os = "macos")]
+        if let tauri::RunEvent::Reopen { .. } = event {
+            show_main_window(app);
+        }
+        #[cfg(not(target_os = "macos"))]
+        let _ = (app, event);
+    });
 }
 
 fn show_main_window(app: &tauri::AppHandle) {
+    set_dock_visibility(app, true);
     if let Some(window) = app.get_webview_window("main") {
         let _ = window.unminimize();
         let _ = window.show();
         let _ = window.set_focus();
     }
 }
+
+#[cfg(target_os = "macos")]
+fn set_dock_visibility(app: &tauri::AppHandle, visible: bool) {
+    let _ = app.set_dock_visibility(visible);
+}
+
+#[cfg(not(target_os = "macos"))]
+fn set_dock_visibility(_app: &tauri::AppHandle, _visible: bool) {}
 
 fn should_show_main_window(settings: &AppSettings, system_startup: bool) -> bool {
     !settings.silent_startup || !system_startup
