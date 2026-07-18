@@ -2083,7 +2083,7 @@ async fn fetch_provider_models(
     app_id: String,
     base_url: String,
     api_key: Option<String>,
-    _api_format: Option<String>,
+    api_format: Option<String>,
 ) -> Result<ProviderModelsResult, String> {
     let fallback = fallback_models(&app_id);
     let normalized_url = normalize_base_url(&base_url);
@@ -2095,6 +2095,12 @@ async fn fetch_provider_models(
     }
     if !(normalized_url.starts_with("https://") || normalized_url.starts_with("http://")) {
         return Err("请求地址必须以 http:// 或 https:// 开头".to_string());
+    }
+    if api_format.as_deref() == Some("anthropic") {
+        return Ok(ProviderModelsResult {
+            models: fallback,
+            source: "客户端推荐（Anthropic 协议不提供模型列表）".to_string(),
+        });
     }
 
     let client = reqwest::Client::builder()
@@ -2161,6 +2167,46 @@ fn provider_model_endpoints(base_url: &str, gemini: bool) -> Vec<String> {
     }
     endpoints.dedup();
     endpoints
+}
+
+fn anthropic_messages_endpoint(base_url: &str) -> String {
+    let base_url = base_url.trim_end_matches('/');
+    if base_url.ends_with("/v1/messages") {
+        base_url.to_string()
+    } else if base_url.ends_with("/v1") {
+        format!("{}/messages", base_url)
+    } else {
+        format!("{}/v1/messages", base_url)
+    }
+}
+
+fn anthropic_test_payload(model: &str) -> serde_json::Value {
+    serde_json::json!({
+        "model": model,
+        "max_tokens": 1,
+        "messages": [{ "role": "user", "content": "Reply with OK." }]
+    })
+}
+
+fn provider_uses_anthropic_messages(provider: &ProviderProfile) -> bool {
+    provider.api_format == "anthropic"
+        || provider.provider_type == "anthropic"
+        || (provider.api_format == "auto"
+            && provider
+                .enabled_apps
+                .iter()
+                .any(|app| app == "claude-code" || app == "claude-desktop"))
+}
+
+fn provider_anthropic_model(provider: &ProviderProfile) -> String {
+    serde_json::from_str::<serde_json::Value>(&provider.settings_config)
+        .ok()
+        .and_then(|settings| {
+            json_string_at(&settings, &["env", "ANTHROPIC_MODEL"]).map(str::to_string)
+        })
+        .filter(|model| !model.trim().is_empty())
+        .or_else(|| (!provider.codex_model.trim().is_empty()).then(|| provider.codex_model.clone()))
+        .unwrap_or_else(|| provider.claude_sonnet_model.clone())
 }
 
 #[tauri::command]
@@ -2447,6 +2493,7 @@ fn delete_provider(provider_id: String) -> Result<OperationResult, String> {
 #[tauri::command]
 fn preview_provider_config(provider: ProviderProfile) -> Result<ConfigPreview, String> {
     let base_url = normalize_base_url(&provider.base_url);
+    let claude_model = provider_anthropic_model(&provider);
     let codex_base_url = ensure_v1_url(&base_url);
     let model = serde_json::to_string(&provider.codex_model).map_err(|err| err.to_string())?;
     let provider_name = serde_json::to_string(&provider.name).map_err(|err| err.to_string())?;
@@ -2465,16 +2512,49 @@ env_key = "OPENAI_API_KEY"
         model, provider_name, codex_base_url
     );
 
-    let claude_env_json = serde_json::json!({
-        "env": {
-            "ANTHROPIC_BASE_URL": base_url,
-            "ANTHROPIC_AUTH_TOKEN": "${AGENTDOCK_API_KEY}",
-            "ANTHROPIC_MODEL": provider.claude_sonnet_model,
-            "ANTHROPIC_DEFAULT_SONNET_MODEL": provider.claude_sonnet_model,
-            "ANTHROPIC_DEFAULT_HAIKU_MODEL": provider.claude_haiku_model,
-            "ANTHROPIC_DEFAULT_OPUS_MODEL": provider.claude_opus_model
+    let mut claude_env = serde_json::Map::from_iter([
+        (
+            "ANTHROPIC_BASE_URL".to_string(),
+            serde_json::Value::String(base_url.clone()),
+        ),
+        (
+            "ANTHROPIC_AUTH_TOKEN".to_string(),
+            serde_json::Value::String("${AGENTDOCK_API_KEY}".to_string()),
+        ),
+        (
+            "ANTHROPIC_MODEL".to_string(),
+            serde_json::Value::String(claude_model.clone()),
+        ),
+        (
+            "ANTHROPIC_DEFAULT_SONNET_MODEL".to_string(),
+            serde_json::Value::String(provider.claude_sonnet_model.clone()),
+        ),
+        (
+            "ANTHROPIC_DEFAULT_HAIKU_MODEL".to_string(),
+            serde_json::Value::String(provider.claude_haiku_model.clone()),
+        ),
+        (
+            "ANTHROPIC_DEFAULT_OPUS_MODEL".to_string(),
+            serde_json::Value::String(provider.claude_opus_model.clone()),
+        ),
+    ]);
+    if provider.preset_id == "volcengine-agentplan" {
+        for key in [
+            "ANTHROPIC_DEFAULT_SONNET_MODEL_NAME",
+            "ANTHROPIC_DEFAULT_OPUS_MODEL_NAME",
+            "ANTHROPIC_DEFAULT_FABLE_MODEL_NAME",
+        ] {
+            claude_env.insert(
+                key.to_string(),
+                serde_json::Value::String(claude_model.clone()),
+            );
         }
-    });
+        claude_env.insert(
+            "ANTHROPIC_DEFAULT_FABLE_MODEL".to_string(),
+            serde_json::Value::String(provider.claude_sonnet_model.clone()),
+        );
+    }
+    let claude_env_json = serde_json::json!({ "env": claude_env });
 
     let gemini_env_json = serde_json::json!({
         "env": {
@@ -2707,16 +2787,60 @@ async fn test_provider(provider_id: String) -> Result<ProviderTestResult, String
         });
     }
 
-    let is_gemini = provider.api_format == "gemini"
-        || provider.provider_type == "gemini"
-        || provider.enabled_apps.iter().any(|app| app == "antigravity");
-    let endpoints = provider_model_endpoints(&base_url, is_gemini);
     let client = reqwest::Client::builder()
         .connect_timeout(std::time::Duration::from_secs(5))
         .timeout(std::time::Duration::from_secs(12))
         .user_agent(format!("AgentDock/{}", env!("CARGO_PKG_VERSION")))
         .build()
         .map_err(|err| format!("创建网络请求失败: {}", err))?;
+
+    if provider_uses_anthropic_messages(&provider) {
+        let endpoint = anthropic_messages_endpoint(&base_url);
+        let model = provider_anthropic_model(&provider);
+        let response = client
+            .post(&endpoint)
+            .header("accept", "application/json")
+            .header("anthropic-version", "2023-06-01")
+            .bearer_auth(&api_key)
+            .header("x-api-key", &api_key)
+            .json(&anthropic_test_payload(&model))
+            .send()
+            .await;
+        let response = match response {
+            Ok(response) => response,
+            Err(error) => {
+                return Ok(ProviderTestResult {
+                    ok: false,
+                    latency_ms: start.elapsed().as_millis().max(1),
+                    message: provider_request_error(&error),
+                });
+            }
+        };
+        let status = response.status();
+        if status.is_success() {
+            return Ok(ProviderTestResult {
+                ok: true,
+                latency_ms: start.elapsed().as_millis().max(1),
+                message: format!("{} 连接成功，消息接口返回 {}", provider.name, status),
+            });
+        }
+        let response_text = response.text().await.unwrap_or_default();
+        let detail = response_text.chars().take(180).collect::<String>();
+        return Ok(ProviderTestResult {
+            ok: false,
+            latency_ms: start.elapsed().as_millis().max(1),
+            message: if detail.is_empty() {
+                format!("连接返回 {}，请检查地址、协议、模型和密钥", status)
+            } else {
+                format!("连接返回 {}: {}", status, detail)
+            },
+        });
+    }
+
+    let is_gemini = provider.api_format == "gemini"
+        || provider.provider_type == "gemini"
+        || provider.enabled_apps.iter().any(|app| app == "antigravity");
+    let endpoints = provider_model_endpoints(&base_url, is_gemini);
     let mut last_failure = None;
     for endpoint in endpoints {
         let mut request = client
@@ -2877,7 +3001,9 @@ fn apply_provider_for_app(
             },
             Some(format!(
                 "ANTHROPIC_AUTH_TOKEN={}\nANTHROPIC_BASE_URL={}\nANTHROPIC_MODEL={}\n",
-                api_key, provider.base_url, provider.claude_sonnet_model
+                api_key,
+                provider.base_url,
+                provider_anthropic_model(provider)
             )),
         ),
         "antigravity" => (
@@ -3559,7 +3685,7 @@ fn provider_launch_environment(
                 .or_insert_with(|| provider.base_url.clone());
             environment
                 .entry("ANTHROPIC_MODEL".to_string())
-                .or_insert_with(|| provider.claude_sonnet_model.clone());
+                .or_insert_with(|| provider_anthropic_model(provider));
             environment
                 .entry("ANTHROPIC_DEFAULT_SONNET_MODEL".to_string())
                 .or_insert_with(|| provider.claude_sonnet_model.clone());
@@ -3569,6 +3695,20 @@ fn provider_launch_environment(
             environment
                 .entry("ANTHROPIC_DEFAULT_OPUS_MODEL".to_string())
                 .or_insert_with(|| provider.claude_opus_model.clone());
+            if provider.preset_id == "volcengine-agentplan" {
+                for key in [
+                    "ANTHROPIC_DEFAULT_SONNET_MODEL_NAME",
+                    "ANTHROPIC_DEFAULT_OPUS_MODEL_NAME",
+                    "ANTHROPIC_DEFAULT_FABLE_MODEL_NAME",
+                ] {
+                    environment
+                        .entry(key.to_string())
+                        .or_insert_with(|| provider_anthropic_model(provider));
+                }
+                environment
+                    .entry("ANTHROPIC_DEFAULT_FABLE_MODEL".to_string())
+                    .or_insert_with(|| provider.claude_sonnet_model.clone());
+            }
             if app_id == "claude-code" {
                 environment.insert(
                     "CLAUDE_CONFIG_DIR".to_string(),
@@ -8819,10 +8959,32 @@ mod tests {
             .settings_config
             .contains("${AGENTDOCK_API_KEY}"));
         assert_eq!(prepared.provider.active_apps, vec!["claude-code"]);
+        assert_eq!(prepared.provider.codex_model, "ark-code-latest");
         assert_eq!(prepared.provider.claude_sonnet_model, "ark-code-latest");
         assert_eq!(prepared.provider.claude_haiku_model, "ark-code-latest");
         assert_eq!(prepared.provider.claude_opus_model, "ark-code-latest");
         assert_eq!(prepared.provider.preset_id, "volcengine-agentplan");
+        assert!(provider_uses_anthropic_messages(&prepared.provider));
+        let mut legacy_profile = prepared.provider.clone();
+        legacy_profile.codex_model = default_codex_model();
+        assert_eq!(provider_anthropic_model(&legacy_profile), "ark-code-latest");
+
+        let preview = preview_provider_config(prepared.provider).expect("preview AgentPlan");
+        let settings: serde_json::Value =
+            serde_json::from_str(&preview.claude_env_json).expect("valid Claude settings");
+        assert_eq!(settings["env"]["ANTHROPIC_MODEL"], "ark-code-latest");
+        assert_eq!(
+            settings["env"]["ANTHROPIC_DEFAULT_SONNET_MODEL"],
+            "ark-code-latest"
+        );
+        assert_eq!(
+            settings["env"]["ANTHROPIC_DEFAULT_FABLE_MODEL"],
+            "ark-code-latest"
+        );
+        assert_eq!(
+            settings["env"]["ANTHROPIC_DEFAULT_FABLE_MODEL_NAME"],
+            "ark-code-latest"
+        );
     }
 
     #[test]
@@ -9593,6 +9755,22 @@ requires_openai_auth = true"#;
             provider_model_endpoints("https://proxy.example.com/v1", false),
             vec!["https://proxy.example.com/v1/models"]
         );
+    }
+
+    #[test]
+    fn builds_anthropic_message_test_request_for_agentplan() {
+        assert_eq!(
+            anthropic_messages_endpoint("https://ark.cn-beijing.volces.com/api/coding"),
+            "https://ark.cn-beijing.volces.com/api/coding/v1/messages"
+        );
+        assert_eq!(
+            anthropic_messages_endpoint("https://proxy.example.com/v1"),
+            "https://proxy.example.com/v1/messages"
+        );
+        let payload = anthropic_test_payload("ark-code-latest");
+        assert_eq!(payload["model"], "ark-code-latest");
+        assert_eq!(payload["max_tokens"], 1);
+        assert_eq!(payload["messages"][0]["role"], "user");
     }
 
     #[test]

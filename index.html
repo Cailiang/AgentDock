@@ -100,6 +100,10 @@
     .btn.danger:hover { background: var(--danger-soft); }
     .btn.text { min-height: 32px; border-color: transparent; background: transparent; color: var(--ink-soft); padding-inline: 7px; }
     .btn.text:hover { background: var(--surface-pressed); color: var(--ink); box-shadow: none; }
+    .btn.is-busy, .icon-btn.is-busy { position: relative; }
+    .button-idle-content { display: contents; }
+    .btn.is-busy > .button-idle-content, .icon-btn.is-busy > .button-idle-content { visibility: hidden; }
+    .busy-content { position: absolute; inset: 0; display: inline-flex; align-items: center; justify-content: center; gap: 7px; }
     .icon-btn { width: 36px; padding: 0; }
     .btn svg, .icon-btn svg { width: 16px; height: 16px; }
     .badge { display: inline-flex; min-height: 25px; align-items: center; justify-content: center; gap: 6px; border: 1px solid var(--line); border-radius: 6px; background: var(--surface-raised); color: var(--ink-soft); padding: 0 8px; font-size: 11px; white-space: nowrap; }
@@ -423,6 +427,26 @@
     .advanced-config { grid-column: 1 / -1; border-top: 1px solid var(--line); padding-top: 16px; }
     .advanced-config summary { cursor: pointer; color: var(--ink-soft); font-weight: 620; }
     .advanced-config .form-grid { margin-top: 16px; }
+    .claude-advanced-options { display: grid; gap: 20px; margin-top: 16px; }
+    .claude-auth-field { max-width: 480px; }
+    .claude-model-mapping { display: grid; gap: 12px; border-top: 1px solid var(--line); padding-top: 18px; }
+    .claude-model-mapping-head { display: flex; align-items: flex-start; justify-content: space-between; gap: 16px; }
+    .claude-model-mapping-head h4 { margin: 0; font-size: 13px; }
+    .claude-model-mapping-head p, .claude-fallback p { margin: 4px 0 0; color: var(--ink-faint); font-size: 10px; line-height: 1.55; }
+    .claude-model-grid { display: grid; gap: 8px; }
+    .claude-model-grid-head, .claude-model-row { display: grid; grid-template-columns: 110px minmax(150px, 1fr) minmax(190px, 1.2fr) 96px; gap: 8px; }
+    .claude-model-grid-head { padding: 0 2px; color: var(--ink-soft); font-size: 10px; font-weight: 650; }
+    .claude-model-row > * { min-width: 0; }
+    .claude-model-role, .claude-model-placeholder { display: flex; min-height: 40px; align-items: center; border: 1px solid var(--line); border-radius: 7px; background: var(--surface-pressed); color: var(--ink-soft); padding: 0 12px; font-size: 12px; font-weight: 650; }
+    .claude-model-placeholder { font-weight: 500; }
+    .claude-model-cell { display: grid; gap: 5px; }
+    .claude-model-cell input { min-width: 0; }
+    .claude-mobile-field-label { display: none; color: var(--ink-faint); font-size: 10px; font-weight: 600; }
+    .claude-one-m { display: flex; min-height: 40px; align-items: center; gap: 8px; color: var(--ink-soft); font-size: 12px; white-space: nowrap; }
+    .claude-one-m input { width: 18px; height: 18px; margin: 0; accent-color: var(--accent); }
+    .claude-one-m-empty { min-height: 40px; }
+    .claude-fallback { display: grid; gap: 8px; border-top: 1px solid var(--line); padding-top: 16px; }
+    .claude-fallback-controls { display: grid; grid-template-columns: minmax(0, 1fr) 96px; gap: 8px; }
     .config-content { grid-column: 1 / -1; display: grid; gap: 14px; border-top: 1px solid var(--line); padding-top: 20px; }
     .config-content-head { display: flex; align-items: flex-start; justify-content: space-between; gap: 16px; }
     .config-content-head h4 { margin: 0; font-size: 14px; font-weight: 680; }
@@ -485,6 +509,14 @@
       .provider-card, .data-row { grid-template-columns: 1fr; }
       .two-column, .provider-fields, .form-grid { grid-template-columns: 1fr; }
       .field.full, .advanced-config { grid-column: auto; }
+      .claude-model-grid-head { display: none; }
+      .claude-model-row { grid-template-columns: 92px minmax(0, 1fr); padding-bottom: 10px; border-bottom: 1px solid var(--line); }
+      .claude-model-row:last-child { padding-bottom: 0; border-bottom: 0; }
+      .claude-model-role { grid-row: 1 / span 3; align-items: flex-start; padding-top: 12px; }
+      .claude-model-cell, .claude-one-m { grid-column: 2; }
+      .claude-one-m-empty { display: none; }
+      .claude-mobile-field-label { display: block; }
+      .claude-model-placeholder { grid-column: 2; }
       .preset-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); }
       .preset-head { align-items: stretch; flex-direction: column; }
       .preset-search { width: 100%; }
@@ -727,12 +759,54 @@
                 <label class="field full key-field" id="api-key-field"><span>API Key</span><input name="provider-api-key" type="password" autocomplete="off" placeholder="编辑时留空会保留已有密钥" /><button class="icon-btn" type="button" data-action="toggle-api-key" title="显示或隐藏 API Key" aria-label="显示或隐藏 API Key"><i data-lucide="eye"></i></button></label>
                 <label class="field provider-control-pair" id="provider-model-field"><span>默认模型</span><div class="model-control"><input name="provider-model" list="provider-model-options" aria-label="默认模型" autocomplete="off" /><datalist id="provider-model-options"></datalist><button class="icon-btn" type="button" data-action="refresh-models" title="刷新模型列表" aria-label="刷新模型列表"><i data-lucide="refresh-cw"></i></button></div><small class="model-source" id="model-source">按客户端读取推荐模型</small></label>
                 <label class="field provider-control-pair" id="provider-api-format-field"><span>API 协议</span><select name="provider-api-format"><option value="auto">自动识别</option><option value="responses">OpenAI Responses</option><option value="chat-completions">Chat Completions</option><option value="anthropic">Anthropic Messages</option><option value="gemini">Gemini Native</option></select><small class="model-source" aria-hidden="true">&nbsp;</small></label>
-                <details class="advanced-config" id="advanced-model-fields"><summary>高级模型映射</summary><div class="form-grid">
-                  <label class="field full"><span>Codex 模型</span><input name="advanced-codex-model" /></label>
-                  <label class="field"><span>Claude Sonnet</span><input name="advanced-claude-sonnet" /></label>
-                  <label class="field"><span>Claude Haiku</span><input name="advanced-claude-haiku" /></label>
-                  <label class="field full"><span>Claude Opus</span><input name="advanced-claude-opus" /></label>
-                </div></details>
+                <details class="advanced-config" id="advanced-model-fields"><summary>高级选项</summary>
+                  <div class="form-grid" id="advanced-generic-model-fields">
+                    <label class="field full"><span>Codex 模型</span><input name="advanced-codex-model" /></label>
+                  </div>
+                  <div class="claude-advanced-options" id="claude-advanced-options" hidden>
+                    <label class="field claude-auth-field"><span>认证字段</span><select name="advanced-claude-auth-field"><option value="ANTHROPIC_AUTH_TOKEN">ANTHROPIC_AUTH_TOKEN（默认）</option><option value="ANTHROPIC_API_KEY">ANTHROPIC_API_KEY</option></select><small>选择写入 Claude 配置的认证环境变量名</small></label>
+                    <section class="claude-model-mapping" aria-labelledby="claude-model-mapping-title">
+                      <header class="claude-model-mapping-head"><div><h4 id="claude-model-mapping-title">模型映射</h4><p>显示名称只影响 /model 菜单；1M 用于声明 Claude Code 的上下文能力。</p></div></header>
+                      <div class="claude-model-grid">
+                        <div class="claude-model-grid-head" aria-hidden="true"><span>模型角色</span><span>显示名称</span><span>实际请求模型</span><span>声明支持 1M</span></div>
+                        <div class="claude-model-row" data-claude-model-role="sonnet">
+                          <span class="claude-model-role">Sonnet</span>
+                          <label class="claude-model-cell"><span class="claude-mobile-field-label">显示名称</span><input name="advanced-claude-sonnet-name" aria-label="Sonnet 显示名称" autocomplete="off" /></label>
+                          <label class="claude-model-cell"><span class="claude-mobile-field-label">实际请求模型</span><input name="advanced-claude-sonnet" list="provider-model-options" aria-label="Sonnet 实际请求模型" autocomplete="off" /></label>
+                          <label class="claude-one-m"><input type="checkbox" name="advanced-claude-sonnet-1m" aria-label="Sonnet 声明支持 1M" /><span>1M</span></label>
+                        </div>
+                        <div class="claude-model-row" data-claude-model-role="opus">
+                          <span class="claude-model-role">Opus</span>
+                          <label class="claude-model-cell"><span class="claude-mobile-field-label">显示名称</span><input name="advanced-claude-opus-name" aria-label="Opus 显示名称" autocomplete="off" /></label>
+                          <label class="claude-model-cell"><span class="claude-mobile-field-label">实际请求模型</span><input name="advanced-claude-opus" list="provider-model-options" aria-label="Opus 实际请求模型" autocomplete="off" /></label>
+                          <label class="claude-one-m"><input type="checkbox" name="advanced-claude-opus-1m" aria-label="Opus 声明支持 1M" /><span>1M</span></label>
+                        </div>
+                        <div class="claude-model-row" data-claude-model-role="fable">
+                          <span class="claude-model-role">Fable</span>
+                          <label class="claude-model-cell"><span class="claude-mobile-field-label">显示名称</span><input name="advanced-claude-fable-name" aria-label="Fable 显示名称" autocomplete="off" /></label>
+                          <label class="claude-model-cell"><span class="claude-mobile-field-label">实际请求模型</span><input name="advanced-claude-fable" list="provider-model-options" aria-label="Fable 实际请求模型" autocomplete="off" /></label>
+                          <label class="claude-one-m"><input type="checkbox" name="advanced-claude-fable-1m" aria-label="Fable 声明支持 1M" /><span>1M</span></label>
+                        </div>
+                        <div class="claude-model-row" data-claude-model-role="haiku">
+                          <span class="claude-model-role">Haiku</span>
+                          <label class="claude-model-cell"><span class="claude-mobile-field-label">显示名称</span><input name="advanced-claude-haiku-name" aria-label="Haiku 显示名称" autocomplete="off" /></label>
+                          <label class="claude-model-cell"><span class="claude-mobile-field-label">实际请求模型</span><input name="advanced-claude-haiku" list="provider-model-options" aria-label="Haiku 实际请求模型" autocomplete="off" /></label>
+                          <span class="claude-one-m-empty" aria-hidden="true"></span>
+                        </div>
+                        <div class="claude-model-row" data-claude-model-role="subagent">
+                          <span class="claude-model-role">Subagent</span>
+                          <div class="claude-model-placeholder">不显示在 /model 菜单</div>
+                          <label class="claude-model-cell"><span class="claude-mobile-field-label">实际请求模型</span><input name="advanced-claude-subagent" list="provider-model-options" aria-label="Subagent 实际请求模型" autocomplete="off" /></label>
+                          <label class="claude-one-m"><input type="checkbox" name="advanced-claude-subagent-1m" aria-label="Subagent 声明支持 1M" /><span>1M</span></label>
+                        </div>
+                      </div>
+                      <div class="claude-fallback">
+                        <div class="field"><span>默认兜底模型</span><div class="claude-fallback-controls"><input name="advanced-claude-fallback" list="provider-model-options" aria-label="默认兜底模型" autocomplete="off" /><label class="claude-one-m"><input type="checkbox" name="advanced-claude-fallback-1m" aria-label="默认兜底模型声明支持 1M" /><span>1M</span></label></div></div>
+                        <p>用于未明确落到 Sonnet、Opus、Fable、Haiku 角色的请求。第三方或中转端点建议填写，避免上游因不识别原始 Claude 模型名而报错。</p>
+                      </div>
+                    </section>
+                  </div>
+                </details>
                 <section class="config-content" id="provider-config-content" aria-labelledby="config-content-title">
                   <div class="config-content-head"><div><h4 id="config-content-title">配置文件内容</h4><p>保存后将按此内容生成客户端配置，粘贴现有配置会自动识别地址和密钥</p></div><div class="config-content-actions"><span class="badge config-import-status" id="config-import-status" hidden></span><span class="badge" id="config-edit-state">自动生成</span><button class="btn text" type="button" data-action="reset-provider-config"><i data-lucide="rotate-ccw"></i>从表单重新生成</button></div></div>
                   <div class="config-files" id="config-files">
@@ -893,22 +967,22 @@
       { id: "custom", name: "自定义配置", short: "CU", type: "custom", baseUrl: "", model: "", website: "", format: "auto", category: "custom" }
     ];
     const CLAUDE_ADDITIONAL_PRESETS = [
-      { id: "shengsuanyun", name: "Shengsuanyun", short: "SS", type: "anthropic", baseUrl: "https://router.shengsuanyun.com/api", model: "anthropic/claude-sonnet-5", website: "https://www.shengsuanyun.com", format: "anthropic", category: "aggregator" },
-      { id: "patewayai", name: "PatewayAI", short: "PA", type: "anthropic", baseUrl: "https://api.pateway.ai", model: "claude-sonnet-5", website: "https://pateway.ai", format: "anthropic", category: "third_party" },
-      { id: "volcengine-agentplan", name: "火山 AgentPlan", short: "AP", type: "anthropic", baseUrl: "https://ark.cn-beijing.volces.com/api/coding", model: "ark-code-latest", claudeHaikuModel: "ark-code-latest", claudeOpusModel: "ark-code-latest", website: "https://www.volcengine.com/activity/codingplan", format: "anthropic", category: "cn_official" },
+      { id: "shengsuanyun", name: "Shengsuanyun", short: "SS", type: "anthropic", baseUrl: "https://router.shengsuanyun.com/api", model: "anthropic/claude-sonnet-5", claudeSonnetModel: "anthropic/claude-sonnet-5", claudeHaikuModel: "anthropic/claude-haiku-4.5", claudeOpusModel: "anthropic/claude-opus-4.8", website: "https://www.shengsuanyun.com", format: "anthropic", category: "aggregator" },
+      { id: "patewayai", name: "PatewayAI", short: "PA", type: "anthropic", baseUrl: "https://api.pateway.ai", model: "", claudeAuthField: "ANTHROPIC_API_KEY", website: "https://pateway.ai", format: "anthropic", category: "third_party" },
+      { id: "volcengine-agentplan", name: "火山 AgentPlan", short: "AP", type: "anthropic", baseUrl: "https://ark.cn-beijing.volces.com/api/coding", model: "ark-code-latest", website: "https://www.volcengine.com/activity/codingplan", format: "anthropic", category: "cn_official" },
       { id: "byteplus", name: "BytePlus", short: "BP", type: "anthropic", baseUrl: "https://ark.ap-southeast.bytepluses.com/api/coding", model: "ark-code-latest", claudeHaikuModel: "ark-code-latest", claudeOpusModel: "ark-code-latest", website: "https://www.byteplus.com/en/product/modelark", format: "anthropic", category: "third_party" },
       { id: "qianfan-coding", name: "百度千帆 Coding Plan", short: "QF", type: "anthropic", baseUrl: "https://qianfan.baidubce.com/anthropic/coding", model: "qianfan-code-latest", claudeHaikuModel: "qianfan-code-latest", claudeOpusModel: "qianfan-code-latest", website: "https://cloud.baidu.com/product/qianfan_modelbuilder", format: "anthropic", category: "cn_official" },
-      { id: "ccsub", name: "CCSub", short: "CS", type: "anthropic", baseUrl: "https://www.ccsub.net", model: "claude-sonnet-5", website: "https://www.ccsub.net", format: "anthropic", category: "aggregator" },
-      { id: "subrouter", name: "SubRouter", short: "SR", type: "anthropic", baseUrl: "https://subrouter.ai", model: "claude-sonnet-5", website: "https://subrouter.ai", format: "anthropic", category: "aggregator" },
-      { id: "unity2", name: "Unity2.ai", short: "U2", type: "anthropic", baseUrl: "https://api.unity2.ai", model: "claude-sonnet-5", website: "https://unity2.ai", format: "anthropic", category: "aggregator" },
-      { id: "qiniu", name: "Qiniu", short: "QN", type: "anthropic", baseUrl: "https://api.qnaigc.com", model: "claude-sonnet-5", website: "https://s.qiniu.com/nMvAvy", format: "anthropic", category: "aggregator" },
-      { id: "fennoai", name: "FennoAI", short: "FN", type: "anthropic", baseUrl: "https://api.fenno.ai", model: "claude-sonnet-5", website: "https://api.fenno.ai", format: "anthropic", category: "aggregator" },
-      { id: "zetaapi", name: "ZetaAPI", short: "ZE", type: "anthropic", baseUrl: "https://api.zetaapi.ai", model: "claude-sonnet-5", website: "https://zetaapi.ai", format: "anthropic", category: "aggregator" },
-      { id: "teamorouter", name: "TeamoRouter", short: "TR", type: "anthropic", baseUrl: "https://api.teamorouter.com", model: "claude-sonnet-5", website: "https://teamorouter.com", format: "anthropic", category: "aggregator" },
-      { id: "amux", name: "Amux", short: "AM", type: "anthropic", baseUrl: "https://api.amux.ai", model: "claude-sonnet-5", website: "https://amux.ai", format: "anthropic", category: "aggregator" },
-      { id: "code0", name: "Code0", short: "C0", type: "anthropic", baseUrl: "https://code0.ai", model: "claude-sonnet-5", website: "https://code0.ai", format: "anthropic", category: "aggregator" },
-      { id: "nekocode", name: "NekoCode", short: "NK", type: "anthropic", baseUrl: "https://nekocode.ai", model: "claude-sonnet-5", website: "https://nekocode.ai", format: "anthropic", category: "aggregator" },
-      { id: "openrouter", name: "OpenRouter", short: "OR", type: "anthropic", baseUrl: "https://openrouter.ai/api", model: "anthropic/claude-sonnet-5", website: "https://openrouter.ai", format: "anthropic", category: "aggregator" }
+      { id: "ccsub", name: "CCSub", short: "CS", type: "anthropic", baseUrl: "https://www.ccsub.net", model: "", website: "https://www.ccsub.net", format: "anthropic", category: "aggregator" },
+      { id: "subrouter", name: "SubRouter", short: "SR", type: "anthropic", baseUrl: "https://subrouter.ai", model: "", website: "https://subrouter.ai", format: "anthropic", category: "aggregator" },
+      { id: "unity2", name: "Unity2.ai", short: "U2", type: "anthropic", baseUrl: "https://api.unity2.ai", model: "", website: "https://unity2.ai", format: "anthropic", category: "aggregator" },
+      { id: "qiniu", name: "Qiniu", short: "QN", type: "anthropic", baseUrl: "https://api.qnaigc.com", model: "", website: "https://s.qiniu.com/nMvAvy", format: "anthropic", category: "aggregator" },
+      { id: "fennoai", name: "FennoAI", short: "FN", type: "anthropic", baseUrl: "https://api.fenno.ai", model: "", website: "https://api.fenno.ai", format: "anthropic", category: "aggregator" },
+      { id: "zetaapi", name: "ZetaAPI", short: "ZE", type: "anthropic", baseUrl: "https://api.zetaapi.ai", model: "", website: "https://zetaapi.ai", format: "anthropic", category: "aggregator" },
+      { id: "teamorouter", name: "TeamoRouter", short: "TR", type: "anthropic", baseUrl: "https://api.teamorouter.com", model: "", website: "https://teamorouter.com", format: "anthropic", category: "aggregator" },
+      { id: "amux", name: "Amux", short: "AM", type: "anthropic", baseUrl: "https://api.amux.ai", model: "", website: "https://amux.ai", format: "anthropic", category: "aggregator" },
+      { id: "code0", name: "Code0", short: "C0", type: "anthropic", baseUrl: "https://code0.ai", model: "", website: "https://code0.ai", format: "anthropic", category: "aggregator" },
+      { id: "nekocode", name: "NekoCode", short: "NK", type: "anthropic", baseUrl: "https://nekocode.ai", model: "", website: "https://nekocode.ai", format: "anthropic", category: "aggregator" },
+      { id: "openrouter", name: "OpenRouter", short: "OR", type: "anthropic", baseUrl: "https://openrouter.ai/api", model: "anthropic/claude-sonnet-5", claudeSonnetModel: "anthropic/claude-sonnet-5", claudeHaikuModel: "anthropic/claude-haiku-4.5", claudeOpusModel: "anthropic/claude-opus-4.8", website: "https://openrouter.ai", format: "anthropic", category: "aggregator" }
     ];
     const OPENAI_ADDITIONAL_PRESETS = [
       { id: "shengsuanyun", name: "Shengsuanyun", short: "SS", type: "openai", baseUrl: "https://router.shengsuanyun.com/api/v1", model: "openai/gpt-5.5", website: "https://www.shengsuanyun.com", format: "responses", category: "aggregator" },
@@ -931,26 +1005,26 @@
     const PRESETS = {
       "claude-code": [
         ...COMMON_PRESETS,
-        { id: "claude-official", name: "Claude Official", short: "CL", type: "official", baseUrl: "", model: "claude-sonnet-5", website: "https://www.anthropic.com/claude-code", format: "anthropic", category: "official" },
+        { id: "claude-official", name: "Claude Official", short: "CL", type: "official", baseUrl: "", model: "", website: "https://www.anthropic.com/claude-code", format: "anthropic", category: "official" },
         ...CLAUDE_ADDITIONAL_PRESETS,
-        { id: "deepseek", name: "DeepSeek", short: "DS", type: "anthropic", baseUrl: "https://api.deepseek.com/anthropic", model: "deepseek-chat", website: "https://platform.deepseek.com", format: "anthropic", category: "third_party" },
-        { id: "zhipu-glm", name: "Zhipu GLM", short: "GL", type: "anthropic", baseUrl: "https://open.bigmodel.cn/api/anthropic", model: "glm-5.2", website: "https://open.bigmodel.cn", format: "anthropic", category: "cn_official" },
-        { id: "zai-glm", name: "Z.ai GLM", short: "ZA", type: "anthropic", baseUrl: "https://api.z.ai/api/anthropic", model: "glm-5.2", website: "https://z.ai", format: "anthropic", category: "cn_official" },
+        { id: "deepseek", name: "DeepSeek", short: "DS", type: "anthropic", baseUrl: "https://api.deepseek.com/anthropic", model: "deepseek-v4-pro", claudeSonnetModel: "deepseek-v4-pro", claudeHaikuModel: "deepseek-v4-flash", claudeOpusModel: "deepseek-v4-pro", website: "https://platform.deepseek.com", format: "anthropic", category: "cn_official" },
+        { id: "zhipu-glm", name: "Zhipu GLM", short: "GL", type: "anthropic", baseUrl: "https://open.bigmodel.cn/api/anthropic", model: "glm-5.1", website: "https://open.bigmodel.cn", format: "anthropic", category: "cn_official" },
+        { id: "zai-glm", name: "Z.ai GLM", short: "ZA", type: "anthropic", baseUrl: "https://api.z.ai/api/anthropic", model: "glm-5.1", website: "https://z.ai", format: "anthropic", category: "cn_official" },
         { id: "qwen-coder", name: "Qwen Coder", short: "QW", type: "anthropic", baseUrl: "https://dashscope.aliyuncs.com/api/v2/apps/claude-code-proxy", model: "qwen3-coder-plus", website: "https://bailian.console.aliyun.com", format: "anthropic", category: "cn_official" },
-        { id: "bailian", name: "Bailian", short: "BL", type: "anthropic", baseUrl: "https://dashscope.aliyuncs.com/apps/anthropic", model: "qwen3-coder-plus", website: "https://bailian.console.aliyun.com", format: "anthropic", category: "cn_official" },
-        { id: "bailian-coding", name: "Bailian For Coding", short: "BC", type: "anthropic", baseUrl: "https://coding.dashscope.aliyuncs.com/apps/anthropic", model: "qwen3-coder-plus", website: "https://bailian.console.aliyun.com", format: "anthropic", category: "cn_official" },
-        { id: "kimi-k2", name: "Kimi K2", short: "KM", type: "anthropic", baseUrl: "https://api.moonshot.cn/anthropic", model: "kimi-k2.7-code", website: "https://platform.kimi.com", format: "anthropic", category: "cn_official" },
+        { id: "bailian", name: "Bailian", short: "BL", type: "anthropic", baseUrl: "https://dashscope.aliyuncs.com/apps/anthropic", model: "", website: "https://bailian.console.aliyun.com", format: "anthropic", category: "cn_official" },
+        { id: "bailian-coding", name: "Bailian For Coding", short: "BC", type: "anthropic", baseUrl: "https://coding.dashscope.aliyuncs.com/apps/anthropic", model: "", website: "https://bailian.console.aliyun.com", format: "anthropic", category: "cn_official" },
+        { id: "kimi-k2", name: "Kimi", short: "KM", type: "anthropic", baseUrl: "https://api.moonshot.cn/anthropic", model: "kimi-k2.7-code", website: "https://platform.kimi.com", format: "anthropic", category: "cn_official" },
         { id: "kimi-coding", name: "Kimi For Coding", short: "KC", type: "anthropic", baseUrl: "https://api.kimi.com/coding/", model: "kimi-for-coding", website: "https://www.kimi.com/code", format: "anthropic", category: "cn_official" },
         { id: "stepfun", name: "StepFun", short: "SF", type: "anthropic", baseUrl: "https://api.stepfun.com/step_plan", model: "step-3.5-flash-2603", website: "https://platform.stepfun.com/step-plan", format: "anthropic", category: "cn_official" },
         { id: "modelscope", name: "ModelScope", short: "MS", type: "anthropic", baseUrl: "https://api-inference.modelscope.cn", model: "ZhipuAI/GLM-5.1", website: "https://modelscope.cn", format: "anthropic", category: "aggregator" },
         { id: "longcat", name: "Longcat", short: "LC", type: "anthropic", baseUrl: "https://api.longcat.chat/anthropic", model: "LongCat-2.0", website: "https://longcat.chat/platform", format: "anthropic", category: "cn_official" },
         { id: "minimax", name: "MiniMax", short: "MM", type: "anthropic", baseUrl: "https://api.minimaxi.com/anthropic", model: "MiniMax-M2.7", website: "https://platform.minimaxi.com", format: "anthropic", category: "cn_official" },
         { id: "minimax-en", name: "MiniMax en", short: "ME", type: "anthropic", baseUrl: "https://api.minimax.io/anthropic", model: "MiniMax-M2.7", website: "https://platform.minimax.io", format: "anthropic", category: "cn_official" },
-        { id: "doubao", name: "DouBaoSeed", short: "DB", type: "anthropic", baseUrl: "https://ark.cn-beijing.volces.com/api/coding", model: "ark-code-latest", website: "https://console.volcengine.com/ark", format: "anthropic", category: "cn_official" },
+        { id: "doubao", name: "DouBaoSeed", short: "DB", type: "anthropic", baseUrl: "https://ark.cn-beijing.volces.com/api/compatible", model: "doubao-seed-2-1-pro-260628", website: "https://console.volcengine.com/ark", format: "anthropic", category: "cn_official" },
         { id: "bailing", name: "BaiLing", short: "BA", type: "anthropic", baseUrl: "https://api.tbox.cn/api/anthropic", model: "Ling-2.5-1T", website: "https://alipaytbox.yuque.com/sxs0ba/ling/get_started", format: "anthropic", category: "cn_official" },
-        { id: "aihubmix", name: "AiHubMix", short: "AH", type: "anthropic", baseUrl: "https://aihubmix.com", model: "claude-sonnet-5", website: "https://aihubmix.com", format: "anthropic", category: "aggregator" },
-        { id: "dmxapi", name: "DMXAPI", short: "DX", type: "anthropic", baseUrl: "https://www.dmxapi.cn", model: "claude-sonnet-5", website: "https://www.dmxapi.cn", format: "anthropic", category: "aggregator" },
-        { id: "packycode", name: "PackyCode", short: "PK", type: "anthropic", baseUrl: "https://www.packyapi.com", model: "claude-sonnet-5", website: "https://www.packyapi.com", format: "anthropic", category: "aggregator" }
+        { id: "aihubmix", name: "AiHubMix", short: "AH", type: "anthropic", baseUrl: "https://aihubmix.com", model: "", claudeAuthField: "ANTHROPIC_API_KEY", website: "https://aihubmix.com", format: "anthropic", category: "aggregator" },
+        { id: "dmxapi", name: "DMXAPI", short: "DX", type: "anthropic", baseUrl: "https://www.dmxapi.cn", model: "", website: "https://www.dmxapi.cn", format: "anthropic", category: "aggregator" },
+        { id: "packycode", name: "PackyCode", short: "PK", type: "anthropic", baseUrl: "https://www.packyapi.com", model: "", website: "https://www.packyapi.com", format: "anthropic", category: "third_party" }
       ],
       codex: [
         ...COMMON_PRESETS,
@@ -1069,10 +1143,10 @@
 
     const mock = {
       status: {
-        appVersion: "0.1.16", platform: "browser-preview", dataDir: "/AgentDock/data", configDir: "/AgentDock/config", managedRuntimeReady: true,
+        appVersion: "0.1.17", platform: "browser-preview", dataDir: "/AgentDock/data", configDir: "/AgentDock/config", managedRuntimeReady: true,
         clients: APP_ORDER.map((id) => { const installed = ["codex", "claude-desktop"].includes(id); return { id, name: APP_META[id].name, installed, version: installed ? id === "codex" ? "0.91.0" : "detected" : null, executable: installed ? `/Applications/${id}` : null, configPath: installed ? `/AgentDock/${id}/config` : null, managedByAgentdock: id === "codex" }; })
       },
-      appUpdate: { supported: true, available: true, currentVersion: "0.1.16", latestVersion: "0.1.17", downloadSize: 12582912 },
+      appUpdate: { supported: true, available: true, currentVersion: "0.1.17", latestVersion: "0.1.18", downloadSize: 12582912 },
       ccSwitchImport: { available: true, sourcePath: "~/.cc-switch/cc-switch.db", sourceKind: "SQLite", fingerprint: "browser-preview-cc-switch", providerCount: 4, appCounts: { "claude-code": 2, codex: 1, antigravity: 1 } },
       settings: { ...defaultSettings },
       providers: [{ id: "packycode-preview", name: "PackyCode", notes: "主力线路", websiteUrl: "https://www.packyapi.com", presetId: "packycode", providerType: "openai", baseUrl: "https://www.packyapi.com/v1", apiFormat: "responses", enabledApps: ["codex"], activeApps: ["codex"], codexModel: "gpt-5.6-sol", geminiModel: "gemini-3.5-pro", claudeSonnetModel: "claude-sonnet-5", claudeHaikuModel: "claude-haiku-4-5", claudeOpusModel: "claude-opus-4-8", active: true, apiKeyConfigured: true, createdAt: new Date().toISOString(), updatedAt: new Date().toISOString() }],
@@ -1165,7 +1239,7 @@
       if (command === "import_cc_switch_config") {
         const now = new Date().toISOString();
         const imported = [
-          { id: "cc-switch-claude-code-agentplan-preview", name: "火山 AgentPlan", notes: "从 cc-switch 导入", websiteUrl: "https://www.volcengine.com/activity/codingplan", presetId: "volcengine-agentplan", providerType: "anthropic", baseUrl: "https://ark.cn-beijing.volces.com/api/coding", apiFormat: "anthropic", enabledApps: ["claude-code"], activeApps: ["claude-code"], codexModel: "ark-code-latest", geminiModel: "gemini-3.5-pro", claudeSonnetModel: "ark-code-latest", claudeHaikuModel: "ark-code-latest", claudeOpusModel: "ark-code-latest", active: true, apiKeyConfigured: true, createdAt: now, updatedAt: now },
+          { id: "cc-switch-claude-code-agentplan-preview", name: "火山 AgentPlan", notes: "从 cc-switch 导入", websiteUrl: "https://www.volcengine.com/activity/codingplan", presetId: "volcengine-agentplan", providerType: "anthropic", baseUrl: "https://ark.cn-beijing.volces.com/api/coding", apiFormat: "anthropic", settingsConfig: JSON.stringify({ env: { ANTHROPIC_BASE_URL: "https://ark.cn-beijing.volces.com/api/coding", ANTHROPIC_AUTH_TOKEN: configKeyPlaceholder, ANTHROPIC_MODEL: "ark-code-latest", ANTHROPIC_DEFAULT_HAIKU_MODEL: "ark-code-latest", ANTHROPIC_DEFAULT_SONNET_MODEL: "ark-code-latest", ANTHROPIC_DEFAULT_OPUS_MODEL: "ark-code-latest" } }, null, 2), enabledApps: ["claude-code"], activeApps: ["claude-code"], codexModel: "ark-code-latest", geminiModel: "gemini-3.5-pro", claudeSonnetModel: "ark-code-latest", claudeHaikuModel: "ark-code-latest", claudeOpusModel: "ark-code-latest", active: true, apiKeyConfigured: true, createdAt: now, updatedAt: now },
           { id: "cc-switch-codex-relay-preview", name: "工作 Relay", notes: "从 cc-switch 导入", websiteUrl: "", presetId: "", providerType: "openai", baseUrl: "https://relay.example/v1", apiFormat: "responses", enabledApps: ["codex"], activeApps: ["codex"], codexModel: "gpt-5.5", geminiModel: "gemini-3.5-pro", claudeSonnetModel: "claude-sonnet-5", claudeHaikuModel: "claude-haiku-4-5", claudeOpusModel: "claude-opus-4-8", active: true, apiKeyConfigured: true, createdAt: now, updatedAt: now }
         ];
         for (const provider of mock.providers) provider.activeApps = provider.activeApps.filter((app) => !["claude-code", "codex"].includes(app));
@@ -1188,7 +1262,7 @@
       if (command === "run_diagnostics") return {
         generatedAt: new Date().toISOString(), score: 75, passed: 6, warnings: 1, failed: 1,
         checks: [
-          { id: "system-platform", category: "系统", status: "pass", title: "桌面运行环境", detail: "AgentDock 0.1.16 · macOS arm64", action: "" },
+          { id: "system-platform", category: "系统", status: "pass", title: "桌面运行环境", detail: "AgentDock 0.1.17 · macOS arm64", action: "" },
           { id: "system-data-dir", category: "系统", status: "pass", title: "数据目录可写", detail: "/AgentDock/data", action: "" },
           { id: "client-claude", category: "客户端", status: "pass", title: "Claude Desktop 可正常启动", detail: "1.0.2 · 系统安装", action: "" },
           { id: "client-codex-update", category: "客户端", status: "warning", title: "Codex 有新版本", detail: "当前 0.1.0，最新 0.2.0", action: "前往客户端页面点击更新" },
@@ -1334,11 +1408,15 @@
     async function withBusy(button, task, operationKey = null) {
       const key = operationKey || (button ? `${button.dataset.action || "action"}:${button.dataset.id || button.dataset.field || "global"}` : Symbol("operation"));
       if (state.inFlightOperations.has(key)) { notify(tr("该操作正在进行中", "该操作正在进行中")); return; }
-      state.inFlightOperations.add(key); const original = button?.innerHTML; const originalWidth = button?.style.width;
-      if (button) { button.style.width = `${Math.ceil(button.getBoundingClientRect().width)}px`; button.disabled = true; button.innerHTML = `<i class="spin" data-lucide="loader-circle"></i><span>${tr("处理中", "处理中")}</span>`; refreshIcons(); }
+      state.inFlightOperations.add(key); const originalWidth = button?.style.width; const originallyDisabled = button?.disabled; let busyContent = null; let idleContent = null;
+      if (button) {
+        button.style.width = `${Math.ceil(button.getBoundingClientRect().width)}px`; button.disabled = true; button.classList.add("is-busy"); button.setAttribute("aria-busy", "true");
+        idleContent = document.createElement("span"); idleContent.className = "button-idle-content"; while (button.firstChild) idleContent.append(button.firstChild); button.append(idleContent);
+        busyContent = document.createElement("span"); busyContent.className = "busy-content"; busyContent.innerHTML = `<i class="spin" data-lucide="loader-circle"></i><span>${tr("处理中", "处理中")}</span>`; button.append(busyContent); refreshIcons();
+      }
       try { await task(); }
       catch (error) { const message = errorText(error); addLog("error", message); notify(message, "error"); showProviderError(message); }
-      finally { state.inFlightOperations.delete(key); if (button && document.body.contains(button)) { button.disabled = false; button.innerHTML = original; button.style.width = originalWidth; refreshIcons(); } }
+      finally { state.inFlightOperations.delete(key); if (button && document.body.contains(button)) { busyContent?.remove(); while (idleContent?.firstChild) button.insertBefore(idleContent.firstChild, idleContent); idleContent?.remove(); button.disabled = originallyDisabled; button.classList.remove("is-busy"); button.removeAttribute("aria-busy"); button.style.width = originalWidth; refreshIcons(); } }
     }
 
     const clientOperation = (clientId) => state.clientOperations.get(clientId) || null;
@@ -1581,7 +1659,11 @@
       const query = state.contextQuery.trim().toLowerCase();
       return !query || values.some((value) => String(value || "").toLowerCase().includes(query));
     };
-    const providerDefaultModel = (provider, app = state.activeClient) => app === "antigravity" ? provider.geminiModel : app.startsWith("claude") ? provider.claudeSonnetModel : provider.codexModel || provider.defaultModel;
+    function providerClaudeModel(provider) {
+      try { const settings = JSON.parse(provider.settingsConfig || "{}"); if (settings?.env?.ANTHROPIC_MODEL) return settings.env.ANTHROPIC_MODEL; } catch {}
+      return provider.codexModel || provider.claudeSonnetModel;
+    }
+    const providerDefaultModel = (provider, app = state.activeClient) => app === "antigravity" ? provider.geminiModel : app.startsWith("claude") ? providerClaudeModel(provider) : provider.codexModel || provider.defaultModel;
     function sourceFilterButton(id, label, iconName, count, active, action) {
       return `<button class="source-filter ${active ? "active" : ""}" data-action="${action}" data-id="${id}"><i data-lucide="${iconName}"></i><span>${label}</span>${count === undefined ? "" : `<b>${count}</b>`}</button>`;
     }
@@ -1943,6 +2025,67 @@
     };
     const configKeyPlaceholder = "${AGENTDOCK_API_KEY}";
     const configValue = (form, name, fallback = "") => form.elements[name]?.value.trim() || fallback;
+    const CLAUDE_MODEL_ROWS = [
+      { role: "sonnet", modelEnv: "ANTHROPIC_DEFAULT_SONNET_MODEL", modelInput: "advanced-claude-sonnet", nameEnv: "ANTHROPIC_DEFAULT_SONNET_MODEL_NAME", nameInput: "advanced-claude-sonnet-name", oneMInput: "advanced-claude-sonnet-1m" },
+      { role: "opus", modelEnv: "ANTHROPIC_DEFAULT_OPUS_MODEL", modelInput: "advanced-claude-opus", nameEnv: "ANTHROPIC_DEFAULT_OPUS_MODEL_NAME", nameInput: "advanced-claude-opus-name", oneMInput: "advanced-claude-opus-1m" },
+      { role: "fable", modelEnv: "ANTHROPIC_DEFAULT_FABLE_MODEL", modelInput: "advanced-claude-fable", nameEnv: "ANTHROPIC_DEFAULT_FABLE_MODEL_NAME", nameInput: "advanced-claude-fable-name", oneMInput: "advanced-claude-fable-1m" },
+      { role: "haiku", modelEnv: "ANTHROPIC_DEFAULT_HAIKU_MODEL", modelInput: "advanced-claude-haiku", nameEnv: "ANTHROPIC_DEFAULT_HAIKU_MODEL_NAME", nameInput: "advanced-claude-haiku-name" },
+      { role: "subagent", modelEnv: "CLAUDE_CODE_SUBAGENT_MODEL", modelInput: "advanced-claude-subagent", oneMInput: "advanced-claude-subagent-1m" }
+    ];
+    const claudeHasOneM = (value) => String(value || "").trimEnd().toLowerCase().endsWith("[1m]");
+    const stripClaudeOneM = (value) => { const text = String(value || "").trim(); return claudeHasOneM(text) ? text.slice(0, -4).trimEnd() : text; };
+    const setClaudeOneM = (value, enabled) => { const model = stripClaudeOneM(value); return model && enabled ? `${model}[1M]` : model; };
+    function setClaudeModelRow(row, model, displayName) {
+      const form = document.getElementById("provider-form"); const modelValue = String(model || "");
+      form.elements[row.modelInput].value = stripClaudeOneM(modelValue);
+      if (row.oneMInput) form.elements[row.oneMInput].checked = claudeHasOneM(modelValue);
+      if (row.nameInput) form.elements[row.nameInput].value = displayName ?? stripClaudeOneM(modelValue);
+    }
+    function setClaudeFallback(model) {
+      const form = document.getElementById("provider-form"); const modelValue = String(model || "");
+      form.elements["advanced-claude-fallback"].value = stripClaudeOneM(modelValue);
+      form.elements["advanced-claude-fallback-1m"].checked = claudeHasOneM(modelValue);
+      form.elements["provider-model"].value = modelValue;
+    }
+    function claudeInputModel(inputName, oneMInput) {
+      const form = document.getElementById("provider-form"); return setClaudeOneM(configValue(form, inputName), Boolean(oneMInput && form.elements[oneMInput].checked));
+    }
+    function claudePresetMapping(preset) {
+      const fallback = preset?.model || ""; const sonnet = preset?.claudeSonnetModel ?? fallback; const opus = preset?.claudeOpusModel ?? fallback;
+      return { fallback, authField: preset?.claudeAuthField || "ANTHROPIC_AUTH_TOKEN", rows: { sonnet, opus, fable: preset?.claudeFableModel ?? opus, haiku: preset?.claudeHaikuModel ?? fallback, subagent: preset?.claudeSubagentModel || "" }, names: { sonnet: preset?.claudeSonnetModelName, opus: preset?.claudeOpusModelName, fable: preset?.claudeFableModelName, haiku: preset?.claudeHaikuModelName } };
+    }
+    function applyClaudeMapping(mapping) {
+      const form = document.getElementById("provider-form"); form.elements["advanced-claude-auth-field"].value = mapping.authField || "ANTHROPIC_AUTH_TOKEN"; setClaudeFallback(mapping.fallback);
+      for (const row of CLAUDE_MODEL_ROWS) setClaudeModelRow(row, mapping.rows?.[row.role] || "", mapping.names?.[row.role]);
+    }
+    function claudeEnvFromForm(existing = {}) {
+      const form = document.getElementById("provider-form"); const env = { ...existing, ANTHROPIC_BASE_URL: configValue(form, "provider-base-url") };
+      delete env.ANTHROPIC_AUTH_TOKEN; delete env.ANTHROPIC_API_KEY;
+      env[configValue(form, "advanced-claude-auth-field", "ANTHROPIC_AUTH_TOKEN")] = configKeyPlaceholder;
+      const fallback = claudeInputModel("advanced-claude-fallback", "advanced-claude-fallback-1m"); if (fallback) env.ANTHROPIC_MODEL = fallback; else delete env.ANTHROPIC_MODEL;
+      for (const row of CLAUDE_MODEL_ROWS) {
+        const model = claudeInputModel(row.modelInput, row.oneMInput); if (model) env[row.modelEnv] = model; else delete env[row.modelEnv];
+        if (row.nameEnv) { const displayName = configValue(form, row.nameInput); if (displayName) env[row.nameEnv] = displayName; else delete env[row.nameEnv]; }
+      }
+      return env;
+    }
+    function loadClaudeFieldsFromSettings(settings) {
+      const env = settings?.env; if (!env || Array.isArray(env) || typeof env !== "object") return;
+      const form = document.getElementById("provider-form");
+      const fallback = typeof env.ANTHROPIC_MODEL === "string" ? env.ANTHROPIC_MODEL : ""; const opus = typeof env.ANTHROPIC_DEFAULT_OPUS_MODEL === "string" ? env.ANTHROPIC_DEFAULT_OPUS_MODEL : fallback;
+      const models = { sonnet: typeof env.ANTHROPIC_DEFAULT_SONNET_MODEL === "string" ? env.ANTHROPIC_DEFAULT_SONNET_MODEL : fallback, opus, fable: typeof env.ANTHROPIC_DEFAULT_FABLE_MODEL === "string" ? env.ANTHROPIC_DEFAULT_FABLE_MODEL : opus, haiku: typeof env.ANTHROPIC_DEFAULT_HAIKU_MODEL === "string" ? env.ANTHROPIC_DEFAULT_HAIKU_MODEL : typeof env.ANTHROPIC_SMALL_FAST_MODEL === "string" ? env.ANTHROPIC_SMALL_FAST_MODEL : fallback, subagent: typeof env.CLAUDE_CODE_SUBAGENT_MODEL === "string" ? env.CLAUDE_CODE_SUBAGENT_MODEL : "" };
+      form.elements["advanced-claude-auth-field"].value = typeof env.ANTHROPIC_API_KEY === "string" && typeof env.ANTHROPIC_AUTH_TOKEN !== "string" ? "ANTHROPIC_API_KEY" : "ANTHROPIC_AUTH_TOKEN";
+      setModelOptions(fallback ? [stripClaudeOneM(fallback)] : [], fallback, tr("已读取保存的 Claude 配置", "已读取保存的 Claude 配置")); setClaudeFallback(fallback);
+      for (const row of CLAUDE_MODEL_ROWS) setClaudeModelRow(row, models[row.role], row.nameEnv && typeof env[row.nameEnv] === "string" ? env[row.nameEnv] : undefined);
+    }
+    function syncClaudeConfigFromForm() {
+      if (!state.activeClient.startsWith("claude")) return;
+      const form = document.getElementById("provider-form"); let settings;
+      try { settings = JSON.parse(form.elements["provider-main-config"].value || "{}"); } catch { return; }
+      if (!settings || Array.isArray(settings) || typeof settings !== "object") return;
+      settings.env = claudeEnvFromForm(settings.env && typeof settings.env === "object" && !Array.isArray(settings.env) ? settings.env : {});
+      form.elements["provider-main-config"].value = JSON.stringify(settings, null, 2);
+    }
     function generatedProviderConfig() {
       const form = document.getElementById("provider-form"); const app = state.activeClient; const official = configValue(form, "provider-type") === "official";
       const name = configValue(form, "provider-name", "custom"); const baseUrl = configValue(form, "provider-base-url"); const model = configValue(form, "provider-model", app === "antigravity" ? "gemini-3.5-pro" : app === "grok" ? "grok-4.5" : app.startsWith("claude") ? "claude-sonnet-5" : "gpt-5.6-sol");
@@ -1952,7 +2095,7 @@
         const config = official ? `model = ${JSON.stringify(model)}\n` : `model_provider = "custom"\nmodel = ${JSON.stringify(model)}\nmodel_reasoning_effort = "high"\n\n[model_providers.custom]\nname = ${JSON.stringify(name)}\nbase_url = ${JSON.stringify(baseUrl)}\nwire_api = ${JSON.stringify(wireApi)}\nenv_key = "OPENAI_API_KEY"\n`;
         return { auth: JSON.stringify(auth, null, 2), main: config };
       }
-      if (app.startsWith("claude")) return { auth: "", main: JSON.stringify({ env: official ? {} : { ANTHROPIC_BASE_URL: baseUrl, ANTHROPIC_AUTH_TOKEN: configKeyPlaceholder, ANTHROPIC_MODEL: model, ANTHROPIC_DEFAULT_SONNET_MODEL: configValue(form, "advanced-claude-sonnet", model), ANTHROPIC_DEFAULT_HAIKU_MODEL: configValue(form, "advanced-claude-haiku", "claude-haiku-4-5"), ANTHROPIC_DEFAULT_OPUS_MODEL: configValue(form, "advanced-claude-opus", "claude-opus-4-8") } }, null, 2) };
+      if (app.startsWith("claude")) return { auth: "", main: JSON.stringify({ env: official ? {} : claudeEnvFromForm() }, null, 2) };
       if (app === "antigravity") return { auth: "", main: JSON.stringify({ env: official ? {} : { GOOGLE_GEMINI_BASE_URL: baseUrl, GEMINI_API_KEY: configKeyPlaceholder, GEMINI_MODEL: model } }, null, 2) };
       if (app === "grok") {
         const backend = { responses: "responses", anthropic: "messages", "chat-completions": "chat_completions", auto: "chat_completions" }[configValue(form, "provider-api-format", "auto")];
@@ -1989,7 +2132,7 @@
         const stored = JSON.parse(provider.settingsConfig);
         if (state.activeClient === "codex") { form.elements["provider-auth-config"].value = JSON.stringify(stored.auth || {}, null, 2); form.elements["provider-main-config"].value = typeof stored.config === "string" ? stored.config : ""; }
         else if (state.activeClient === "grok") { form.elements["provider-auth-config"].value = ""; form.elements["provider-main-config"].value = typeof stored.config === "string" ? stored.config : ""; }
-        else { form.elements["provider-auth-config"].value = ""; form.elements["provider-main-config"].value = JSON.stringify(stored, null, 2); }
+        else { form.elements["provider-auth-config"].value = ""; form.elements["provider-main-config"].value = JSON.stringify(stored, null, 2); if (state.activeClient.startsWith("claude")) loadClaudeFieldsFromSettings(stored); }
         setConfigEditState(true);
       } catch { form.elements["provider-main-config"].value = provider.settingsConfig; setConfigEditState(true); }
     }
@@ -2013,11 +2156,12 @@
         const options = [...document.getElementById("provider-model-options").options].map((option) => option.value).filter(Boolean);
         setModelOptions([...new Set([parsed.model, ...options])], parsed.model, trf("provider.importSource", "{format} 配置导入", { format: parsed.sourceFormat })); fields.push(tr("默认模型", "默认模型"));
         if (["codex", "grok", "opencode", "openclaw", "hermes"].includes(state.activeClient)) form.elements["advanced-codex-model"].value = parsed.model;
-        if (state.activeClient.startsWith("claude")) form.elements["advanced-claude-sonnet"].value = parsed.model;
+        if (state.activeClient.startsWith("claude")) { setClaudeFallback(parsed.model); if (!form.elements["advanced-claude-sonnet"].value.trim()) setClaudeModelRow(CLAUDE_MODEL_ROWS[0], parsed.model); }
       }
       if (importedFormat && [...form.elements["provider-api-format"].options].some((option) => option.value === importedFormat)) {
         form.elements["provider-api-format"].value = importedFormat; fields.push(tr("API 协议", "API 协议"));
       }
+      if (state.activeClient.startsWith("claude")) { try { loadClaudeFieldsFromSettings(JSON.parse(form.elements["provider-main-config"].value || "{}")); } catch {} }
       setConfigEditState(true); setConfigImportStatus(trf("provider.importedFields", "已识别 {fields}", { fields: fields.join(", ") }), true); updateProviderFormPresentation(findPreset(state.selectedPresetId));
     }
     async function importProviderConfig(content) {
@@ -2061,13 +2205,12 @@
       form.elements["provider-notes"].value = provider?.notes || "";
       form.elements["provider-base-url"].value = provider?.baseUrl || "";
       form.elements["provider-api-key"].value = "";
-      const selectedModel = state.activeClient === "antigravity" ? provider?.geminiModel || "" : state.activeClient.startsWith("claude") ? provider?.claudeSonnetModel || "" : provider?.codexModel || "";
+      const selectedModel = state.activeClient === "antigravity" ? provider?.geminiModel || "" : state.activeClient.startsWith("claude") && provider ? providerClaudeModel(provider) : provider?.codexModel || "";
       setModelOptions(selectedModel ? [selectedModel] : [], selectedModel, tr("正在读取客户端模型", "正在读取客户端模型"));
       form.elements["provider-api-format"].value = provider?.apiFormat || "auto";
       form.elements["advanced-codex-model"].value = provider?.codexModel || "gpt-5.6-sol";
-      form.elements["advanced-claude-sonnet"].value = provider?.claudeSonnetModel || "claude-sonnet-5";
-      form.elements["advanced-claude-haiku"].value = provider?.claudeHaikuModel || "claude-haiku-4-5";
-      form.elements["advanced-claude-opus"].value = provider?.claudeOpusModel || "claude-opus-4-8";
+      applyClaudeMapping(claudePresetMapping(null));
+      if (provider && state.activeClient.startsWith("claude")) loadClaudeFieldsFromSettings({ env: { ANTHROPIC_MODEL: selectedModel, ANTHROPIC_DEFAULT_SONNET_MODEL: provider.claudeSonnetModel || selectedModel, ANTHROPIC_DEFAULT_HAIKU_MODEL: provider.claudeHaikuModel || selectedModel, ANTHROPIC_DEFAULT_OPUS_MODEL: provider.claudeOpusModel || selectedModel } });
       document.getElementById("preset-search").value = ""; hideProviderError(); renderPresetGrid(); updateProviderFormPresentation(provider ? findPreset(state.selectedPresetId) : findPreset("custom"));
       if (!provider) applyPreset(findPreset("custom")); else loadProviderConfig(provider);
       state.providerFormDirty = false;
@@ -2101,24 +2244,21 @@
       form.elements["provider-base-url"].value = preset.baseUrl;
       setModelOptions(preset.model ? [preset.model] : [], preset.model, tr("正在读取供应商模型", "正在读取供应商模型")); form.elements["provider-api-format"].value = preset.format;
       if (["codex", "grok"].includes(state.activeClient)) form.elements["advanced-codex-model"].value = preset.model || (state.activeClient === "grok" ? "grok-4.5" : "gpt-5.6-sol");
-      if (state.activeClient.startsWith("claude")) {
-        form.elements["advanced-claude-sonnet"].value = preset.model || "claude-sonnet-5";
-        form.elements["advanced-claude-haiku"].value = preset.claudeHaikuModel || "claude-haiku-4-5";
-        form.elements["advanced-claude-opus"].value = preset.claudeOpusModel || "claude-opus-4-8";
-      }
+      if (state.activeClient.startsWith("claude")) applyClaudeMapping(claudePresetMapping(preset));
       updateProviderFormPresentation(preset); renderPresetGrid(); regenerateProviderConfig();
     }
     function setModelOptions(models, selected, source) {
       const input = document.querySelector('[name="provider-model"]'); const list = document.getElementById("provider-model-options"); const values = [...new Set([selected, ...models].filter(Boolean))];
       list.innerHTML = values.map((model) => `<option value="${escapeHtml(model)}"></option>`).join("");
       input.value = selected || "";
+      if (state.activeClient.startsWith("claude")) setClaudeFallback(selected || "");
       document.getElementById("model-source").textContent = source;
     }
     async function loadProviderModels() {
       const form = document.getElementById("provider-form"); const selected = form.elements["provider-model"].value;
       document.getElementById("model-source").textContent = tr("正在读取模型列表", "正在读取模型列表");
       const result = await call("fetch_provider_models", { appId: state.activeClient, baseUrl: form.elements["provider-base-url"].value.trim(), apiKey: form.elements["provider-api-key"].value.trim() || null, apiFormat: form.elements["provider-api-format"].value });
-      const preferred = selected || result.models[0] || ""; setModelOptions(result.models, preferred, trf("provider.models", "{source} · {count} 个模型", { source: result.source, count: result.models.length })); if (!state.configManuallyEdited) regenerateProviderConfig();
+      const preferred = selected || (state.activeClient.startsWith("claude") ? "" : result.models[0] || ""); setModelOptions(result.models, preferred, trf("provider.models", "{source} · {count} 个模型", { source: result.source, count: result.models.length })); if (!state.configManuallyEdited) regenerateProviderConfig();
     }
     function updateProviderFormPresentation(preset) {
       const form = document.getElementById("provider-form"); const official = (preset?.type || form.elements["provider-type"].value) === "official";
@@ -2127,7 +2267,9 @@
       logo.classList.toggle("has-image", Boolean(PROVIDER_LOGOS[logoPreset.id])); logo.innerHTML = providerLogoContent(logoPreset); document.getElementById("provider-form-heading").textContent = preset?.name ? tr(preset.name, preset.name) : form.elements["provider-name"].value || tr("自定义配置", "自定义配置");
       document.getElementById("base-url-field").hidden = official; document.getElementById("api-key-field").hidden = official;
       document.querySelector(".preset-search").hidden = false;
-      for (const id of ["provider-model-field", "provider-api-format-field", "advanced-model-fields", "provider-config-content"]) document.getElementById(id).hidden = false;
+      const isClaude = state.activeClient.startsWith("claude"); document.getElementById("provider-model-field").hidden = isClaude;
+      for (const id of ["provider-api-format-field", "advanced-model-fields", "provider-config-content"]) document.getElementById(id).hidden = false;
+      document.getElementById("claude-advanced-options").hidden = !isClaude; document.getElementById("advanced-generic-model-fields").hidden = isClaude; document.getElementById("advanced-model-fields").open = isClaude;
       form.elements["provider-base-url"].required = !official; form.elements["provider-api-key"].required = !official && !state.editingProviderId;
       const hints = { official: tr("官方供应商使用客户端登录，无需填写 API Key", "官方供应商使用客户端登录，无需填写 API Key"), cn_official: tr("请求地址已预设，只需填写 API Key", "请求地址已预设，只需填写 API Key"), aggregator: tr("请求地址已预设，只需填写 API Key", "请求地址已预设，只需填写 API Key"), third_party: tr("确认请求地址后填写 API Key", "确认请求地址后填写 API Key"), custom: tr("填写供应商提供的请求地址和 API Key", "填写供应商提供的请求地址和 API Key") };
       document.querySelector("#preset-hint span").textContent = hints[preset?.category || "custom"];
@@ -2137,8 +2279,8 @@
     function providerInput() {
       const form = document.getElementById("provider-form"); const official = form.elements["provider-type"].value === "official";
       if (!form.reportValidity()) throw new Error(official ? tr("请填写供应商名称", "请填写供应商名称") : tr("请完整填写供应商名称、请求地址和 API Key", "请完整填写供应商名称、请求地址和 API Key"));
-      const old = state.providers.find((provider) => provider.id === state.editingProviderId); const preset = findPreset(form.elements["provider-preset-id"].value); const model = form.elements["provider-model"].value.trim();
-      return { id: form.elements["provider-id"].value || null, name: form.elements["provider-name"].value.trim(), notes: form.elements["provider-notes"].value.trim(), websiteUrl: old?.websiteUrl || preset?.website || "", presetId: form.elements["provider-preset-id"].value, providerType: form.elements["provider-type"].value, baseUrl: form.elements["provider-base-url"].value.trim(), apiKey: form.elements["provider-api-key"].value.trim() || null, apiFormat: form.elements["provider-api-format"].value, settingsConfig: collectProviderSettingsConfig(), enabledApps: [state.activeClient], activeApps: [...new Set([...(old?.activeApps || []).filter((app) => app !== state.activeClient), state.activeClient])], codexModel: !state.activeClient.startsWith("claude") && state.activeClient !== "antigravity" ? model : form.elements["advanced-codex-model"].value.trim(), geminiModel: state.activeClient === "antigravity" ? model : old?.geminiModel || "gemini-3.5-pro", claudeSonnetModel: state.activeClient.startsWith("claude") ? model : form.elements["advanced-claude-sonnet"].value.trim(), claudeHaikuModel: form.elements["advanced-claude-haiku"].value.trim(), claudeOpusModel: form.elements["advanced-claude-opus"].value.trim(), active: true };
+      const old = state.providers.find((provider) => provider.id === state.editingProviderId); const preset = findPreset(form.elements["provider-preset-id"].value); const isClaude = state.activeClient.startsWith("claude"); const model = isClaude ? claudeInputModel("advanced-claude-fallback", "advanced-claude-fallback-1m") : form.elements["provider-model"].value.trim();
+      return { id: form.elements["provider-id"].value || null, name: form.elements["provider-name"].value.trim(), notes: form.elements["provider-notes"].value.trim(), websiteUrl: old?.websiteUrl || preset?.website || "", presetId: form.elements["provider-preset-id"].value, providerType: form.elements["provider-type"].value, baseUrl: form.elements["provider-base-url"].value.trim(), apiKey: form.elements["provider-api-key"].value.trim() || null, apiFormat: form.elements["provider-api-format"].value, settingsConfig: collectProviderSettingsConfig(), enabledApps: [state.activeClient], activeApps: [...new Set([...(old?.activeApps || []).filter((app) => app !== state.activeClient), state.activeClient])], codexModel: state.activeClient !== "antigravity" ? model : form.elements["advanced-codex-model"].value.trim(), geminiModel: state.activeClient === "antigravity" ? model : old?.geminiModel || "gemini-3.5-pro", claudeSonnetModel: claudeInputModel("advanced-claude-sonnet", "advanced-claude-sonnet-1m"), claudeHaikuModel: configValue(form, "advanced-claude-haiku"), claudeOpusModel: claudeInputModel("advanced-claude-opus", "advanced-claude-opus-1m"), active: true };
     }
     async function saveProvider() {
       hideProviderError(); const provider = await call("save_provider", { input: providerInput() });
@@ -2380,14 +2522,20 @@
     });
     document.getElementById("preset-search").addEventListener("input", renderPresetGrid);
     const providerForm = document.getElementById("provider-form");
-    const generatedConfigFields = new Set(["provider-name", "provider-base-url", "provider-model", "provider-api-format", "advanced-codex-model", "advanced-claude-sonnet", "advanced-claude-haiku", "advanced-claude-opus"]);
+    const generatedConfigFields = new Set(["provider-name", "provider-base-url", "provider-model", "provider-api-format", "advanced-codex-model", "advanced-claude-auth-field", "advanced-claude-fallback", "advanced-claude-fallback-1m", ...CLAUDE_MODEL_ROWS.flatMap((row) => [row.modelInput, row.nameInput, row.oneMInput]).filter(Boolean)]);
+    function handleProviderGeneratedField(target) {
+      if (!generatedConfigFields.has(target.name)) return;
+      if (["advanced-claude-fallback", "advanced-claude-fallback-1m"].includes(target.name)) providerForm.elements["provider-model"].value = claudeInputModel("advanced-claude-fallback", "advanced-claude-fallback-1m");
+      const row = CLAUDE_MODEL_ROWS.find((item) => item.modelInput === target.name); if (row?.nameInput && !providerForm.elements[row.nameInput].value.trim()) providerForm.elements[row.nameInput].value = stripClaudeOneM(target.value);
+      if (state.configManuallyEdited) syncClaudeConfigFromForm(); else regenerateProviderConfig();
+    }
     providerForm.addEventListener("submit", (event) => event.preventDefault());
     providerForm.addEventListener("input", (event) => {
       state.providerFormDirty = true;
       if (["provider-auth-config", "provider-main-config"].includes(event.target.name)) return setConfigEditState(true);
-      if (generatedConfigFields.has(event.target.name) && !state.configManuallyEdited) regenerateProviderConfig();
+      handleProviderGeneratedField(event.target);
     });
-    providerForm.addEventListener("change", (event) => { state.providerFormDirty = true; if (generatedConfigFields.has(event.target.name) && !state.configManuallyEdited) regenerateProviderConfig(); });
+    providerForm.addEventListener("change", (event) => { state.providerFormDirty = true; handleProviderGeneratedField(event.target); });
     for (const name of ["provider-auth-config", "provider-main-config"]) {
       providerForm.elements[name].addEventListener("paste", (event) => {
         const pasted = event.clipboardData?.getData("text/plain") || "";
