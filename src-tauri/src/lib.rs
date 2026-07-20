@@ -184,6 +184,13 @@ struct RemoteSoftwareCatalog {
 pub struct ProviderModelsResult {
     models: Vec<String>,
     source: String,
+    provider_supplied: bool,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum ProviderModelProtocol {
+    OpenAi,
+    Gemini,
 }
 
 #[derive(Debug, Clone, Default, Serialize)]
@@ -2097,15 +2104,17 @@ async fn fetch_provider_models(
         return Ok(ProviderModelsResult {
             models: fallback,
             source: "客户端推荐".to_string(),
+            provider_supplied: false,
         });
     }
     if !(normalized_url.starts_with("https://") || normalized_url.starts_with("http://")) {
         return Err("请求地址必须以 http:// 或 https:// 开头".to_string());
     }
-    if api_format.as_deref() == Some("anthropic") {
+    if api_format.as_deref() == Some("anthropic") || app_id.starts_with("claude") {
         return Ok(ProviderModelsResult {
             models: fallback,
             source: "客户端推荐（Anthropic 协议不提供模型列表）".to_string(),
+            provider_supplied: false,
         });
     }
 
@@ -2116,63 +2125,151 @@ async fn fetch_provider_models(
         .build()
         .map_err(|err| format!("创建模型请求失败: {}", err))?;
     let key = api_key.unwrap_or_default();
-    let endpoints = provider_model_endpoints(&normalized_url, app_id == "antigravity");
+    let protocol = if app_id == "antigravity" || api_format.as_deref() == Some("gemini") {
+        ProviderModelProtocol::Gemini
+    } else {
+        ProviderModelProtocol::OpenAi
+    };
+    let endpoints = provider_model_endpoints(&normalized_url, protocol);
+    let mut failures = Vec::new();
 
     for endpoint in endpoints {
-        let mut request = client
-            .get(&endpoint)
-            .header("accept", "application/json")
-            .header("anthropic-version", "2023-06-01");
-        if !key.trim().is_empty() {
-            request = request
-                .bearer_auth(key.trim())
-                .header("x-api-key", key.trim())
-                .header("x-goog-api-key", key.trim());
-        }
-        let response = match request.send().await {
-            Ok(response) if response.status().is_success() => response,
-            _ => continue,
-        };
-        let payload: serde_json::Value = match response.json().await {
-            Ok(payload) => payload,
-            Err(_) => continue,
-        };
-        let mut models = parse_model_ids(&payload);
-        if !models.is_empty() {
-            for model in fallback {
-                if !models.contains(&model) {
-                    models.push(model);
-                }
+        match fetch_models_from_endpoint(&client, &endpoint, key.trim(), protocol).await {
+            Ok(models) => {
+                return Ok(ProviderModelsResult {
+                    models,
+                    source: "供应商实际返回".to_string(),
+                    provider_supplied: true,
+                });
             }
-            return Ok(ProviderModelsResult {
-                models,
-                source: "供应商模型接口".to_string(),
-            });
+            Err(error) => failures.push(error),
         }
     }
 
-    Ok(ProviderModelsResult {
-        models: fallback,
-        source: "客户端推荐（供应商接口不可用）".to_string(),
-    })
+    Err(format!("读取供应商模型失败：{}", failures.join("；")))
 }
 
-fn provider_model_endpoints(base_url: &str, gemini: bool) -> Vec<String> {
+fn provider_model_endpoints(base_url: &str, protocol: ProviderModelProtocol) -> Vec<String> {
     let base_url = base_url.trim_end_matches('/');
-    let mut endpoints = vec![format!("{}/models", base_url)];
-    if !base_url.ends_with("/v1beta") {
-        endpoints.push(format!("{}/models", ensure_v1_url(base_url)));
+    if base_url.ends_with("/models") {
+        return vec![base_url.to_string()];
     }
-    if gemini {
-        let gemini_base = if base_url.ends_with("/v1beta") {
-            base_url.to_string()
-        } else {
-            format!("{}/v1beta", base_url)
-        };
-        endpoints.push(format!("{}/models", gemini_base));
-    }
+    let path = reqwest::Url::parse(base_url)
+        .ok()
+        .map(|url| url.path().trim_matches('/').to_string())
+        .unwrap_or_default();
+    let mut endpoints = match protocol {
+        ProviderModelProtocol::OpenAi if path.is_empty() => {
+            vec![
+                format!("{}/v1/models", base_url),
+                format!("{}/models", base_url),
+            ]
+        }
+        ProviderModelProtocol::OpenAi => vec![format!("{}/models", base_url)],
+        ProviderModelProtocol::Gemini if path.ends_with("v1beta") || path.ends_with("v1") => {
+            vec![format!("{}/models", base_url)]
+        }
+        ProviderModelProtocol::Gemini if path.is_empty() => vec![
+            format!("{}/v1beta/models", base_url),
+            format!("{}/v1/models", base_url),
+            format!("{}/models", base_url),
+        ],
+        ProviderModelProtocol::Gemini => vec![
+            format!("{}/v1beta/models", base_url),
+            format!("{}/models", base_url),
+        ],
+    };
     endpoints.dedup();
     endpoints
+}
+
+fn provider_model_request(
+    client: &reqwest::Client,
+    url: reqwest::Url,
+    api_key: &str,
+    protocol: ProviderModelProtocol,
+) -> reqwest::RequestBuilder {
+    let request = client.get(url).header("accept", "application/json");
+    if api_key.is_empty() {
+        return request;
+    }
+    match protocol {
+        ProviderModelProtocol::OpenAi => request.bearer_auth(api_key),
+        ProviderModelProtocol::Gemini => request.header("x-goog-api-key", api_key),
+    }
+}
+
+async fn fetch_models_from_endpoint(
+    client: &reqwest::Client,
+    endpoint: &str,
+    api_key: &str,
+    protocol: ProviderModelProtocol,
+) -> Result<Vec<String>, String> {
+    let mut models = Vec::new();
+    let mut page_token: Option<String> = None;
+    for _ in 0..20 {
+        let mut url = reqwest::Url::parse(endpoint)
+            .map_err(|_| format!("{} 不是有效的模型接口", endpoint))?;
+        if let Some(token) = page_token.as_deref() {
+            url.query_pairs_mut().append_pair("pageToken", token);
+        }
+        let response = provider_model_request(client, url, api_key, protocol)
+            .send()
+            .await
+            .map_err(|error| format!("{}：{}", endpoint, provider_request_error(&error)))?;
+        let status = response.status();
+        if !status.is_success() {
+            let detail = provider_response_error_detail(&response.text().await.unwrap_or_default());
+            return Err(if detail.is_empty() {
+                format!("{} 返回 {}", endpoint, status)
+            } else {
+                format!("{} 返回 {} ({})", endpoint, status, detail)
+            });
+        }
+        let payload: serde_json::Value = response
+            .json()
+            .await
+            .map_err(|_| format!("{} 返回的不是有效 JSON", endpoint))?;
+        for model in parse_model_ids(&payload, protocol) {
+            if !models.contains(&model) {
+                models.push(model);
+            }
+        }
+        page_token = if protocol == ProviderModelProtocol::Gemini {
+            payload
+                .get("nextPageToken")
+                .or_else(|| payload.get("next_page_token"))
+                .and_then(serde_json::Value::as_str)
+                .filter(|token| !token.is_empty())
+                .map(str::to_string)
+        } else {
+            None
+        };
+        if page_token.is_none() {
+            break;
+        }
+    }
+    if models.is_empty() {
+        Err(format!("{} 未返回可用的生成模型", endpoint))
+    } else {
+        Ok(models)
+    }
+}
+
+fn provider_response_error_detail(raw: &str) -> String {
+    if let Ok(payload) = serde_json::from_str::<serde_json::Value>(raw) {
+        for pointer in ["/error/message", "/message", "/error"] {
+            if let Some(message) = payload.pointer(pointer).and_then(serde_json::Value::as_str) {
+                return message.chars().take(120).collect();
+            }
+        }
+    }
+    raw.split_whitespace()
+        .collect::<Vec<_>>()
+        .join(" ")
+        .chars()
+        .take(120)
+        .collect()
 }
 
 fn anthropic_messages_endpoint(base_url: &str) -> String {
@@ -2191,6 +2288,29 @@ fn anthropic_test_payload(model: &str) -> serde_json::Value {
         "model": model,
         "max_tokens": 1,
         "messages": [{ "role": "user", "content": "Reply with OK." }]
+    })
+}
+
+fn gemini_generate_endpoint(base_url: &str, model: &str) -> String {
+    let base_url = base_url.trim_end_matches('/');
+    let api_base = if base_url.ends_with("/v1beta") || base_url.ends_with("/v1") {
+        base_url.to_string()
+    } else {
+        format!("{}/v1beta", base_url)
+    };
+    format!(
+        "{}/models/{}:streamGenerateContent?alt=sse",
+        api_base, model
+    )
+}
+
+fn gemini_test_payload() -> serde_json::Value {
+    serde_json::json!({
+        "contents": [{
+            "role": "user",
+            "parts": [{ "text": "Reply with OK." }]
+        }],
+        "generationConfig": { "maxOutputTokens": 1 }
     })
 }
 
@@ -3217,20 +3337,72 @@ async fn test_provider(provider_id: String) -> Result<ProviderTestResult, String
     let is_gemini = provider.api_format == "gemini"
         || provider.provider_type == "gemini"
         || provider.enabled_apps.iter().any(|app| app == "antigravity");
-    let endpoints = provider_model_endpoints(&base_url, is_gemini);
-    let mut last_failure = None;
-    for endpoint in endpoints {
+    if is_gemini {
+        let endpoint = gemini_generate_endpoint(&base_url, &provider.gemini_model);
         let mut request = client
-            .get(&endpoint)
-            .header("accept", "application/json")
-            .header("anthropic-version", "2023-06-01");
+            .post(&endpoint)
+            .header("accept", "text/event-stream")
+            .json(&gemini_test_payload());
         if !api_key.is_empty() {
-            request = request
-                .bearer_auth(&api_key)
-                .header("x-api-key", &api_key)
-                .header("x-goog-api-key", &api_key);
+            request = request.header("x-goog-api-key", &api_key);
         }
         let response = match request.send().await {
+            Ok(response) => response,
+            Err(error) => {
+                return Ok(ProviderTestResult {
+                    ok: false,
+                    latency_ms: start.elapsed().as_millis().max(1),
+                    message: provider_request_error(&error),
+                });
+            }
+        };
+        let status = response.status();
+        if status.is_success() {
+            return Ok(ProviderTestResult {
+                ok: true,
+                latency_ms: start.elapsed().as_millis().max(1),
+                message: format!(
+                    "{} 连接成功，模型 {} 生成接口返回 {}",
+                    provider.name, provider.gemini_model, status
+                ),
+            });
+        }
+        let detail = provider_response_error_detail(&response.text().await.unwrap_or_default());
+        return Ok(ProviderTestResult {
+            ok: false,
+            latency_ms: start.elapsed().as_millis().max(1),
+            message: if detail.is_empty() {
+                format!(
+                    "模型 {} 生成接口返回 {}，请检查模型、地址和密钥",
+                    provider.gemini_model, status
+                )
+            } else {
+                format!(
+                    "模型 {} 生成接口返回 {}: {}",
+                    provider.gemini_model, status, detail
+                )
+            },
+        });
+    }
+    let protocol = if is_gemini {
+        ProviderModelProtocol::Gemini
+    } else {
+        ProviderModelProtocol::OpenAi
+    };
+    let endpoints = provider_model_endpoints(&base_url, protocol);
+    let mut last_failure = None;
+    for endpoint in endpoints {
+        let url = match reqwest::Url::parse(&endpoint) {
+            Ok(url) => url,
+            Err(_) => {
+                last_failure = Some(format!("模型接口地址无效: {}", endpoint));
+                continue;
+            }
+        };
+        let response = match provider_model_request(&client, url, &api_key, protocol)
+            .send()
+            .await
+        {
             Ok(response) => response,
             Err(error) => {
                 last_failure = Some(provider_request_error(&error));
@@ -3498,7 +3670,7 @@ fn apply_provider_for_app(
     if app_id == "antigravity" {
         let settings_path = antigravity_gemini_settings_path(&dirs);
         let backup_path = backup_dir.join("managed-antigravity-gemini-settings.json");
-        merge_gemini_api_key_auth_settings(&settings_path, Some(&backup_path))?;
+        merge_antigravity_gemini_settings(&settings_path, Some(&backup_path))?;
         written_files.push(settings_path.display().to_string());
     }
 
@@ -4023,7 +4195,7 @@ fn ensure_provider_launch_config(
         }
     }
     if app_id == "antigravity" && provider.provider_type != "official" {
-        merge_gemini_api_key_auth_settings(&antigravity_gemini_settings_path(dirs), None)?;
+        merge_antigravity_gemini_settings(&antigravity_gemini_settings_path(dirs), None)?;
     }
     Ok(())
 }
@@ -4040,27 +4212,29 @@ fn antigravity_gemini_settings_path(dirs: &AgentDockDirs) -> PathBuf {
         .join("settings.json")
 }
 
-fn merge_gemini_api_key_auth_settings(
+fn merge_antigravity_gemini_settings(
     path: &Path,
     backup_path: Option<&Path>,
 ) -> Result<bool, String> {
     let existed = path.exists();
     let mut settings = if existed {
         let raw = fs::read_to_string(path)
-            .map_err(|err| format!("读取 Antigravity 认证配置失败: {}", err))?;
+            .map_err(|err| format!("读取 Antigravity 运行配置失败: {}", err))?;
         serde_json::from_str::<serde_json::Value>(&raw)
-            .map_err(|err| format!("解析 Antigravity 认证配置失败: {}", err))?
+            .map_err(|err| format!("解析 Antigravity 运行配置失败: {}", err))?
     } else {
         serde_json::json!({})
     };
     let root = settings
         .as_object_mut()
-        .ok_or_else(|| "Antigravity 认证配置必须是 JSON 对象".to_string())?;
+        .ok_or_else(|| "Antigravity 运行配置必须是 JSON 对象".to_string())?;
+    let mut changed = false;
     let security = root
         .entry("security".to_string())
         .or_insert_with(|| serde_json::json!({}));
     if !security.is_object() {
         *security = serde_json::json!({});
+        changed = true;
     }
     let auth = security
         .as_object_mut()
@@ -4069,17 +4243,49 @@ fn merge_gemini_api_key_auth_settings(
         .or_insert_with(|| serde_json::json!({}));
     if !auth.is_object() {
         *auth = serde_json::json!({});
+        changed = true;
     }
     let auth = auth
         .as_object_mut()
         .expect("auth was normalized to an object");
-    if auth.get("selectedType").and_then(serde_json::Value::as_str) == Some("gemini-api-key") {
+    if auth.get("selectedType").and_then(serde_json::Value::as_str) != Some("gemini-api-key") {
+        auth.insert(
+            "selectedType".to_string(),
+            serde_json::Value::String("gemini-api-key".to_string()),
+        );
+        changed = true;
+    }
+
+    let general = root
+        .entry("general".to_string())
+        .or_insert_with(|| serde_json::json!({}));
+    if !general.is_object() {
+        *general = serde_json::json!({});
+        changed = true;
+    }
+    let general = general
+        .as_object_mut()
+        .expect("general was normalized to an object");
+    if general
+        .get("maxAttempts")
+        .and_then(serde_json::Value::as_u64)
+        != Some(1)
+    {
+        general.insert("maxAttempts".to_string(), serde_json::json!(1));
+        changed = true;
+    }
+    if general
+        .get("retryFetchErrors")
+        .and_then(serde_json::Value::as_bool)
+        != Some(false)
+    {
+        general.insert("retryFetchErrors".to_string(), serde_json::json!(false));
+        changed = true;
+    }
+
+    if !changed {
         return Ok(false);
     }
-    auth.insert(
-        "selectedType".to_string(),
-        serde_json::Value::String("gemini-api-key".to_string()),
-    );
 
     if let Some(parent) = path.parent() {
         fs::create_dir_all(parent)
@@ -4088,10 +4294,10 @@ fn merge_gemini_api_key_auth_settings(
     if existed {
         if let Some(backup_path) = backup_path {
             fs::copy(path, backup_path)
-                .map_err(|err| format!("备份 Antigravity 认证配置失败: {}", err))?;
+                .map_err(|err| format!("备份 Antigravity 运行配置失败: {}", err))?;
         }
     }
-    write_json(path, &settings).map_err(|err| format!("写入 Antigravity 认证配置失败: {}", err))?;
+    write_json(path, &settings).map_err(|err| format!("写入 Antigravity 运行配置失败: {}", err))?;
     Ok(true)
 }
 
@@ -8634,17 +8840,37 @@ fn fallback_models(app_id: &str) -> Vec<String> {
     models.iter().map(|model| (*model).to_string()).collect()
 }
 
-fn parse_model_ids(payload: &serde_json::Value) -> Vec<String> {
+fn parse_model_ids(payload: &serde_json::Value, protocol: ProviderModelProtocol) -> Vec<String> {
     let entries = payload
         .get("data")
         .and_then(serde_json::Value::as_array)
-        .or_else(|| payload.get("models").and_then(serde_json::Value::as_array));
+        .or_else(|| payload.get("models").and_then(serde_json::Value::as_array))
+        .or_else(|| payload.as_array());
     let mut models = Vec::new();
     for entry in entries.into_iter().flatten() {
-        let model = entry
-            .get("id")
-            .and_then(serde_json::Value::as_str)
-            .or_else(|| entry.get("name").and_then(serde_json::Value::as_str));
+        if protocol == ProviderModelProtocol::Gemini {
+            if let Some(methods) = entry
+                .get("supportedGenerationMethods")
+                .or_else(|| entry.get("supported_generation_methods"))
+                .and_then(serde_json::Value::as_array)
+            {
+                let supports_generation = methods.iter().any(|method| {
+                    matches!(
+                        method.as_str(),
+                        Some("generateContent" | "streamGenerateContent")
+                    )
+                });
+                if !supports_generation {
+                    continue;
+                }
+            }
+        }
+        let model = entry.as_str().or_else(|| {
+            entry
+                .get("id")
+                .and_then(serde_json::Value::as_str)
+                .or_else(|| entry.get("name").and_then(serde_json::Value::as_str))
+        });
         if let Some(model) = model {
             let model = model.trim_start_matches("models/").trim();
             if !model.is_empty() && !models.iter().any(|item| item == model) {
@@ -10250,19 +10476,77 @@ requires_openai_auth = true"#;
     #[test]
     fn builds_protocol_aware_provider_model_endpoints() {
         assert_eq!(
-            provider_model_endpoints("https://proxy.example.com/api", true),
+            provider_model_endpoints(
+                "https://proxy.example.com/api",
+                ProviderModelProtocol::Gemini
+            ),
             vec![
-                "https://proxy.example.com/api/models",
-                "https://proxy.example.com/api/v1beta/models"
+                "https://proxy.example.com/api/v1beta/models",
+                "https://proxy.example.com/api/models"
             ]
         );
         assert_eq!(
-            provider_model_endpoints("https://proxy.example.com/v1beta", true),
+            provider_model_endpoints(
+                "https://proxy.example.com/v1beta",
+                ProviderModelProtocol::Gemini
+            ),
             vec!["https://proxy.example.com/v1beta/models"]
         );
         assert_eq!(
-            provider_model_endpoints("https://proxy.example.com/v1", false),
+            provider_model_endpoints(
+                "https://proxy.example.com/v1",
+                ProviderModelProtocol::OpenAi
+            ),
             vec!["https://proxy.example.com/v1/models"]
+        );
+        assert_eq!(
+            provider_model_endpoints(
+                "https://proxy.example.com/v1",
+                ProviderModelProtocol::Gemini
+            ),
+            vec!["https://proxy.example.com/v1/models"]
+        );
+        assert_eq!(
+            provider_model_endpoints("https://proxy.example.com", ProviderModelProtocol::OpenAi),
+            vec![
+                "https://proxy.example.com/v1/models",
+                "https://proxy.example.com/models"
+            ]
+        );
+    }
+
+    #[test]
+    fn parses_only_generation_capable_gemini_models() {
+        let payload = serde_json::json!({
+            "models": [
+                {
+                    "name": "models/gemini-pro",
+                    "supportedGenerationMethods": ["generateContent"]
+                },
+                {
+                    "name": "models/text-embedding-004",
+                    "supportedGenerationMethods": ["embedContent"]
+                },
+                { "name": "models/proxy-model-without-capabilities" }
+            ]
+        });
+        assert_eq!(
+            parse_model_ids(&payload, ProviderModelProtocol::Gemini),
+            vec!["gemini-pro", "proxy-model-without-capabilities"]
+        );
+    }
+
+    #[test]
+    fn parses_openai_model_ids_without_adding_recommendations() {
+        let payload = serde_json::json!({
+            "data": [
+                { "id": "provider-chat-model" },
+                { "id": "provider-reasoning-model" }
+            ]
+        });
+        assert_eq!(
+            parse_model_ids(&payload, ProviderModelProtocol::OpenAi),
+            vec!["provider-chat-model", "provider-reasoning-model"]
         );
     }
 
@@ -10280,6 +10564,21 @@ requires_openai_auth = true"#;
         assert_eq!(payload["model"], "ark-code-latest");
         assert_eq!(payload["max_tokens"], 1);
         assert_eq!(payload["messages"][0]["role"], "user");
+    }
+
+    #[test]
+    fn builds_gemini_generation_test_endpoint() {
+        assert_eq!(
+            gemini_generate_endpoint("https://proxy.example.com/gemini", "gemini-pro"),
+            "https://proxy.example.com/gemini/v1beta/models/gemini-pro:streamGenerateContent?alt=sse"
+        );
+        assert_eq!(
+            gemini_generate_endpoint("https://proxy.example.com/v1beta", "gemini-pro"),
+            "https://proxy.example.com/v1beta/models/gemini-pro:streamGenerateContent?alt=sse"
+        );
+        let payload = gemini_test_payload();
+        assert_eq!(payload["contents"][0]["role"], "user");
+        assert_eq!(payload["generationConfig"]["maxOutputTokens"], 1);
     }
 
     #[test]
@@ -10517,14 +10816,16 @@ requires_openai_auth = true"#;
         )
         .unwrap();
 
-        assert!(merge_gemini_api_key_auth_settings(&settings_path, Some(&backup_path)).unwrap());
+        assert!(merge_antigravity_gemini_settings(&settings_path, Some(&backup_path)).unwrap());
         let saved: serde_json::Value =
             serde_json::from_str(&fs::read_to_string(&settings_path).unwrap()).unwrap();
         assert_eq!(saved["theme"], "AgentDock");
         assert_eq!(saved["security"]["auth"]["useExternal"], false);
         assert_eq!(saved["security"]["auth"]["selectedType"], "gemini-api-key");
+        assert_eq!(saved["general"]["maxAttempts"], 1);
+        assert_eq!(saved["general"]["retryFetchErrors"], false);
         assert!(backup_path.is_file());
-        assert!(!merge_gemini_api_key_auth_settings(&settings_path, None).unwrap());
+        assert!(!merge_antigravity_gemini_settings(&settings_path, None).unwrap());
         fs::remove_dir_all(root).unwrap();
     }
 

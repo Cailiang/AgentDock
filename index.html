@@ -417,9 +417,15 @@
     .key-field { position: relative; }
     .key-field input { padding-right: 42px; }
     .key-field .icon-btn { position: absolute; right: 3px; bottom: 3px; min-height: 34px; width: 34px; border: 0; background: transparent; color: var(--ink-soft); }
-    .model-control { display: grid; grid-template-columns: minmax(0, 1fr) 40px; gap: 7px; }
+    .model-control { position: relative; display: grid; grid-template-columns: minmax(0, 1fr) 40px 40px; gap: 7px; }
     .model-control input { height: 40px; }
     .model-control .icon-btn { width: 40px; height: 40px; }
+    .model-menu { position: absolute; z-index: 30; top: 47px; right: 47px; left: 0; max-height: 260px; overflow-y: auto; border: 1px solid var(--line-strong); border-radius: 7px; background: var(--surface-raised); box-shadow: var(--shadow-strong); padding: 5px; }
+    .model-menu[hidden] { display: none; }
+    .model-menu-item { display: grid; width: 100%; min-width: 0; grid-template-columns: minmax(0, 1fr) 18px; align-items: center; gap: 8px; border: 0; border-radius: 5px; background: transparent; color: var(--ink-soft); padding: 8px 9px; text-align: left; }
+    .model-menu-item:hover, .model-menu-item.active { background: var(--surface-pressed); color: var(--ink); }
+    .model-menu-item span { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+    .model-menu-item svg { width: 15px; height: 15px; color: var(--accent); }
     .model-source { min-height: 16px; color: var(--ink-faint); font-size: 10px; }
     .provider-control-pair { grid-template-rows: 17px 40px 16px; align-content: start; }
     .provider-control-pair > select, .provider-control-pair > .model-control { height: 40px; }
@@ -757,7 +763,7 @@
                 <label class="field"><span>备注</span><input name="provider-notes" placeholder="例如：公司专用账号" /></label>
                 <label class="field full" id="base-url-field"><span>请求地址</span><input name="provider-base-url" type="url" placeholder="https://api.example.com/v1" /></label>
                 <label class="field full key-field" id="api-key-field"><span>API Key</span><input name="provider-api-key" type="password" autocomplete="off" placeholder="编辑时留空会保留已有密钥" /><button class="icon-btn" type="button" data-action="toggle-api-key" title="显示或隐藏 API Key" aria-label="显示或隐藏 API Key"><i data-lucide="eye"></i></button></label>
-                <label class="field provider-control-pair" id="provider-model-field"><span>默认模型</span><div class="model-control"><input name="provider-model" list="provider-model-options" aria-label="默认模型" autocomplete="off" /><datalist id="provider-model-options"></datalist><button class="icon-btn" type="button" data-action="refresh-models" title="刷新模型列表" aria-label="刷新模型列表"><i data-lucide="refresh-cw"></i></button></div><small class="model-source" id="model-source">按客户端读取推荐模型</small></label>
+                <label class="field provider-control-pair" id="provider-model-field"><span>默认模型</span><div class="model-control"><input name="provider-model" list="provider-model-options" aria-label="默认模型" autocomplete="off" /><datalist id="provider-model-options"></datalist><button class="icon-btn" type="button" data-action="toggle-provider-model-menu" title="选择供应商模型" aria-label="选择供应商模型" aria-expanded="false"><i data-lucide="chevron-down"></i></button><button class="icon-btn" type="button" data-action="refresh-models" title="刷新模型列表" aria-label="刷新模型列表"><i data-lucide="refresh-cw"></i></button><div class="model-menu" id="provider-model-menu" hidden></div></div><small class="model-source" id="model-source">按客户端读取推荐模型</small></label>
                 <label class="field provider-control-pair" id="provider-api-format-field"><span>API 协议</span><select name="provider-api-format"><option value="auto">自动识别</option><option value="responses">OpenAI Responses</option><option value="chat-completions">Chat Completions</option><option value="anthropic">Anthropic Messages</option><option value="gemini">Gemini Native</option></select><small class="model-source" aria-hidden="true">&nbsp;</small></label>
                 <details class="advanced-config" id="advanced-model-fields"><summary>高级选项</summary>
                   <div class="form-grid" id="advanced-generic-model-fields">
@@ -1133,7 +1139,7 @@
       desktop: Boolean(window.__TAURI_INTERNALS__), status: startupCache?.status || null, settings: { ...defaultSettings, ...(startupCache?.settings || {}), language: defaultSettings.language, theme: defaultSettings.theme }, ready: startupCache?.ready || null, providers: startupCache?.providers || [], skills: startupCache?.skills || [], mcpServers: startupCache?.mcpServers || [], softwareCatalog: startupCache?.softwareCatalog || [], appUpdate: null, appUpdateInstalling: false, backgroundRefreshing: false,
       usageStats: null, usageDays: 7, trendMetric: "totalTokens", breakdown: "client",
       activeView: "clients", activeClient: "codex", contextQuery: "", softwareFilter: "all", skillFilter: "all", diagnosticFilter: "all",
-      inFlightOperations: new Set(), clientOperations: new Map(), launchingClients: new Set(), workspaceMenuOpen: false, settingsRevision: 0, settingsSaveChain: Promise.resolve(), logs: [], diagnostics: null, diagnosticRunning: false, ccSwitchImport: null, ccSwitchImportResult: null, ccSwitchImportChecking: false, editingProviderId: null, selectedPresetId: "custom", providerFormDirty: false, providerSecretRequest: 0, editingMcpId: null, selectedMcpPreset: "custom", inspectingMcpId: null, mcpToolsResult: null, mcpToolsError: "", activeMcpToolName: "", mcpToolsRequest: 0, configManuallyEdited: false, configImportRequest: 0, confirmResolve: null
+      inFlightOperations: new Set(), clientOperations: new Map(), launchingClients: new Set(), workspaceMenuOpen: false, providerModelMenuOpen: false, providerModelOptions: [], settingsRevision: 0, settingsSaveChain: Promise.resolve(), logs: [], diagnostics: null, diagnosticRunning: false, ccSwitchImport: null, ccSwitchImportResult: null, ccSwitchImportChecking: false, editingProviderId: null, selectedPresetId: "custom", providerFormDirty: false, providerSecretRequest: 0, editingMcpId: null, selectedMcpPreset: "custom", inspectingMcpId: null, mcpToolsResult: null, mcpToolsError: "", activeMcpToolName: "", mcpToolsRequest: 0, configManuallyEdited: false, configImportRequest: 0, confirmResolve: null
     };
     try {
       const cachedTheme = localStorage.getItem("agentdock-theme") || "system";
@@ -1249,7 +1255,7 @@
       if (command === "parse_provider_config") return mockParseProviderConfig(args.appId, args.content);
       if (command === "fetch_provider_models") {
         const models = args.appId === "codex" ? ["gpt-5.6-sol", "gpt-5.5", "glm-5.2"] : args.appId === "grok" ? ["grok-4.5", "grok-build", "grok-code-fast-1", "grok-4.1-fast"] : args.appId.startsWith("claude") ? ["claude-sonnet-5", "claude-opus-4-8", "glm-5.2"] : args.appId === "antigravity" ? ["gemini-3.5-pro", "gemini-3.5-flash"] : ["gpt-5.6-sol", "deepseek-chat", "glm-5.2"];
-        return { models, source: args.baseUrl ? "供应商模型接口" : "客户端推荐" };
+        return { models, source: args.baseUrl ? "供应商实际返回" : "客户端推荐", providerSupplied: Boolean(args.baseUrl) };
       }
       if (command === "run_ready_check") {
         const clientsReady = mock.status.clients.filter((item) => item.installed).length;
@@ -2228,10 +2234,10 @@
         }
       }
       if (secretRequest !== state.providerSecretRequest) return;
-      loadProviderModels().catch((error) => { document.getElementById("model-source").textContent = errorText(error); });
+      loadProviderModels().catch(() => {});
       setTimeout(() => form.elements["provider-name"].focus(), 120);
     }
-    function closeProviderEditor() { state.configImportRequest += 1; state.providerSecretRequest += 1; state.editingProviderId = null; state.providerFormDirty = false; const editor = document.getElementById("provider-editor"); if (editor) editor.hidden = true; hideProviderError(); setConfigImportStatus(); }
+    function closeProviderEditor() { state.configImportRequest += 1; state.providerSecretRequest += 1; state.editingProviderId = null; state.providerFormDirty = false; state.providerModelMenuOpen = false; state.providerModelOptions = []; const editor = document.getElementById("provider-editor"); if (editor) editor.hidden = true; hideProviderError(); setConfigImportStatus(); }
     async function selectClient(id) {
       if (!id) return;
       const editor = document.getElementById("provider-editor");
@@ -2261,18 +2267,36 @@
       if (state.activeClient.startsWith("claude")) applyClaudeMapping(claudePresetMapping(preset));
       updateProviderFormPresentation(preset); renderPresetGrid(); regenerateProviderConfig();
     }
-    function setModelOptions(models, selected, source) {
-      const input = document.querySelector('[name="provider-model"]'); const list = document.getElementById("provider-model-options"); const values = [...new Set([selected, ...models].filter(Boolean))];
-      list.innerHTML = values.map((model) => `<option value="${escapeHtml(model)}"></option>`).join("");
-      input.value = selected || "";
-      if (state.activeClient.startsWith("claude")) setClaudeFallback(selected || "");
-      document.getElementById("model-source").textContent = source;
+    function renderProviderModelMenu() {
+      const input = document.querySelector('[name="provider-model"]'); const menu = document.getElementById("provider-model-menu"); const trigger = document.querySelector('[data-action="toggle-provider-model-menu"]'); if (!menu || !trigger) return;
+      menu.hidden = !state.providerModelMenuOpen; trigger.setAttribute("aria-expanded", String(state.providerModelMenuOpen));
+      menu.innerHTML = state.providerModelOptions.map((model) => `<button class="model-menu-item ${input.value === model ? "active" : ""}" type="button" data-action="select-provider-model" data-model="${escapeHtml(model)}" title="${escapeHtml(model)}"><span>${escapeHtml(model)}</span>${input.value === model ? '<i data-lucide="check"></i>' : "<span></span>"}</button>`).join("");
+      refreshIcons();
     }
-    async function loadProviderModels() {
-      const form = document.getElementById("provider-form"); const selected = form.elements["provider-model"].value;
+    function setModelOptions(models, selected, source) {
+      const input = document.querySelector('[name="provider-model"]'); const list = document.getElementById("provider-model-options"); const remoteValues = [...new Set(models.filter(Boolean))]; const values = [...new Set([selected, ...remoteValues].filter(Boolean))];
+      list.innerHTML = values.map((model) => `<option value="${escapeHtml(model)}"></option>`).join("");
+      state.providerModelOptions = remoteValues; input.value = selected || "";
+      if (state.activeClient.startsWith("claude")) setClaudeFallback(selected || "");
+      document.getElementById("model-source").textContent = source; renderProviderModelMenu();
+    }
+    async function loadProviderModels({ openMenu = false } = {}) {
+      const form = document.getElementById("provider-form"); const selected = form.elements["provider-model"].value; const baseUrl = form.elements["provider-base-url"].value.trim(); const apiKey = form.elements["provider-api-key"].value.trim(); const apiFormat = form.elements["provider-api-format"].value;
+      const usesRecommendations = !baseUrl || apiFormat === "anthropic" || state.activeClient.startsWith("claude");
+      let localAddress = false; try { localAddress = ["localhost", "127.0.0.1", "::1"].includes(new URL(baseUrl).hostname); } catch {}
+      if (!usesRecommendations && !apiKey && !localAddress) { document.getElementById("model-source").textContent = tr("填写 API Key 后刷新供应商模型", "填写 API Key 后刷新供应商模型"); return; }
       document.getElementById("model-source").textContent = tr("正在读取模型列表", "正在读取模型列表");
-      const result = await call("fetch_provider_models", { appId: state.activeClient, baseUrl: form.elements["provider-base-url"].value.trim(), apiKey: form.elements["provider-api-key"].value.trim() || null, apiFormat: form.elements["provider-api-format"].value });
-      const preferred = selected || (state.activeClient.startsWith("claude") ? "" : result.models[0] || ""); setModelOptions(result.models, preferred, trf("provider.models", "{source} · {count} 个模型", { source: result.source, count: result.models.length })); if (!state.configManuallyEdited) regenerateProviderConfig();
+      try {
+        const result = await call("fetch_provider_models", { appId: state.activeClient, baseUrl, apiKey: apiKey || null, apiFormat });
+        const currentUnavailable = result.providerSupplied && selected && !result.models.includes(selected); const preferred = currentUnavailable && openMenu ? result.models[0] || selected : selected || (state.activeClient.startsWith("claude") ? "" : result.models[0] || ""); let source = trf("provider.models", "{source} · {count} 个模型", { source: result.source, count: result.models.length });
+        if (currentUnavailable) source += openMenu ? tr(" · 已切换默认模型", " · 已切换默认模型") : tr(" · 当前模型不可用", " · 当前模型不可用");
+        setModelOptions(result.models, preferred, source); state.providerModelMenuOpen = openMenu && result.models.length > 0; renderProviderModelMenu(); hideProviderError();
+        if (preferred !== selected) { state.providerFormDirty = true; if (currentUnavailable) notify(trf("当前模型不可用，已切换为 {model}", "当前模型不可用，已切换为 {model}", { model: preferred })); }
+        if (!state.configManuallyEdited) regenerateProviderConfig();
+      } catch (error) {
+        document.getElementById("model-source").textContent = tr("供应商模型读取失败", "供应商模型读取失败"); showProviderError(errorText(error));
+        throw error;
+      }
     }
     function updateProviderFormPresentation(preset) {
       const form = document.getElementById("provider-form"); const official = (preset?.type || form.elements["provider-type"].value) === "official";
@@ -2470,7 +2494,9 @@
       if (action === "open-provider-editor") return openProviderEditor();
       if (action === "close-provider-editor") return closeProviderEditor();
       if (action === "select-provider-preset") { state.providerFormDirty = true; applyPreset(findPreset(id)); return withBusy(button, loadProviderModels); }
-      if (action === "refresh-models") return withBusy(button, loadProviderModels);
+      if (action === "toggle-provider-model-menu") { if (!state.providerModelOptions.length) { notify(tr("请先刷新供应商模型列表", "请先刷新供应商模型列表"), "error"); return; } state.providerModelMenuOpen = !state.providerModelMenuOpen; renderProviderModelMenu(); return; }
+      if (action === "select-provider-model") { const input = document.querySelector('[name="provider-model"]'); input.value = button.dataset.model || ""; state.providerModelMenuOpen = false; state.providerFormDirty = true; renderProviderModelMenu(); handleProviderGeneratedField(input); return; }
+      if (action === "refresh-models") return withBusy(button, () => loadProviderModels({ openMenu: true }));
       if (action === "toggle-api-key") { const input = document.querySelector('[name="provider-api-key"]'); input.type = input.type === "password" ? "text" : "password"; button.innerHTML = `<i data-lucide="${input.type === "password" ? "eye" : "eye-off"}"></i>`; refreshIcons(); return; }
       if (action === "reset-provider-config") { state.providerFormDirty = true; regenerateProviderConfig(); notify(tr("action.configRegenerated", "配置文件已从表单重新生成")); return; }
       if (action === "save-provider") return withBusy(button, saveProvider);
@@ -2510,6 +2536,7 @@
 
     document.addEventListener("click", (event) => {
       if (state.workspaceMenuOpen && !event.target.closest(".workspace-menu")) { state.workspaceMenuOpen = false; renderClientStage(); refreshIcons(); }
+      if (state.providerModelMenuOpen && !event.target.closest(".model-control")) { state.providerModelMenuOpen = false; renderProviderModelMenu(); }
       const viewButton = event.target.closest("[data-view-button]"); if (viewButton) return showView(viewButton.dataset.viewButton);
       const button = event.target.closest("button[data-action]"); if (!button) return; event.preventDefault();
       handleAction(button.dataset.action, button).catch((error) => { const message = errorText(error); addLog("error", message); notify(message, "error"); showProviderError(message); });
@@ -2547,6 +2574,7 @@
     providerForm.addEventListener("input", (event) => {
       state.providerFormDirty = true;
       if (["provider-auth-config", "provider-main-config"].includes(event.target.name)) return setConfigEditState(true);
+      if (event.target.name === "provider-model" && state.providerModelMenuOpen) renderProviderModelMenu();
       handleProviderGeneratedField(event.target);
     });
     providerForm.addEventListener("change", (event) => { state.providerFormDirty = true; handleProviderGeneratedField(event.target); });
@@ -2565,6 +2593,7 @@
     document.addEventListener("keydown", (event) => {
       if ((event.metaKey || event.ctrlKey) && event.key.toLowerCase() === "k") { event.preventDefault(); const search = document.getElementById("command-search"); if (!search.disabled) { search.focus(); search.select(); } return; }
       if (event.key !== "Escape") return;
+      if (state.providerModelMenuOpen) { state.providerModelMenuOpen = false; renderProviderModelMenu(); return; }
       if (state.workspaceMenuOpen) { state.workspaceMenuOpen = false; renderClientStage(); refreshIcons(); return; }
       const search = document.getElementById("command-search"); if (document.activeElement === search && search.value) { search.value = ""; search.dispatchEvent(new Event("input", { bubbles: true })); return; }
       if (!document.getElementById("mcp-wizard-layer").hidden) { closeMcpWizard(); return; }
