@@ -1,6 +1,6 @@
 [package]
 name = "agentdock"
-version = "0.1.19"
+version = "0.1.20"
 description = "A beginner-friendly desktop hub for AI coding clients, providers, Skills, and MCP"
 authors = ["AgentDock"]
 license = "MIT"

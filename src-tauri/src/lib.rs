@@ -2668,6 +2668,31 @@ fn grok_provider_toml(provider: &ProviderProfile) -> Result<String, String> {
     toml::to_string_pretty(&root).map_err(|err| format!("生成 Grok config.toml 失败: {}", err))
 }
 
+fn grok_default_model_from_config(config: &str) -> Option<String> {
+    let root = config.parse::<toml::Table>().ok()?;
+    let model = root
+        .get("models")?
+        .as_table()?
+        .get("default")?
+        .as_str()?
+        .trim();
+    if model.is_empty() || model.chars().any(char::is_control) {
+        None
+    } else {
+        Some(model.to_string())
+    }
+}
+
+fn grok_default_model_from_settings(settings: Option<&serde_json::Value>) -> Option<String> {
+    match settings {
+        Some(settings) => settings
+            .get("config")
+            .and_then(serde_json::Value::as_str)
+            .and_then(grok_default_model_from_config),
+        None => Some("agentdock".to_string()),
+    }
+}
+
 fn preserve_toml_section(path: &Path, content: &str, section: &str) -> Result<String, String> {
     let mut updated: toml::Table = content
         .parse()
@@ -3074,19 +3099,23 @@ fn apply_provider_for_app(
                 api_key, provider.base_url, provider.gemini_model
             )),
         ),
-        "grok" => (
-            "grok/config.toml".to_string(),
-            custom_settings
-                .as_ref()
-                .and_then(|settings| settings.get("config"))
-                .and_then(serde_json::Value::as_str)
-                .map(str::to_string)
-                .unwrap_or(grok_provider_toml(provider)?),
-            Some(format!(
-                "XAI_API_KEY={}\nGROK_DEFAULT_MODEL=agentdock\n",
-                api_key
-            )),
-        ),
+        "grok" => {
+            let default_model = grok_default_model_from_settings(custom_settings.as_ref());
+            let mut environment = format!("XAI_API_KEY={}\n", api_key);
+            if let Some(default_model) = default_model {
+                environment.push_str(&format!("GROK_DEFAULT_MODEL={}\n", default_model));
+            }
+            (
+                "grok/config.toml".to_string(),
+                custom_settings
+                    .as_ref()
+                    .and_then(|settings| settings.get("config"))
+                    .and_then(serde_json::Value::as_str)
+                    .map(str::to_string)
+                    .unwrap_or(grok_provider_toml(provider)?),
+                Some(environment),
+            )
+        }
         "opencode" | "openclaw" | "hermes" => (
             format!("{}/provider.json", app_id),
             match custom_settings.as_ref() {
@@ -3713,7 +3742,8 @@ fn provider_launch_environment(
         return Err("当前供应商没有 API Key，请先补充密钥".to_string());
     }
 
-    if let Some(settings) = materialized_provider_settings(provider, &api_key)? {
+    let materialized_settings = materialized_provider_settings(provider, &api_key)?;
+    if let Some(settings) = materialized_settings.as_ref() {
         let section = if app_id == "codex" { "auth" } else { "env" };
         if let Some(values) = settings.get(section).and_then(serde_json::Value::as_object) {
             for (key, value) in values {
@@ -3800,9 +3830,12 @@ fn provider_launch_environment(
             environment
                 .entry("XAI_API_KEY".to_string())
                 .or_insert(api_key);
-            environment
-                .entry("GROK_DEFAULT_MODEL".to_string())
-                .or_insert_with(|| "agentdock".to_string());
+            environment.remove("GROK_DEFAULT_MODEL");
+            if let Some(default_model) =
+                grok_default_model_from_settings(materialized_settings.as_ref())
+            {
+                environment.insert("GROK_DEFAULT_MODEL".to_string(), default_model);
+            }
             environment.insert(
                 "GROK_HOME".to_string(),
                 dirs.managed_configs_dir.join("grok").display().to_string(),
@@ -10114,6 +10147,45 @@ requires_openai_auth = true"#;
         assert!(!config.contains("api_key ="));
         let wrapped = serde_json::json!({ "config": config });
         assert!(validate_provider_settings_config("grok", &wrapped.to_string()).is_ok());
+    }
+
+    #[test]
+    fn grok_launch_uses_the_default_alias_from_custom_config() {
+        let custom = serde_json::json!({
+            "config": r#"[models]
+default = "grok"
+
+[model.grok]
+model = "grok-4.5"
+base_url = "https://relay.example/v1"
+api_backend = "responses""#,
+            "env": {
+                "GROK_DEFAULT_MODEL": "agentdock",
+                "XAI_API_KEY": "${AGENTDOCK_API_KEY}"
+            }
+        });
+
+        assert_eq!(
+            grok_default_model_from_settings(Some(&custom)).as_deref(),
+            Some("grok")
+        );
+        assert_eq!(
+            grok_default_model_from_settings(None).as_deref(),
+            Some("agentdock")
+        );
+    }
+
+    #[test]
+    fn grok_launch_does_not_force_an_alias_missing_from_custom_config() {
+        let custom = serde_json::json!({
+            "config": "[model.grok]\nmodel = \"grok-4.5\"\n"
+        });
+
+        assert_eq!(grok_default_model_from_settings(Some(&custom)), None);
+        assert_eq!(
+            grok_default_model_from_config("[models]\ndefault = \"bad\\nmodel\"\n"),
+            None
+        );
     }
 
     #[test]

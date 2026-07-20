@@ -1143,10 +1143,10 @@
 
     const mock = {
       status: {
-        appVersion: "0.1.19", platform: "browser-preview", dataDir: "/AgentDock/data", configDir: "/AgentDock/config", managedRuntimeReady: true,
+        appVersion: "0.1.20", platform: "browser-preview", dataDir: "/AgentDock/data", configDir: "/AgentDock/config", managedRuntimeReady: true,
         clients: APP_ORDER.map((id) => { const installed = ["codex", "claude-desktop"].includes(id); return { id, name: APP_META[id].name, installed, version: installed ? id === "codex" ? "0.91.0" : "detected" : null, executable: installed ? `/Applications/${id}` : null, configPath: installed ? `/AgentDock/${id}/config` : null, managedByAgentdock: id === "codex" }; })
       },
-      appUpdate: { supported: true, available: true, currentVersion: "0.1.19", latestVersion: "0.1.20", downloadSize: 12582912 },
+      appUpdate: { supported: true, available: true, currentVersion: "0.1.20", latestVersion: "0.1.21", downloadSize: 12582912 },
       ccSwitchImport: { available: true, sourcePath: "~/.cc-switch/cc-switch.db", sourceKind: "SQLite", fingerprint: "browser-preview-cc-switch", providerCount: 4, appCounts: { "claude-code": 2, codex: 1, antigravity: 1 } },
       settings: { ...defaultSettings },
       providers: [{ id: "packycode-preview", name: "PackyCode", notes: "主力线路", websiteUrl: "https://www.packyapi.com", presetId: "packycode", providerType: "openai", baseUrl: "https://www.packyapi.com/v1", apiFormat: "responses", enabledApps: ["codex"], activeApps: ["codex"], codexModel: "gpt-5.6-sol", geminiModel: "gemini-3.5-pro", claudeSonnetModel: "claude-sonnet-5", claudeHaikuModel: "claude-haiku-4-5", claudeOpusModel: "claude-opus-4-8", active: true, apiKeyConfigured: true, createdAt: new Date().toISOString(), updatedAt: new Date().toISOString() }],
@@ -1262,7 +1262,7 @@
       if (command === "run_diagnostics") return {
         generatedAt: new Date().toISOString(), score: 75, passed: 6, warnings: 1, failed: 1,
         checks: [
-          { id: "system-platform", category: "系统", status: "pass", title: "桌面运行环境", detail: "AgentDock 0.1.19 · macOS arm64", action: "" },
+          { id: "system-platform", category: "系统", status: "pass", title: "桌面运行环境", detail: "AgentDock 0.1.20 · macOS arm64", action: "" },
           { id: "system-data-dir", category: "系统", status: "pass", title: "数据目录可写", detail: "/AgentDock/data", action: "" },
           { id: "client-claude", category: "客户端", status: "pass", title: "Claude Desktop 可正常启动", detail: "1.0.2 · 系统安装", action: "" },
           { id: "client-codex-update", category: "客户端", status: "warning", title: "Codex 有新版本", detail: "当前 0.1.0，最新 0.2.0", action: "前往客户端页面点击更新" },
@@ -2185,7 +2185,7 @@
       }
       if (state.activeClient === "grok") {
         if (!main) throw new Error(tr("config.toml 不能为空", "config.toml 不能为空"));
-        return JSON.stringify({ config: main, env: { XAI_API_KEY: configKeyPlaceholder, GROK_DEFAULT_MODEL: "agentdock" } }, null, 2);
+        return JSON.stringify({ config: main, env: { XAI_API_KEY: configKeyPlaceholder } }, null, 2);
       }
       let settings; try { settings = JSON.parse(main || "{}"); } catch { throw new Error(trf("error.invalidJson", "{name} 不是有效 JSON", { name: document.getElementById("provider-main-filename").textContent })); }
       if (!settings || Array.isArray(settings) || typeof settings !== "object") throw new Error(tr("配置文件内容必须是 JSON 对象", "配置文件内容必须是 JSON 对象"));
