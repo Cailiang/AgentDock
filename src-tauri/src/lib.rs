@@ -2567,7 +2567,7 @@ fn save_provider(input: ProviderInput) -> Result<ProviderProfile, String> {
         validate_provider_settings_config(app_id, &raw_settings_config)?
     };
 
-    let provider = ProviderProfile {
+    let mut provider = ProviderProfile {
         id: provider_id.clone(),
         name: input.name.trim().to_string(),
         notes: input.notes.unwrap_or_default().trim().to_string(),
@@ -2600,6 +2600,16 @@ fn save_provider(input: ProviderInput) -> Result<ProviderProfile, String> {
         created_at: existing_created_at,
         updated_at: now,
     };
+    if !provider.settings_config.is_empty() {
+        let app_id = provider
+            .enabled_apps
+            .first()
+            .map(String::as_str)
+            .unwrap_or("codex");
+        let synchronized =
+            synchronize_provider_settings_config(&provider, app_id, &provider.settings_config)?;
+        provider.settings_config = synchronized;
+    }
 
     providers.retain(|item| item.id != provider_id);
     for app in &provider.active_apps {
@@ -3515,7 +3525,7 @@ fn apply_provider_for_app(
         return Err("当前供应商没有 API Key，请先补充密钥".to_string());
     }
     let preview = preview_provider_config(provider.clone())?;
-    let custom_settings = materialized_provider_settings(provider, &api_key)?;
+    let custom_settings = materialized_provider_settings(provider, app_id, &api_key)?;
     let backup_dir = dirs.backups_dir.join(format!(
         "provider-{}-{}-{}",
         provider.id,
@@ -4319,7 +4329,7 @@ fn provider_launch_environment(
         return Err("当前供应商没有 API Key，请先补充密钥".to_string());
     }
 
-    let materialized_settings = materialized_provider_settings(provider, &api_key)?;
+    let materialized_settings = materialized_provider_settings(provider, app_id, &api_key)?;
     if let Some(settings) = materialized_settings.as_ref() {
         let section = if app_id == "codex" { "auth" } else { "env" };
         if let Some(values) = settings.get(section).and_then(serde_json::Value::as_object) {
@@ -4385,15 +4395,12 @@ fn provider_launch_environment(
             }
         }
         "antigravity" => {
-            environment
-                .entry("GEMINI_API_KEY".to_string())
-                .or_insert(api_key);
-            environment
-                .entry("GOOGLE_GEMINI_BASE_URL".to_string())
-                .or_insert_with(|| provider.base_url.clone());
-            environment
-                .entry("GEMINI_MODEL".to_string())
-                .or_insert_with(|| provider.gemini_model.clone());
+            environment.insert("GEMINI_API_KEY".to_string(), api_key);
+            environment.insert(
+                "GOOGLE_GEMINI_BASE_URL".to_string(),
+                provider.base_url.clone(),
+            );
+            environment.insert("GEMINI_MODEL".to_string(), provider.gemini_model.clone());
             environment.insert(
                 "GEMINI_CLI_HOME".to_string(),
                 dirs.managed_configs_dir
@@ -7378,6 +7385,7 @@ fn validate_provider_settings_config(app_id: &str, raw: &str) -> Result<String, 
 
 fn materialized_provider_settings(
     provider: &ProviderProfile,
+    app_id: &str,
     api_key: &str,
 ) -> Result<Option<serde_json::Value>, String> {
     if provider.settings_config.trim().is_empty() {
@@ -7386,7 +7394,134 @@ fn materialized_provider_settings(
     let mut settings: serde_json::Value = serde_json::from_str(&provider.settings_config)
         .map_err(|err| format!("读取供应商配置内容失败: {}", err))?;
     replace_json_placeholder(&mut settings, api_key);
+    synchronize_provider_settings_value(provider, app_id, &mut settings)?;
     Ok(Some(settings))
+}
+
+fn synchronize_provider_settings_config(
+    provider: &ProviderProfile,
+    app_id: &str,
+    raw: &str,
+) -> Result<String, String> {
+    let mut settings: serde_json::Value =
+        serde_json::from_str(raw).map_err(|err| format!("读取供应商配置内容失败: {}", err))?;
+    synchronize_provider_settings_value(provider, app_id, &mut settings)?;
+    serde_json::to_string_pretty(&settings).map_err(|err| err.to_string())
+}
+
+fn synchronize_provider_settings_value(
+    provider: &ProviderProfile,
+    app_id: &str,
+    settings: &mut serde_json::Value,
+) -> Result<(), String> {
+    let root = settings
+        .as_object_mut()
+        .ok_or_else(|| "供应商配置内容必须是 JSON 对象".to_string())?;
+    match app_id {
+        "antigravity" => {
+            let env = root
+                .entry("env".to_string())
+                .or_insert_with(|| serde_json::json!({}));
+            if !env.is_object() {
+                *env = serde_json::json!({});
+            }
+            let env = env
+                .as_object_mut()
+                .expect("Antigravity env was normalized to an object");
+            env.insert(
+                "GOOGLE_GEMINI_BASE_URL".to_string(),
+                serde_json::Value::String(provider.base_url.clone()),
+            );
+            env.insert(
+                "GEMINI_MODEL".to_string(),
+                serde_json::Value::String(provider.gemini_model.clone()),
+            );
+        }
+        "codex" => {
+            let config = root
+                .get("config")
+                .and_then(serde_json::Value::as_str)
+                .ok_or_else(|| "Codex 配置必须包含 config.toml 内容".to_string())?;
+            let mut table = config
+                .parse::<toml::Table>()
+                .map_err(|err| format!("config.toml 格式错误: {}", err))?;
+            table.insert(
+                "model".to_string(),
+                toml::Value::String(provider.codex_model.clone()),
+            );
+            root.insert(
+                "config".to_string(),
+                serde_json::Value::String(
+                    toml::to_string_pretty(&table)
+                        .map_err(|err| format!("生成 config.toml 失败: {}", err))?,
+                ),
+            );
+        }
+        "grok" => {
+            let config = root
+                .get("config")
+                .and_then(serde_json::Value::as_str)
+                .ok_or_else(|| "Grok 配置必须包含 config.toml 内容".to_string())?;
+            let mut table = config
+                .parse::<toml::Table>()
+                .map_err(|err| format!("config.toml 格式错误: {}", err))?;
+            let existing_alias = table
+                .get("models")
+                .and_then(toml::Value::as_table)
+                .and_then(|models| models.get("default"))
+                .and_then(toml::Value::as_str)
+                .map(str::to_string);
+            let first_alias = table
+                .get("model")
+                .and_then(toml::Value::as_table)
+                .and_then(|models| models.keys().next())
+                .cloned();
+            let alias = existing_alias
+                .or(first_alias)
+                .unwrap_or_else(|| "agentdock".to_string());
+            let models = table
+                .entry("models".to_string())
+                .or_insert_with(|| toml::Value::Table(toml::Table::new()));
+            if !models.is_table() {
+                *models = toml::Value::Table(toml::Table::new());
+            }
+            models
+                .as_table_mut()
+                .expect("Grok models was normalized to a table")
+                .insert("default".to_string(), toml::Value::String(alias.clone()));
+            let model_entries = table
+                .entry("model".to_string())
+                .or_insert_with(|| toml::Value::Table(toml::Table::new()));
+            if !model_entries.is_table() {
+                *model_entries = toml::Value::Table(toml::Table::new());
+            }
+            let model_entries = model_entries
+                .as_table_mut()
+                .expect("Grok model was normalized to a table");
+            let model = model_entries
+                .entry(alias)
+                .or_insert_with(|| toml::Value::Table(toml::Table::new()));
+            if !model.is_table() {
+                *model = toml::Value::Table(toml::Table::new());
+            }
+            model
+                .as_table_mut()
+                .expect("Grok model alias was normalized to a table")
+                .insert(
+                    "model".to_string(),
+                    toml::Value::String(provider.codex_model.clone()),
+                );
+            root.insert(
+                "config".to_string(),
+                serde_json::Value::String(
+                    toml::to_string_pretty(&table)
+                        .map_err(|err| format!("生成 config.toml 失败: {}", err))?,
+                ),
+            );
+        }
+        _ => {}
+    }
+    Ok(())
 }
 
 fn codex_auth_for_provider(
@@ -10879,6 +11014,87 @@ requires_openai_auth = true"#;
         });
         assert!(validate_provider_settings_config("codex", &invalid.to_string()).is_err());
         assert!(validate_provider_settings_config("claude-code", "[]").is_err());
+    }
+
+    #[test]
+    fn synchronizes_antigravity_profile_into_stale_settings() {
+        let mut provider = provider_test_profile("antigravity-relay", &["antigravity"], &[]);
+        provider.base_url = "https://relay.example.com/v1beta".to_string();
+        provider.gemini_model = "gemini-3-flash".to_string();
+        let raw = serde_json::json!({
+            "env": {
+                "GEMINI_API_KEY": "${AGENTDOCK_API_KEY}",
+                "GEMINI_MODEL": "gemini-3.5-pro",
+                "KEEP_ENV": "value"
+            },
+            "theme": "AgentDock"
+        })
+        .to_string();
+
+        let synchronized =
+            synchronize_provider_settings_config(&provider, "antigravity", &raw).unwrap();
+        let settings: serde_json::Value = serde_json::from_str(&synchronized).unwrap();
+        assert_eq!(settings["env"]["GEMINI_MODEL"], "gemini-3-flash");
+        assert_eq!(
+            settings["env"]["GOOGLE_GEMINI_BASE_URL"],
+            "https://relay.example.com/v1beta"
+        );
+        assert_eq!(settings["env"]["GEMINI_API_KEY"], "${AGENTDOCK_API_KEY}");
+        assert_eq!(settings["env"]["KEEP_ENV"], "value");
+        assert_eq!(settings["theme"], "AgentDock");
+        assert_eq!(
+            synchronize_provider_settings_config(&provider, "antigravity", &synchronized).unwrap(),
+            synchronized
+        );
+    }
+
+    #[test]
+    fn synchronizes_codex_model_without_dropping_toml_settings() {
+        let mut provider = provider_test_profile("codex-relay", &["codex"], &[]);
+        provider.codex_model = "gpt-5.6-codex".to_string();
+        let raw = serde_json::json!({
+            "auth": { "OPENAI_API_KEY": "${AGENTDOCK_API_KEY}" },
+            "config": "model = \"stale-model\"\nmodel_reasoning_effort = \"high\"\n\n[features]\ngoals = true\n"
+        })
+        .to_string();
+
+        let synchronized = synchronize_provider_settings_config(&provider, "codex", &raw).unwrap();
+        let settings: serde_json::Value = serde_json::from_str(&synchronized).unwrap();
+        let config: toml::Table = settings["config"].as_str().unwrap().parse().unwrap();
+        assert_eq!(config["model"].as_str(), Some("gpt-5.6-codex"));
+        assert_eq!(config["model_reasoning_effort"].as_str(), Some("high"));
+        assert_eq!(config["features"]["goals"].as_bool(), Some(true));
+        assert_eq!(
+            synchronize_provider_settings_config(&provider, "codex", &synchronized).unwrap(),
+            synchronized
+        );
+    }
+
+    #[test]
+    fn synchronizes_grok_model_for_the_configured_default_alias() {
+        let mut provider = provider_test_profile("grok-relay", &["grok"], &[]);
+        provider.codex_model = "grok-4.5-fast".to_string();
+        let raw = serde_json::json!({
+            "config": "[models]\ndefault = \"relay\"\nweb_search = \"relay\"\n\n[model.relay]\nmodel = \"stale-model\"\nbase_url = \"https://relay.example.com/v1\"\ncontext_window = 1000000\n"
+        })
+        .to_string();
+
+        let synchronized = synchronize_provider_settings_config(&provider, "grok", &raw).unwrap();
+        let settings: serde_json::Value = serde_json::from_str(&synchronized).unwrap();
+        let config: toml::Table = settings["config"].as_str().unwrap().parse().unwrap();
+        assert_eq!(config["models"]["default"].as_str(), Some("relay"));
+        assert_eq!(
+            config["model"]["relay"]["model"].as_str(),
+            Some("grok-4.5-fast")
+        );
+        assert_eq!(
+            config["model"]["relay"]["base_url"].as_str(),
+            Some("https://relay.example.com/v1")
+        );
+        assert_eq!(
+            config["model"]["relay"]["context_window"].as_integer(),
+            Some(1_000_000)
+        );
     }
 
     #[test]
