@@ -221,6 +221,8 @@ pub struct ProviderProfile {
     active_apps: Vec<String>,
     #[serde(default)]
     api_key_configured: bool,
+    #[serde(default)]
+    activation_reviewed: bool,
     created_at: String,
     updated_at: String,
 }
@@ -1927,6 +1929,7 @@ fn prepare_cc_switch_provider(
             active: !active_apps.is_empty(),
             active_apps,
             api_key_configured: api_key.is_some(),
+            activation_reviewed: true,
             created_at: now.clone(),
             updated_at: now,
         },
@@ -2289,10 +2292,73 @@ fn list_providers() -> Result<Vec<ProviderProfile>, String> {
         }
         provider.active = !provider.active_apps.is_empty();
     }
+    if providers
+        .iter()
+        .any(|provider| provider.id.starts_with("cc-switch-") && !provider.activation_reviewed)
+    {
+        if let Ok(Some((_path, _source_kind, candidates))) = load_cc_switch_candidates() {
+            migrated |= reconcile_cc_switch_activations(&mut providers, &candidates);
+        }
+    }
     if migrated {
         write_providers(&dirs, &providers)?;
     }
     Ok(providers)
+}
+
+fn reconcile_cc_switch_activations(
+    providers: &mut [ProviderProfile],
+    candidates: &[CcSwitchProviderCandidate],
+) -> bool {
+    let source_states = candidates
+        .iter()
+        .map(|candidate| {
+            (
+                cc_switch_provider_id(candidate),
+                (candidate.app_id.as_str(), candidate.is_current),
+            )
+        })
+        .collect::<BTreeMap<_, _>>();
+    let mut migrated = false;
+    for provider in providers
+        .iter_mut()
+        .filter(|provider| provider.id.starts_with("cc-switch-") && !provider.activation_reviewed)
+    {
+        let Some(&(app_id, is_current)) = source_states.get(&provider.id) else {
+            continue;
+        };
+        if !is_current {
+            provider.active_apps.retain(|app| app != app_id);
+            provider.active = !provider.active_apps.is_empty();
+        }
+        provider.activation_reviewed = true;
+        migrated = true;
+    }
+    migrated
+}
+
+fn provider_api_key_for_edit(
+    provider_id: &str,
+    providers: &[ProviderProfile],
+    secrets: &BTreeMap<String, String>,
+) -> Result<String, String> {
+    if !providers.iter().any(|provider| provider.id == provider_id) {
+        return Err("未找到供应商".to_string());
+    }
+    Ok(secrets.get(provider_id).cloned().unwrap_or_default())
+}
+
+#[tauri::command]
+fn get_provider_api_key(provider_id: String) -> Result<String, String> {
+    let provider_id = provider_id.trim();
+    if provider_id.is_empty() {
+        return Err("未找到供应商".to_string());
+    }
+    let dirs = agentdock_dirs()?;
+    ensure_dirs(&dirs)?;
+    let providers = list_providers()?;
+    let secrets = read_provider_secrets(&dirs)?;
+    provider_api_key_for_edit(provider_id, &providers, &secrets)
 }
 
 #[tauri::command]
@@ -2407,6 +2473,7 @@ fn save_provider(input: ProviderInput) -> Result<ProviderProfile, String> {
         active: !active_apps.is_empty(),
         active_apps,
         api_key_configured: secrets.contains_key(&provider_id),
+        activation_reviewed: true,
         created_at: existing_created_at,
         updated_at: now,
     };
@@ -2437,6 +2504,7 @@ fn activate_provider(provider_id: String, app_id: String) -> Result<ProviderProf
                 return Err("这个供应商没有启用当前客户端".to_string());
             }
             provider.active_apps.push(app_id.clone());
+            provider.activation_reviewed = true;
             provider.updated_at = now_rfc3339();
         }
         provider.active = !provider.active_apps.is_empty();
@@ -2455,28 +2523,8 @@ fn delete_provider(provider_id: String) -> Result<OperationResult, String> {
     let dirs = agentdock_dirs()?;
     ensure_dirs(&dirs)?;
     let mut providers = list_providers()?;
-    let before = providers.len();
-    providers.retain(|provider| provider.id != provider_id);
-    if providers.len() == before {
+    if !remove_provider_profile(&mut providers, &provider_id) {
         return Err("未找到供应商".to_string());
-    }
-    for app in supported_provider_apps() {
-        if !providers.iter().any(|provider| {
-            provider
-                .active_apps
-                .iter()
-                .any(|active_app| active_app == app)
-        }) {
-            if let Some(provider) = providers.iter_mut().find(|provider| {
-                provider
-                    .enabled_apps
-                    .iter()
-                    .any(|enabled_app| enabled_app == app)
-            }) {
-                provider.active_apps.push(app.to_string());
-                provider.active = true;
-            }
-        }
     }
     write_providers(&dirs, &providers)?;
 
@@ -2488,6 +2536,12 @@ fn delete_provider(provider_id: String) -> Result<OperationResult, String> {
         ok: true,
         message: "供应商已删除".to_string(),
     })
+}
+
+fn remove_provider_profile(providers: &mut Vec<ProviderProfile>, provider_id: &str) -> bool {
+    let before = providers.len();
+    providers.retain(|provider| provider.id != provider_id);
+    providers.len() != before
 }
 
 #[tauri::command]
@@ -3251,13 +3305,7 @@ async fn run_diagnostics() -> Result<DiagnosticsReport, String> {
     let providers = list_providers()?;
     let relevant_providers = providers
         .iter()
-        .filter(|provider| {
-            provider
-                .enabled_apps
-                .iter()
-                .chain(provider.active_apps.iter())
-                .any(|app| installed_client_ids.contains(app))
-        })
+        .filter(|provider| provider_is_active_for_diagnostics(provider, &installed_client_ids))
         .cloned()
         .collect::<Vec<_>>();
     let tests = join_all(relevant_providers.into_iter().map(|provider| async move {
@@ -3267,7 +3315,7 @@ async fn run_diagnostics() -> Result<DiagnosticsReport, String> {
     .await;
     for (provider, result) in tests {
         let apps = provider
-            .enabled_apps
+            .active_apps
             .iter()
             .filter(|app| installed_client_ids.contains(*app))
             .cloned()
@@ -3386,6 +3434,16 @@ async fn run_diagnostics() -> Result<DiagnosticsReport, String> {
     }
 
     Ok(finalize_diagnostics(checks))
+}
+
+fn provider_is_active_for_diagnostics(
+    provider: &ProviderProfile,
+    installed_client_ids: &HashSet<String>,
+) -> bool {
+    provider
+        .active_apps
+        .iter()
+        .any(|app| installed_client_ids.contains(app))
 }
 
 fn diagnostic_check(
@@ -6229,6 +6287,7 @@ pub fn run() {
             fetch_provider_models,
             run_ready_check,
             list_providers,
+            get_provider_api_key,
             save_provider,
             activate_provider,
             delete_provider,
@@ -8871,6 +8930,36 @@ fn now_rfc3339() -> String {
 mod tests {
     use super::*;
 
+    fn provider_test_profile(
+        id: &str,
+        enabled_apps: &[&str],
+        active_apps: &[&str],
+    ) -> ProviderProfile {
+        ProviderProfile {
+            id: id.to_string(),
+            name: id.to_string(),
+            notes: String::new(),
+            website_url: String::new(),
+            preset_id: String::new(),
+            provider_type: "openai".to_string(),
+            base_url: "https://api.example.com/v1".to_string(),
+            api_format: "responses".to_string(),
+            settings_config: String::new(),
+            enabled_apps: enabled_apps.iter().map(|app| (*app).to_string()).collect(),
+            codex_model: default_codex_model(),
+            gemini_model: default_gemini_model(),
+            claude_sonnet_model: "claude-sonnet-5".to_string(),
+            claude_haiku_model: "claude-haiku-4-5".to_string(),
+            claude_opus_model: "claude-opus-4-8".to_string(),
+            active: !active_apps.is_empty(),
+            active_apps: active_apps.iter().map(|app| (*app).to_string()).collect(),
+            api_key_configured: true,
+            activation_reviewed: true,
+            created_at: now_rfc3339(),
+            updated_at: now_rfc3339(),
+        }
+    }
+
     fn cc_switch_test_path(name: &str) -> PathBuf {
         env::temp_dir().join(format!(
             "agentdock-cc-switch-{}-{}-{}",
@@ -9956,6 +10045,7 @@ requires_openai_auth = true"#;
             active_apps: Vec::new(),
             settings_config: String::new(),
             api_key_configured: true,
+            activation_reviewed: true,
             created_at: now_rfc3339(),
             updated_at: now_rfc3339(),
         });
@@ -10006,6 +10096,7 @@ requires_openai_auth = true"#;
             active: true,
             active_apps: vec!["grok".to_string()],
             api_key_configured: true,
+            activation_reviewed: true,
             created_at: now_rfc3339(),
             updated_at: now_rfc3339(),
         };
@@ -10082,6 +10173,83 @@ requires_openai_auth = true"#;
         assert_eq!(report.warnings, 2);
         assert_eq!(report.failed, 2);
         assert_eq!(report.score, 75);
+    }
+
+    #[test]
+    fn diagnostics_only_test_active_providers_for_installed_clients() {
+        let installed = HashSet::from(["codex".to_string()]);
+        let inactive = provider_test_profile("inactive", &["codex"], &[]);
+        let active = provider_test_profile("active", &["codex"], &["codex"]);
+        let other_client = provider_test_profile("other-client", &["openclaw"], &["openclaw"]);
+
+        assert!(!provider_is_active_for_diagnostics(&inactive, &installed));
+        assert!(provider_is_active_for_diagnostics(&active, &installed));
+        assert!(!provider_is_active_for_diagnostics(
+            &other_client,
+            &installed
+        ));
+    }
+
+    #[test]
+    fn deleting_a_provider_does_not_activate_an_inactive_fallback() {
+        let mut providers = vec![
+            provider_test_profile("selected", &["openclaw"], &["openclaw"]),
+            provider_test_profile("model-name", &["openclaw"], &[]),
+        ];
+
+        assert!(remove_provider_profile(&mut providers, "selected"));
+        assert_eq!(providers.len(), 1);
+        assert_eq!(providers[0].id, "model-name");
+        assert!(!providers[0].active);
+        assert!(providers[0].active_apps.is_empty());
+    }
+
+    #[test]
+    fn provider_keys_are_loaded_only_for_an_explicit_edit() {
+        let providers = vec![provider_test_profile("provider", &["codex"], &["codex"])];
+        let secrets = BTreeMap::from([("provider".to_string(), "saved-secret".to_string())]);
+
+        assert_eq!(
+            provider_api_key_for_edit("provider", &providers, &secrets).unwrap(),
+            "saved-secret"
+        );
+        assert!(provider_api_key_for_edit("missing", &providers, &secrets).is_err());
+    }
+
+    #[test]
+    fn legacy_cc_switch_activation_is_reconciled_only_once() {
+        let candidate = CcSwitchProviderCandidate {
+            source_id: "anthropic-custom".to_string(),
+            source_app: "openclaw".to_string(),
+            app_id: "openclaw".to_string(),
+            name: "claude-sonnet-model".to_string(),
+            settings_config: serde_json::json!({}),
+            website_url: String::new(),
+            category: String::new(),
+            notes: String::new(),
+            meta: serde_json::json!({}),
+            is_current: false,
+        };
+        let id = cc_switch_provider_id(&candidate);
+        let mut provider = provider_test_profile(&id, &["openclaw"], &["openclaw"]);
+        provider.activation_reviewed = false;
+        let mut providers = vec![provider];
+
+        assert!(reconcile_cc_switch_activations(
+            &mut providers,
+            std::slice::from_ref(&candidate)
+        ));
+        assert!(!providers[0].active);
+        assert!(providers[0].active_apps.is_empty());
+        assert!(providers[0].activation_reviewed);
+
+        providers[0].active = true;
+        providers[0].active_apps.push("openclaw".to_string());
+        assert!(!reconcile_cc_switch_activations(
+            &mut providers,
+            &[candidate]
+        ));
+        assert!(providers[0].active);
     }
 
     #[test]

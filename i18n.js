@@ -62,6 +62,7 @@ const rows = [
   ["例如：公司专用账号", "例如：公司專用帳號", "Example: company account", "例：会社用アカウント", "Beispiel: Firmenkonto"],
   ["请求地址", "請求位址", "API endpoint", "API エンドポイント", "API-Endpunkt"],
   ["编辑时留空会保留已有密钥", "編輯時留空會保留現有金鑰", "Leave blank to keep the saved key", "空欄なら保存済みのキーを維持します", "Leer lassen, um den gespeicherten Schlüssel beizubehalten"],
+  ["正在读取已保存的密钥", "正在讀取已儲存的金鑰", "Loading the saved key", "保存済みのキーを読み込み中", "Gespeicherter Schlüssel wird geladen"],
   ["显示或隐藏 API Key", "顯示或隱藏 API Key", "Show or hide API Key", "API Key の表示を切り替え", "API-Schlüssel ein- oder ausblenden"],
   ["默认模型", "預設模型", "Default model", "既定モデル", "Standardmodell"],
   ["正在读取模型", "正在讀取模型", "Loading models", "モデルを読み込み中", "Modelle werden geladen"],
