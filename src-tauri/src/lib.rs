@@ -3495,6 +3495,13 @@ fn apply_provider_for_app(
         written_files.push(env_target.display().to_string());
     }
 
+    if app_id == "antigravity" {
+        let settings_path = antigravity_gemini_settings_path(&dirs);
+        let backup_path = backup_dir.join("managed-antigravity-gemini-settings.json");
+        merge_gemini_api_key_auth_settings(&settings_path, Some(&backup_path))?;
+        written_files.push(settings_path.display().to_string());
+    }
+
     if app_id == "grok" {
         let sync = sync_mcp_servers()?;
         for path in sync.written_files {
@@ -4015,11 +4022,77 @@ fn ensure_provider_launch_config(
             apply_provider_for_app(provider, app_id)?;
         }
     }
+    if app_id == "antigravity" && provider.provider_type != "official" {
+        merge_gemini_api_key_auth_settings(&antigravity_gemini_settings_path(dirs), None)?;
+    }
     Ok(())
 }
 
 fn codex_home_is_ready(path: &Path) -> bool {
     path.join("config.toml").is_file() && path.join("auth.json").is_file()
+}
+
+fn antigravity_gemini_settings_path(dirs: &AgentDockDirs) -> PathBuf {
+    dirs.managed_configs_dir
+        .join("antigravity")
+        .join("gemini-cli-home")
+        .join(".gemini")
+        .join("settings.json")
+}
+
+fn merge_gemini_api_key_auth_settings(
+    path: &Path,
+    backup_path: Option<&Path>,
+) -> Result<bool, String> {
+    let existed = path.exists();
+    let mut settings = if existed {
+        let raw = fs::read_to_string(path)
+            .map_err(|err| format!("读取 Antigravity 认证配置失败: {}", err))?;
+        serde_json::from_str::<serde_json::Value>(&raw)
+            .map_err(|err| format!("解析 Antigravity 认证配置失败: {}", err))?
+    } else {
+        serde_json::json!({})
+    };
+    let root = settings
+        .as_object_mut()
+        .ok_or_else(|| "Antigravity 认证配置必须是 JSON 对象".to_string())?;
+    let security = root
+        .entry("security".to_string())
+        .or_insert_with(|| serde_json::json!({}));
+    if !security.is_object() {
+        *security = serde_json::json!({});
+    }
+    let auth = security
+        .as_object_mut()
+        .expect("security was normalized to an object")
+        .entry("auth".to_string())
+        .or_insert_with(|| serde_json::json!({}));
+    if !auth.is_object() {
+        *auth = serde_json::json!({});
+    }
+    let auth = auth
+        .as_object_mut()
+        .expect("auth was normalized to an object");
+    if auth.get("selectedType").and_then(serde_json::Value::as_str) == Some("gemini-api-key") {
+        return Ok(false);
+    }
+    auth.insert(
+        "selectedType".to_string(),
+        serde_json::Value::String("gemini-api-key".to_string()),
+    );
+
+    if let Some(parent) = path.parent() {
+        fs::create_dir_all(parent)
+            .map_err(|err| format!("创建 Antigravity 认证配置目录失败: {}", err))?;
+    }
+    if existed {
+        if let Some(backup_path) = backup_path {
+            fs::copy(path, backup_path)
+                .map_err(|err| format!("备份 Antigravity 认证配置失败: {}", err))?;
+        }
+    }
+    write_json(path, &settings).map_err(|err| format!("写入 Antigravity 认证配置失败: {}", err))?;
+    Ok(true)
 }
 
 fn provider_launch_environment(
@@ -10424,6 +10497,34 @@ requires_openai_auth = true"#;
             assert!(content.contains("if not defined GOOGLE_GEMINI_BASE_URL goto agy"));
             assert!(content.contains(":agy"));
         }
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn antigravity_gemini_auth_uses_api_key_without_dropping_settings() {
+        let root = env::temp_dir().join(format!(
+            "agentdock-antigravity-auth-test-{}-{}",
+            std::process::id(),
+            OffsetDateTime::now_utc().unix_timestamp_nanos()
+        ));
+        let settings_path = root.join(".gemini/settings.json");
+        let backup_path = root.join("backup/settings.json");
+        fs::create_dir_all(settings_path.parent().unwrap()).unwrap();
+        fs::create_dir_all(backup_path.parent().unwrap()).unwrap();
+        fs::write(
+            &settings_path,
+            r#"{"theme":"AgentDock","security":{"auth":{"useExternal":false}}}"#,
+        )
+        .unwrap();
+
+        assert!(merge_gemini_api_key_auth_settings(&settings_path, Some(&backup_path)).unwrap());
+        let saved: serde_json::Value =
+            serde_json::from_str(&fs::read_to_string(&settings_path).unwrap()).unwrap();
+        assert_eq!(saved["theme"], "AgentDock");
+        assert_eq!(saved["security"]["auth"]["useExternal"], false);
+        assert_eq!(saved["security"]["auth"]["selectedType"], "gemini-api-key");
+        assert!(backup_path.is_file());
+        assert!(!merge_gemini_api_key_auth_settings(&settings_path, None).unwrap());
         fs::remove_dir_all(root).unwrap();
     }
 
