@@ -36,6 +36,9 @@ use tauri::{
 static TRAY_AVAILABLE: AtomicBool = AtomicBool::new(false);
 static CLIENT_DETECTION_CACHE: OnceLock<Mutex<Option<(Instant, Vec<ClientStatus>)>>> =
     OnceLock::new();
+const MANAGED_CLI_MARKER: &str = "AgentDock managed CLI shim";
+const MANAGED_PATH_BLOCK_START: &str = "# >>> AgentDock CLI >>>";
+const MANAGED_PATH_BLOCK_END: &str = "# <<< AgentDock CLI <<<";
 use time::{format_description::well_known::Rfc3339, Duration, OffsetDateTime};
 
 #[derive(Debug, Serialize)]
@@ -2709,6 +2712,291 @@ fn preserve_toml_section(path: &Path, content: &str, section: &str) -> Result<St
     toml::to_string_pretty(&updated).map_err(|err| format!("生成 config.toml 失败: {}", err))
 }
 
+fn managed_cli_command_names(client_id: &str) -> &'static [&'static str] {
+    match client_id {
+        "codex" => &["codex"],
+        "claude-code" => &["claude"],
+        "antigravity" => &["antigravity", "agy"],
+        "grok" => &["grok"],
+        "opencode" => &["opencode"],
+        "openclaw" => &["openclaw"],
+        "hermes" => &["hermes"],
+        _ => &[],
+    }
+}
+
+fn managed_cli_bin_dir(home: &Path) -> PathBuf {
+    home.join(".agentdock").join("bin")
+}
+
+fn managed_cli_shim_path(bin_dir: &Path, command_name: &str) -> PathBuf {
+    if cfg!(windows) {
+        bin_dir.join(format!("{}.cmd", command_name))
+    } else {
+        bin_dir.join(command_name)
+    }
+}
+
+#[cfg(unix)]
+fn managed_cli_shim_content(app_executable: &Path, client_id: &str) -> String {
+    format!(
+        "#!/bin/sh\n# {}\nexec {} --agentdock-cli {} \"$@\"\n",
+        MANAGED_CLI_MARKER,
+        shell_quote(&app_executable.to_string_lossy()),
+        shell_quote(client_id)
+    )
+}
+
+#[cfg(windows)]
+fn managed_cli_shim_content(app_executable: &Path, client_id: &str) -> String {
+    let executable = app_executable.to_string_lossy().replace('%', "%%");
+    format!(
+        "@echo off\r\nrem {}\r\n\"{}\" --agentdock-cli {} %*\r\n",
+        MANAGED_CLI_MARKER, executable, client_id
+    )
+}
+
+fn write_managed_cli_shims(
+    bin_dir: &Path,
+    app_executable: &Path,
+    client: &ManagedClientRecord,
+) -> Result<Vec<String>, String> {
+    let command_names = managed_cli_command_names(&client.id);
+    if command_names.is_empty() {
+        return Ok(Vec::new());
+    }
+    fs::create_dir_all(bin_dir).map_err(|err| format!("创建 AgentDock 命令目录失败: {}", err))?;
+    let content = managed_cli_shim_content(app_executable, &client.id);
+    for command_name in command_names {
+        let path = managed_cli_shim_path(bin_dir, command_name);
+        if path.exists() {
+            let existing = fs::read_to_string(&path)
+                .map_err(|err| format!("读取现有 {} 命令失败: {}", command_name, err))?;
+            if !existing.contains(MANAGED_CLI_MARKER) {
+                return Err(format!(
+                    "{} 已存在且不属于 AgentDock，请先移走该文件: {}",
+                    command_name,
+                    path.display()
+                ));
+            }
+        }
+        fs::write(&path, &content)
+            .map_err(|err| format!("写入 {} 终端命令失败: {}", command_name, err))?;
+        make_executable(&path)?;
+    }
+    Ok(command_names
+        .iter()
+        .map(|name| (*name).to_string())
+        .collect())
+}
+
+fn remove_managed_cli_shims(home: &Path, client_id: &str) -> Result<(), String> {
+    let bin_dir = managed_cli_bin_dir(home);
+    for command_name in managed_cli_command_names(client_id) {
+        let path = managed_cli_shim_path(&bin_dir, command_name);
+        if !path.exists() {
+            continue;
+        }
+        let content = fs::read_to_string(&path)
+            .map_err(|err| format!("读取 {} 终端命令失败: {}", command_name, err))?;
+        if content.contains(MANAGED_CLI_MARKER) {
+            fs::remove_file(&path)
+                .map_err(|err| format!("删除 {} 终端命令失败: {}", command_name, err))?;
+        }
+    }
+    Ok(())
+}
+
+fn upsert_managed_path_block(existing: &str, block: &str) -> Result<String, String> {
+    match (
+        existing.find(MANAGED_PATH_BLOCK_START),
+        existing.find(MANAGED_PATH_BLOCK_END),
+    ) {
+        (Some(start), Some(end)) if end >= start => {
+            let suffix_start = end + MANAGED_PATH_BLOCK_END.len();
+            Ok(format!(
+                "{}{}{}",
+                &existing[..start],
+                block,
+                &existing[suffix_start..]
+            ))
+        }
+        (None, None) => {
+            let mut updated = existing.to_string();
+            if !updated.is_empty() && !updated.ends_with('\n') {
+                updated.push('\n');
+            }
+            if !updated.is_empty() {
+                updated.push('\n');
+            }
+            updated.push_str(block);
+            updated.push('\n');
+            Ok(updated)
+        }
+        _ => Err("Shell 配置中的 AgentDock PATH 标记不完整，请手动清理后重试".to_string()),
+    }
+}
+
+#[cfg(unix)]
+fn shell_profile_targets(home: &Path, shell: Option<&str>) -> Vec<(PathBuf, &'static str)> {
+    let shell_name = shell
+        .and_then(|shell| Path::new(shell).file_name())
+        .and_then(|name| name.to_str())
+        .unwrap_or(if cfg!(target_os = "macos") {
+            "zsh"
+        } else {
+            "sh"
+        });
+    let posix_block = concat!(
+        "# >>> AgentDock CLI >>>\n",
+        "case \":$PATH:\" in\n",
+        "  *\":$HOME/.agentdock/bin:\"*) ;;\n",
+        "  *) export PATH=\"$HOME/.agentdock/bin:$PATH\" ;;\n",
+        "esac\n",
+        "# <<< AgentDock CLI <<<"
+    );
+    let fish_block = concat!(
+        "# >>> AgentDock CLI >>>\n",
+        "fish_add_path --global \"$HOME/.agentdock/bin\"\n",
+        "# <<< AgentDock CLI <<<"
+    );
+    match shell_name {
+        "zsh" => vec![(home.join(".zshrc"), posix_block)],
+        "bash" => vec![
+            (home.join(".bash_profile"), posix_block),
+            (home.join(".bashrc"), posix_block),
+        ],
+        "fish" => vec![(home.join(".config/fish/config.fish"), fish_block)],
+        _ => vec![(home.join(".profile"), posix_block)],
+    }
+}
+
+#[cfg(unix)]
+fn ensure_managed_cli_path(home: &Path, bin_dir: &Path) -> Result<(), String> {
+    if bin_dir != managed_cli_bin_dir(home) {
+        return Err("AgentDock 命令目录无效".to_string());
+    }
+    let shell = env::var("SHELL").ok();
+    for (profile, block) in shell_profile_targets(home, shell.as_deref()) {
+        if let Some(parent) = profile.parent() {
+            fs::create_dir_all(parent)
+                .map_err(|err| format!("创建 Shell 配置目录失败: {}", err))?;
+        }
+        let existing = if profile.exists() {
+            fs::read_to_string(&profile)
+                .map_err(|err| format!("读取 {} 失败: {}", profile.display(), err))?
+        } else {
+            String::new()
+        };
+        let updated = upsert_managed_path_block(&existing, block)?;
+        if updated != existing {
+            fs::write(&profile, updated)
+                .map_err(|err| format!("更新 {} 失败: {}", profile.display(), err))?;
+        }
+    }
+    Ok(())
+}
+
+#[cfg(windows)]
+fn ensure_managed_cli_path(_home: &Path, bin_dir: &Path) -> Result<(), String> {
+    let script = r#"$target=$args[0]; $current=[Environment]::GetEnvironmentVariable('Path','User'); $parts=@($current -split ';' | Where-Object { $_ }); if ($parts -notcontains $target) { [Environment]::SetEnvironmentVariable('Path', (($parts + $target) -join ';'), 'User') }"#;
+    let output = Command::new("powershell.exe")
+        .args(["-NoProfile", "-NonInteractive", "-Command", script])
+        .arg(bin_dir)
+        .output()
+        .map_err(|err| format!("更新用户 PATH 失败: {}", err))?;
+    if output.status.success() {
+        Ok(())
+    } else {
+        Err(format!(
+            "更新用户 PATH 失败: {}",
+            command_failure_detail(&output)
+        ))
+    }
+}
+
+fn install_managed_cli_access(client: &ManagedClientRecord) -> Result<Vec<String>, String> {
+    let home = dirs_home().ok_or_else(|| "无法确定用户主目录".to_string())?;
+    let bin_dir = managed_cli_bin_dir(&home);
+    let app_executable =
+        env::current_exe().map_err(|err| format!("读取 AgentDock 路径失败: {}", err))?;
+    let commands = write_managed_cli_shims(&bin_dir, &app_executable, client)?;
+    if !commands.is_empty() {
+        ensure_managed_cli_path(&home, &bin_dir)?;
+    }
+    Ok(commands)
+}
+
+fn repair_managed_cli_access() -> Result<(), String> {
+    for client in list_managed_clients()?
+        .into_iter()
+        .filter(|client| client.installed && Path::new(&client.launcher_path).is_file())
+    {
+        install_managed_cli_access(&client)?;
+    }
+    Ok(())
+}
+
+fn managed_cli_request(args: &[OsString]) -> Option<Result<(String, Vec<OsString>), String>> {
+    if args.get(1).and_then(|value| value.to_str()) != Some("--agentdock-cli") {
+        return None;
+    }
+    let client_id = match args.get(2).and_then(|value| value.to_str()) {
+        Some(client_id) if !client_id.is_empty() => client_id.to_string(),
+        _ => return Some(Err("缺少托管客户端名称".to_string())),
+    };
+    Some(Ok((client_id, args.iter().skip(3).cloned().collect())))
+}
+
+fn run_managed_cli_command(client_id: &str, args: &[OsString]) -> Result<i32, String> {
+    let spec = client_spec(client_id)?;
+    if managed_cli_command_names(spec.id).is_empty() {
+        return Err("这个客户端不支持终端命令".to_string());
+    }
+    let dirs = agentdock_dirs()?;
+    ensure_dirs(&dirs)?;
+    let client = list_managed_clients()?
+        .into_iter()
+        .find(|client| client.id == spec.id && client.installed)
+        .ok_or_else(|| format!("{} 尚未由 AgentDock 安装", spec.name))?;
+    if !Path::new(&client.launcher_path).is_file() {
+        return Err(format!(
+            "{} 启动文件不存在，请在 AgentDock 中重新安装",
+            spec.name
+        ));
+    }
+
+    let active_provider = list_providers()?.into_iter().find(|provider| {
+        provider
+            .active_apps
+            .iter()
+            .any(|active_app| active_app == spec.id)
+    });
+    let environment = match active_provider.as_ref() {
+        Some(provider) => {
+            ensure_provider_launch_config(&dirs, spec.id, provider)?;
+            provider_launch_environment(&dirs, spec.id, provider)?
+        }
+        None => BTreeMap::new(),
+    };
+    let mut command = Command::new(&client.launcher_path);
+    command.args(args).envs(environment);
+
+    #[cfg(unix)]
+    {
+        use std::os::unix::process::CommandExt;
+        let error = command.exec();
+        Err(format!("无法启动 {}: {}", client.name, error))
+    }
+    #[cfg(windows)]
+    {
+        let status = command
+            .status()
+            .map_err(|err| format!("无法启动 {}: {}", client.name, err))?;
+        Ok(status.code().unwrap_or(1))
+    }
+}
+
 #[tauri::command]
 async fn install_client(client_id: String) -> Result<InstallClientResult, String> {
     let dirs = agentdock_dirs()?;
@@ -2779,12 +3067,19 @@ async fn install_client(client_id: String) -> Result<InstallClientResult, String
     clients.retain(|client| client.id != record.id);
     clients.push(record.clone());
     write_json(&managed_clients_path(&dirs), &clients)?;
+    let commands = install_managed_cli_access(&record)?;
 
     Ok(InstallClientResult {
         client: record,
         message: format!(
-            "{} 已安装并通过启动文件校验。{}",
-            spec.name, payload_message
+            "{} 已安装并通过启动文件校验。{}{}",
+            spec.name,
+            payload_message,
+            if commands.is_empty() {
+                String::new()
+            } else {
+                format!("。终端命令 {} 已就绪，请重新打开终端", commands.join("、"))
+            }
         ),
     })
 }
@@ -2816,6 +3111,9 @@ fn uninstall_client(client_id: String) -> Result<OperationResult, String> {
     }
     clients.retain(|client| client.id != client_id);
     write_json(&managed_clients_path(&dirs), &clients)?;
+    if let Some(home) = dirs_home() {
+        remove_managed_cli_shims(&home, &managed.id)?;
+    }
 
     Ok(OperationResult {
         ok: true,
@@ -6274,9 +6572,23 @@ fn round_cost(value: f64) -> f64 {
 }
 
 pub fn run() {
+    let process_args = env::args_os().collect::<Vec<_>>();
+    if let Some(request) = managed_cli_request(&process_args) {
+        match request.and_then(|(client_id, args)| run_managed_cli_command(&client_id, &args)) {
+            Ok(code) => std::process::exit(code),
+            Err(error) => {
+                eprintln!("AgentDock: {}", error);
+                std::process::exit(1);
+            }
+        }
+    }
+
     let app = tauri::Builder::default()
         .plugin(tauri_plugin_dialog::init())
         .setup(|app| {
+            if let Err(error) = repair_managed_cli_access() {
+                eprintln!("AgentDock: 修复终端命令失败: {}", error);
+            }
             TRAY_AVAILABLE.store(setup_tray(app).is_ok(), Ordering::Relaxed);
             let settings = agentdock_dirs()
                 .and_then(|dirs| read_app_settings(&dirs))
@@ -7894,17 +8206,19 @@ async fn install_hermes_client(dirs: &AgentDockDirs) -> Result<InstallClientResu
         updated_at: now,
     };
     save_managed_client_record(record.clone())?;
+    let commands = install_managed_cli_access(&record)?;
     Ok(InstallClientResult {
         client: record,
         message: format!(
-            "Hermes {} 已通过 {} 安装，托管 Python 运行时已就绪{}",
+            "Hermes {} 已通过 {} 安装，托管 Python 运行时已就绪{}。终端命令 {} 已就绪，请重新打开终端",
             version,
             source,
             if full_features {
                 ""
             } else {
                 "（核心功能）"
-            }
+            },
+            commands.join("、")
         ),
     })
 }
@@ -9972,6 +10286,63 @@ requires_openai_auth = true"#;
         assert!(validate_launch_request("grok", "request_12345678").is_ok());
         assert!(validate_launch_request("unknown", "request_12345678").is_err());
         assert!(validate_launch_request("codex", "previous client").is_err());
+    }
+
+    #[test]
+    fn managed_cli_proxy_preserves_client_arguments() {
+        let args = vec![
+            OsString::from("agentdock"),
+            OsString::from("--agentdock-cli"),
+            OsString::from("grok"),
+            OsString::from("--model"),
+            OsString::from("grok-4.5"),
+        ];
+        let (client_id, forwarded) = managed_cli_request(&args).unwrap().unwrap();
+        assert_eq!(client_id, "grok");
+        assert_eq!(
+            forwarded,
+            vec![OsString::from("--model"), OsString::from("grok-4.5")]
+        );
+        assert!(managed_cli_request(&[OsString::from("agentdock")]).is_none());
+    }
+
+    #[test]
+    fn managed_cli_commands_use_familiar_names() {
+        assert_eq!(managed_cli_command_names("codex"), &["codex"]);
+        assert_eq!(managed_cli_command_names("claude-code"), &["claude"]);
+        assert_eq!(
+            managed_cli_command_names("antigravity"),
+            &["antigravity", "agy"]
+        );
+        assert_eq!(managed_cli_command_names("grok"), &["grok"]);
+        assert!(managed_cli_command_names("claude-desktop").is_empty());
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn managed_cli_shim_routes_through_agentdock() {
+        let content = managed_cli_shim_content(
+            Path::new("/Applications/AgentDock.app/Contents/MacOS/agentdock"),
+            "grok",
+        );
+        assert!(content.contains(MANAGED_CLI_MARKER));
+        assert!(content.contains("--agentdock-cli 'grok' \"$@\""));
+        assert!(content.contains("exec '/Applications/AgentDock.app/Contents/MacOS/agentdock'"));
+    }
+
+    #[test]
+    fn managed_shell_path_block_is_idempotent_and_preserves_user_content() {
+        let block = concat!(
+            "# >>> AgentDock CLI >>>\n",
+            "export PATH=\"$HOME/.agentdock/bin:$PATH\"\n",
+            "# <<< AgentDock CLI <<<"
+        );
+        let first = upsert_managed_path_block("export EDITOR=vim\n", block).unwrap();
+        let second = upsert_managed_path_block(&first, block).unwrap();
+        assert_eq!(first, second);
+        assert!(second.starts_with("export EDITOR=vim\n"));
+        assert_eq!(second.matches(MANAGED_PATH_BLOCK_START).count(), 1);
+        assert!(upsert_managed_path_block(MANAGED_PATH_BLOCK_START, block).is_err());
     }
 
     #[cfg(unix)]
