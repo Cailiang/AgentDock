@@ -2263,7 +2263,7 @@ fn import_cc_switch_config() -> Result<CcSwitchImportResult, String> {
         protect_secret_file(&backup)?;
     }
 
-    let mut providers = list_providers()?;
+    let mut providers = list_providers_inner()?;
     let mut secrets = read_provider_secrets(&dirs)?;
     let existing_ids = providers
         .iter()
@@ -2586,8 +2586,14 @@ fn provider_anthropic_model(provider: &ProviderProfile) -> String {
 }
 
 #[tauri::command]
-fn run_ready_check() -> Result<ReadyCheck, String> {
-    let providers = list_providers()?;
+async fn run_ready_check() -> Result<ReadyCheck, String> {
+    tauri::async_runtime::spawn_blocking(run_ready_check_inner)
+        .await
+        .map_err(|error| format!("就绪检查任务失败: {}", error))?
+}
+
+fn run_ready_check_inner() -> Result<ReadyCheck, String> {
+    let providers = list_providers_inner()?;
     let clients = cached_client_detection();
     let clients_ready = clients.iter().filter(|client| client.installed).count();
     let providers_ready = providers
@@ -2638,7 +2644,13 @@ fn run_ready_check() -> Result<ReadyCheck, String> {
 }
 
 #[tauri::command]
-fn list_providers() -> Result<Vec<ProviderProfile>, String> {
+async fn list_providers() -> Result<Vec<ProviderProfile>, String> {
+    tauri::async_runtime::spawn_blocking(list_providers_inner)
+        .await
+        .map_err(|error| format!("供应商读取任务失败: {}", error))?
+}
+
+fn list_providers_inner() -> Result<Vec<ProviderProfile>, String> {
     let dirs = agentdock_dirs()?;
     ensure_dirs(&dirs)?;
     let path = providers_path(&dirs);
@@ -2729,7 +2741,7 @@ fn get_provider_api_key(provider_id: String) -> Result<String, String> {
     }
     let dirs = agentdock_dirs()?;
     ensure_dirs(&dirs)?;
-    let providers = list_providers()?;
+    let providers = list_providers_inner()?;
     let secrets = read_provider_secrets(&dirs)?;
     provider_api_key_for_edit(provider_id, &providers, &secrets)
 }
@@ -2750,7 +2762,7 @@ fn save_provider(input: ProviderInput) -> Result<ProviderProfile, String> {
         return Err("Base URL 必须以 http:// 或 https:// 开头".to_string());
     }
 
-    let mut providers = list_providers()?;
+    let mut providers = list_providers_inner()?;
     let mut secrets = read_provider_secrets(&dirs)?;
     let now = now_rfc3339();
     let requested_id = input.id.clone().filter(|id| !id.trim().is_empty());
@@ -2878,7 +2890,7 @@ fn save_provider(input: ProviderInput) -> Result<ProviderProfile, String> {
 fn activate_provider(provider_id: String, app_id: String) -> Result<ProviderProfile, String> {
     let dirs = agentdock_dirs()?;
     ensure_dirs(&dirs)?;
-    let mut providers = list_providers()?;
+    let mut providers = list_providers_inner()?;
     let mut selected = None;
     for provider in &mut providers {
         provider.active_apps.retain(|app| app != &app_id);
@@ -2905,7 +2917,7 @@ fn activate_provider(provider_id: String, app_id: String) -> Result<ProviderProf
 fn delete_provider(provider_id: String) -> Result<OperationResult, String> {
     let dirs = agentdock_dirs()?;
     ensure_dirs(&dirs)?;
-    let mut providers = list_providers()?;
+    let mut providers = list_providers_inner()?;
     if !remove_provider_profile(&mut providers, &provider_id) {
         return Err("未找到供应商".to_string());
     }
@@ -3348,7 +3360,7 @@ fn run_managed_cli_command(client_id: &str, args: &[OsString]) -> Result<i32, St
         ));
     }
 
-    let active_provider = list_providers()?.into_iter().find(|provider| {
+    let active_provider = list_providers_inner()?.into_iter().find(|provider| {
         provider
             .active_apps
             .iter()
@@ -3508,7 +3520,7 @@ async fn test_provider(provider_id: String) -> Result<ProviderTestResult, String
     let start = Instant::now();
     let dirs = agentdock_dirs()?;
     ensure_dirs(&dirs)?;
-    let provider = list_providers()?
+    let provider = list_providers_inner()?
         .into_iter()
         .find(|provider| provider.id == provider_id)
         .ok_or_else(|| "未找到供应商".to_string())?;
@@ -3710,7 +3722,7 @@ fn provider_request_error(error: &reqwest::Error) -> String {
 
 #[tauri::command]
 fn apply_active_provider_configs() -> Result<ApplyProviderResult, String> {
-    let providers = list_providers()?;
+    let providers = list_providers_inner()?;
     let mut written_files = Vec::new();
     let mut backup_dirs = Vec::new();
     let mut provider_ids = Vec::new();
@@ -3745,7 +3757,7 @@ fn apply_provider_config(
     provider_id: String,
     app_id: String,
 ) -> Result<ApplyProviderResult, String> {
-    let provider = list_providers()?
+    let provider = list_providers_inner()?
         .into_iter()
         .find(|provider| provider.id == provider_id)
         .ok_or_else(|| "未找到供应商".to_string())?;
@@ -4070,7 +4082,7 @@ async fn run_diagnostics() -> Result<DiagnosticsReport, String> {
         }
     }
 
-    let providers = list_providers()?;
+    let providers = list_providers_inner()?;
     let relevant_providers = providers
         .iter()
         .filter(|provider| provider_is_active_for_diagnostics(provider, &installed_client_ids))
@@ -4117,7 +4129,7 @@ async fn run_diagnostics() -> Result<DiagnosticsReport, String> {
         }
     }
 
-    let mcp_servers = list_mcp_servers()?;
+    let mcp_servers = list_mcp_servers_inner()?;
     if mcp_servers.is_empty() {
         checks.push(diagnostic_check(
             "mcp-empty",
@@ -4170,7 +4182,7 @@ async fn run_diagnostics() -> Result<DiagnosticsReport, String> {
         }
     }
 
-    match get_usage_stats(Some(7)) {
+    match get_usage_stats_inner(Some(7)) {
         Ok(stats) if stats.errors.is_empty() => checks.push(diagnostic_check(
             "usage-data",
             "统计",
@@ -4307,7 +4319,7 @@ fn launch_client(
         None
     };
 
-    let active_provider = list_providers()?.into_iter().find(|provider| {
+    let active_provider = list_providers_inner()?.into_iter().find(|provider| {
         provider
             .active_apps
             .iter()
@@ -5185,7 +5197,13 @@ fn open_external(url: String) -> Result<OperationResult, String> {
 }
 
 #[tauri::command]
-fn list_skills() -> Result<Vec<SkillRecord>, String> {
+async fn list_skills() -> Result<Vec<SkillRecord>, String> {
+    tauri::async_runtime::spawn_blocking(list_skills_inner)
+        .await
+        .map_err(|error| format!("Skills 读取任务失败: {}", error))?
+}
+
+fn list_skills_inner() -> Result<Vec<SkillRecord>, String> {
     let dirs = agentdock_dirs()?;
     ensure_dirs(&dirs)?;
     let path = skills_path(&dirs);
@@ -5204,7 +5222,7 @@ fn list_skills() -> Result<Vec<SkillRecord>, String> {
 fn install_skill(input: SkillInstallInput) -> Result<SkillRecord, String> {
     let dirs = agentdock_dirs()?;
     ensure_dirs(&dirs)?;
-    let mut skills = list_skills()?;
+    let mut skills = list_skills_inner()?;
     let now = now_rfc3339();
     let id = slugify(&input.id);
     let skill_dir = active_skills_dir(&dirs)?.join(&id);
@@ -5246,7 +5264,7 @@ fn install_skill(input: SkillInstallInput) -> Result<SkillRecord, String> {
 fn toggle_skill_app(skill_id: String, app: String, enabled: bool) -> Result<SkillRecord, String> {
     let dirs = agentdock_dirs()?;
     ensure_dirs(&dirs)?;
-    let mut skills = list_skills()?;
+    let mut skills = list_skills_inner()?;
     let skill = skills
         .iter_mut()
         .find(|skill| skill.id == skill_id)
@@ -5267,7 +5285,7 @@ fn toggle_skill_app(skill_id: String, app: String, enabled: bool) -> Result<Skil
 fn uninstall_skill(skill_id: String) -> Result<SkillRecord, String> {
     let dirs = agentdock_dirs()?;
     ensure_dirs(&dirs)?;
-    let mut skills = list_skills()?;
+    let mut skills = list_skills_inner()?;
     let skill = skills
         .iter_mut()
         .find(|skill| skill.id == skill_id)
@@ -5296,7 +5314,7 @@ fn sync_skills() -> Result<SyncResult, String> {
     ensure_dirs(&dirs)?;
     let settings = read_app_settings(&dirs)?;
     let skills_dir = active_skills_dir(&dirs)?;
-    let skills = list_skills()?;
+    let skills = list_skills_inner()?;
     let mut written_files = Vec::new();
 
     for skill in skills.iter().filter(|skill| skill.installed) {
@@ -5370,7 +5388,13 @@ fn sync_skill_file(source: &Path, target: &Path, method: &str) -> Result<(), Str
 }
 
 #[tauri::command]
-fn list_mcp_servers() -> Result<Vec<McpServerRecord>, String> {
+async fn list_mcp_servers() -> Result<Vec<McpServerRecord>, String> {
+    tauri::async_runtime::spawn_blocking(list_mcp_servers_inner)
+        .await
+        .map_err(|error| format!("MCP 读取任务失败: {}", error))?
+}
+
+fn list_mcp_servers_inner() -> Result<Vec<McpServerRecord>, String> {
     let dirs = agentdock_dirs()?;
     ensure_dirs(&dirs)?;
     let path = mcp_servers_path(&dirs);
@@ -5389,7 +5413,7 @@ fn list_mcp_servers() -> Result<Vec<McpServerRecord>, String> {
 fn upsert_mcp_server(input: McpServerInput) -> Result<McpServerRecord, String> {
     let dirs = agentdock_dirs()?;
     ensure_dirs(&dirs)?;
-    let mut servers = list_mcp_servers()?;
+    let mut servers = list_mcp_servers_inner()?;
     let id = input.id.trim().to_string();
     if id.is_empty() {
         return Err("MCP 服务器 ID 不能为空".to_string());
@@ -5430,7 +5454,7 @@ fn toggle_mcp_app(
 ) -> Result<McpServerRecord, String> {
     let dirs = agentdock_dirs()?;
     ensure_dirs(&dirs)?;
-    let mut servers = list_mcp_servers()?;
+    let mut servers = list_mcp_servers_inner()?;
     let server = servers
         .iter_mut()
         .find(|server| server.id == server_id)
@@ -5455,7 +5479,7 @@ fn toggle_mcp_app(
 fn toggle_mcp_server(server_id: String, enabled: bool) -> Result<McpServerRecord, String> {
     let dirs = agentdock_dirs()?;
     ensure_dirs(&dirs)?;
-    let mut servers = list_mcp_servers()?;
+    let mut servers = list_mcp_servers_inner()?;
     let server = servers
         .iter_mut()
         .find(|server| server.id == server_id)
@@ -5472,7 +5496,7 @@ fn toggle_mcp_server(server_id: String, enabled: bool) -> Result<McpServerRecord
 async fn list_mcp_tools(server_id: String) -> Result<McpToolsResult, String> {
     let dirs = agentdock_dirs()?;
     ensure_dirs(&dirs)?;
-    let server = list_mcp_servers()?
+    let server = list_mcp_servers_inner()?
         .into_iter()
         .find(|server| server.id == server_id)
         .ok_or_else(|| "未找到 MCP 服务器".to_string())?;
@@ -5742,7 +5766,7 @@ fn mcp_tool_info(tool: Tool) -> McpToolInfo {
 fn delete_mcp_server(server_id: String) -> Result<OperationResult, String> {
     let dirs = agentdock_dirs()?;
     ensure_dirs(&dirs)?;
-    let mut servers = list_mcp_servers()?;
+    let mut servers = list_mcp_servers_inner()?;
     let before = servers.len();
     servers.retain(|server| server.id != server_id);
     if before == servers.len() {
@@ -5761,7 +5785,7 @@ fn import_mcp_from_apps() -> Result<McpImportResult, String> {
     let dirs = agentdock_dirs()?;
     ensure_dirs(&dirs)?;
     let home = dirs_home().ok_or_else(|| "无法确定用户主目录".to_string())?;
-    let mut servers = list_mcp_servers()?;
+    let mut servers = list_mcp_servers_inner()?;
     let mut discovered = Vec::new();
     let mut scanned_apps = Vec::new();
     let mut errors = Vec::new();
@@ -5873,7 +5897,7 @@ fn import_mcp_from_apps() -> Result<McpImportResult, String> {
 
 #[tauri::command]
 fn sync_mcp_servers() -> Result<SyncResult, String> {
-    let servers = list_mcp_servers()?;
+    let servers = list_mcp_servers_inner()?;
     let dirs = agentdock_dirs()?;
     let home = dirs_home().ok_or_else(|| "无法确定用户主目录".to_string())?;
     let installed_apps = refresh_client_detection()
@@ -6483,14 +6507,20 @@ fn sync_hermes_mcp_projection(
 }
 
 #[tauri::command]
-fn get_usage_stats(days: Option<u32>) -> Result<UsageStats, String> {
+async fn get_usage_stats(days: Option<u32>) -> Result<UsageStats, String> {
+    tauri::async_runtime::spawn_blocking(move || get_usage_stats_inner(days))
+        .await
+        .map_err(|error| format!("统计读取任务失败: {}", error))?
+}
+
+fn get_usage_stats_inner(days: Option<u32>) -> Result<UsageStats, String> {
     let days = days.unwrap_or(7).clamp(1, 90);
     let now = OffsetDateTime::now_utc();
     let today = now.date();
     let first_date = today - Duration::days((days - 1) as i64);
     let from_timestamp = first_date.midnight().assume_utc();
     let dirs = agentdock_dirs()?;
-    let providers = list_providers().unwrap_or_default();
+    let providers = list_providers_inner().unwrap_or_default();
     let mut records = Vec::new();
     let mut sources = Vec::new();
     let mut errors = Vec::new();
@@ -8121,63 +8151,53 @@ fn replace_json_placeholder(value: &mut serde_json::Value, api_key: &str) {
 
 fn detect_clients() -> Vec<ClientStatus> {
     let managed = list_managed_clients().unwrap_or_default();
+    let search_paths = command_search_paths();
+    detect_clients_with_search_paths(&managed, &search_paths)
+}
+
+fn detect_clients_with_search_paths(
+    managed: &[ManagedClientRecord],
+    search_paths: &[PathBuf],
+) -> Vec<ClientStatus> {
+    std::thread::scope(|scope| {
+        let handles = client_detection_specs()
+            .into_iter()
+            .map(|(id, name, executable_names)| {
+                let client_paths = client_command_search_paths_from_base(id, search_paths);
+                scope.spawn(move || {
+                    detect_client_with_search_paths(
+                        id,
+                        name,
+                        executable_names,
+                        client_user_config_dir(id),
+                        managed,
+                        &client_paths,
+                    )
+                })
+            })
+            .collect::<Vec<_>>();
+
+        handles
+            .into_iter()
+            .map(|handle| handle.join().expect("client detection worker panicked"))
+            .collect()
+    })
+}
+
+fn client_detection_specs() -> Vec<(&'static str, &'static str, &'static [&'static str])> {
     vec![
-        detect_client(
-            "codex",
-            "Codex",
-            &["codex"],
-            client_user_config_dir("codex"),
-            &managed,
-        ),
-        detect_client(
-            "claude-code",
-            "Claude Code",
-            &["claude"],
-            client_user_config_dir("claude-code"),
-            &managed,
-        ),
-        detect_client(
+        ("codex", "Codex", &["codex"]),
+        ("claude-code", "Claude Code", &["claude"]),
+        (
             "claude-desktop",
             "Claude Desktop",
             &["claude-desktop", "Claude Desktop"],
-            client_user_config_dir("claude-desktop"),
-            &managed,
         ),
-        detect_client(
-            "antigravity",
-            "Antigravity CLI",
-            &["agy"],
-            client_user_config_dir("antigravity"),
-            &managed,
-        ),
-        detect_client(
-            "grok",
-            "Grok",
-            &["grok"],
-            client_user_config_dir("grok"),
-            &managed,
-        ),
-        detect_client(
-            "opencode",
-            "OpenCode",
-            &["opencode"],
-            client_user_config_dir("opencode"),
-            &managed,
-        ),
-        detect_client(
-            "openclaw",
-            "OpenClaw",
-            &["openclaw"],
-            client_user_config_dir("openclaw"),
-            &managed,
-        ),
-        detect_client(
-            "hermes",
-            "Hermes",
-            &["hermes"],
-            client_user_config_dir("hermes"),
-            &managed,
-        ),
+        ("antigravity", "Antigravity CLI", &["agy"]),
+        ("grok", "Grok", &["grok"]),
+        ("opencode", "OpenCode", &["opencode"]),
+        ("openclaw", "OpenClaw", &["openclaw"]),
+        ("hermes", "Hermes", &["hermes"]),
     ]
 }
 
@@ -8225,10 +8245,30 @@ fn detect_client(
     user_config_dir: Option<PathBuf>,
     managed_clients: &[ManagedClientRecord],
 ) -> ClientStatus {
+    let search_paths = client_command_search_paths(id);
+    detect_client_with_search_paths(
+        id,
+        name,
+        executable_names,
+        user_config_dir,
+        managed_clients,
+        &search_paths,
+    )
+}
+
+fn detect_client_with_search_paths(
+    id: &str,
+    name: &str,
+    executable_names: &[&str],
+    user_config_dir: Option<PathBuf>,
+    managed_clients: &[ManagedClientRecord],
+    search_paths: &[PathBuf],
+) -> ClientStatus {
     let managed = managed_clients
         .iter()
         .find(|client| client.id == id && client.installed && managed_client_is_runnable(client));
-    let (external_executable, external_version) = detect_external_client(id, executable_names);
+    let (external_executable, external_version) =
+        detect_external_client_with_search_paths(id, executable_names, search_paths);
     let executable = managed
         .map(|client| client.launcher_path.clone())
         .or(external_executable);
@@ -8260,6 +8300,14 @@ fn detect_client(
 
 fn detect_external_client(id: &str, executable_names: &[&str]) -> (Option<String>, Option<String>) {
     let search_paths = client_command_search_paths(id);
+    detect_external_client_with_search_paths(id, executable_names, &search_paths)
+}
+
+fn detect_external_client_with_search_paths(
+    _id: &str,
+    executable_names: &[&str],
+    search_paths: &[PathBuf],
+) -> (Option<String>, Option<String>) {
     if let Some(path) = executable_names
         .iter()
         .find_map(|name| find_executable_in_paths(name, &search_paths))
@@ -8272,7 +8320,7 @@ fn detect_external_client(id: &str, executable_names: &[&str]) -> (Option<String
     }
 
     #[cfg(target_os = "macos")]
-    if let Some(bundle) = find_macos_client_app(id) {
+    if let Some(bundle) = find_macos_client_app(_id) {
         let version = macos_app_bundle_version(&bundle);
         return (Some(bundle.display().to_string()), version);
     }
@@ -8296,7 +8344,12 @@ fn find_executable(name: &str) -> Option<PathBuf> {
 }
 
 fn client_command_search_paths(client_id: &str) -> Vec<PathBuf> {
-    let mut paths = command_search_paths();
+    let paths = command_search_paths();
+    client_command_search_paths_from_base(client_id, &paths)
+}
+
+fn client_command_search_paths_from_base(client_id: &str, search_paths: &[PathBuf]) -> Vec<PathBuf> {
+    let mut paths = search_paths.to_vec();
     if client_id == "grok" {
         if let Some(grok_bin) = dirs_home().map(|home| home.join(".grok/bin")) {
             paths.retain(|path| path != &grok_bin);
@@ -11136,6 +11189,40 @@ requires_openai_auth = true"#;
         fs::write(&executable, "test executable").unwrap();
 
         assert_eq!(find_executable_in_paths("codex", &[bin]), Some(executable));
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn detects_clients_from_precomputed_search_paths() {
+        let root = env::temp_dir().join(format!(
+            "agentdock-client-detection-paths-test-{}-{}",
+            std::process::id(),
+            OffsetDateTime::now_utc().unix_timestamp_nanos()
+        ));
+        let bin = root.join("bin");
+        fs::create_dir_all(&bin).unwrap();
+        let executable = bin.join(if cfg!(windows) { "codex.cmd" } else { "codex" });
+        fs::write(
+            &executable,
+            if cfg!(windows) {
+                "@echo codex 1.2.3\r\n"
+            } else {
+                "#!/bin/sh\nprintf 'codex 1.2.3'\n"
+            },
+        )
+        .unwrap();
+        #[cfg(unix)]
+        make_executable(&executable).unwrap();
+
+        let statuses = detect_clients_with_search_paths(&[], &[bin]);
+        let codex = statuses
+            .iter()
+            .find(|client| client.id == "codex")
+            .expect("codex status");
+
+        assert!(codex.installed);
+        assert_eq!(codex.executable.as_deref(), executable.to_str());
+        assert_eq!(codex.version.as_deref(), Some("codex 1.2.3"));
         fs::remove_dir_all(root).unwrap();
     }
 
