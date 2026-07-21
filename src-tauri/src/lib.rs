@@ -680,17 +680,249 @@ async fn fetch_available_app_update(
     architecture: &str,
 ) -> Result<Option<SelectedAppUpdate>, String> {
     let client = app_update_http_client()?;
-    let releases = client
+    let api_result = fetch_github_app_releases(&client)
+        .await
+        .and_then(|releases| select_app_update(&releases, current_version, "macos", architecture));
+    match api_result {
+        Ok(update) => Ok(update),
+        Err(api_error) => {
+            fetch_app_update_from_release_feed(&client, current_version, "macos", architecture)
+                .await
+                .map_err(|feed_error| {
+                    format!(
+                        "检查 AgentDock 更新失败: GitHub API: {}; Releases feed: {}",
+                        api_error, feed_error
+                    )
+                })
+        }
+    }
+}
+
+async fn fetch_github_app_releases(
+    client: &reqwest::Client,
+) -> Result<Vec<GithubAppRelease>, String> {
+    client
         .get("https://api.github.com/repos/Cailiang/AgentDock/releases?per_page=20")
         .send()
         .await
-        .map_err(|error| format!("检查 AgentDock 更新失败: {}", error))?
+        .map_err(|error| error.to_string())?
         .error_for_status()
-        .map_err(|error| format!("检查 AgentDock 更新失败: {}", error))?
+        .map_err(|error| error.to_string())?
         .json::<Vec<GithubAppRelease>>()
         .await
-        .map_err(|error| format!("读取 AgentDock 发布信息失败: {}", error))?;
-    select_app_update(&releases, current_version, "macos", architecture)
+        .map_err(|error| error.to_string())
+}
+
+async fn fetch_app_update_from_release_feed(
+    client: &reqwest::Client,
+    current_version: &str,
+    operating_system: &str,
+    architecture: &str,
+) -> Result<Option<SelectedAppUpdate>, String> {
+    let feed = client
+        .get("https://github.com/Cailiang/AgentDock/releases.atom")
+        .send()
+        .await
+        .map_err(|error| error.to_string())?
+        .error_for_status()
+        .map_err(|error| error.to_string())?
+        .text()
+        .await
+        .map_err(|error| error.to_string())?;
+    let tags = github_release_tags_from_atom(&feed)?;
+    let Some(tag) = select_latest_release_tag(&tags, current_version) else {
+        return Ok(None);
+    };
+
+    let version = normalized_release_version(&tag);
+    let asset_name = app_update_asset_name(&version, operating_system, architecture)?;
+    let release_base = format!(
+        "https://github.com/Cailiang/AgentDock/releases/download/{}/{}",
+        tag, asset_name
+    );
+    let sha256 = fetch_release_asset_sha256(client, &tag, &asset_name, &release_base).await?;
+
+    Ok(Some(SelectedAppUpdate {
+        version,
+        asset: GithubAppAsset {
+            name: asset_name,
+            browser_download_url: release_base,
+            size: 0,
+            digest: Some(format!("sha256:{}", sha256)),
+        },
+        sha256,
+    }))
+}
+
+async fn fetch_release_asset_sha256(
+    client: &reqwest::Client,
+    tag: &str,
+    asset_name: &str,
+    release_url: &str,
+) -> Result<String, String> {
+    let checksum_result = async {
+        let checksum = client
+            .get(format!("{}.sha256", release_url))
+            .send()
+            .await
+            .map_err(|error| error.to_string())?
+            .error_for_status()
+            .map_err(|error| error.to_string())?
+            .text()
+            .await
+            .map_err(|error| error.to_string())?;
+        parse_sha256_checksum(&checksum)
+    }
+    .await;
+    if let Ok(checksum) = checksum_result.as_ref() {
+        return Ok(checksum.clone());
+    }
+
+    let digest_result = async {
+        let expanded_assets = client
+            .get(format!(
+                "https://github.com/Cailiang/AgentDock/releases/expanded_assets/{}",
+                tag
+            ))
+            .send()
+            .await
+            .map_err(|error| error.to_string())?
+            .error_for_status()
+            .map_err(|error| error.to_string())?
+            .text()
+            .await
+            .map_err(|error| error.to_string())?;
+        github_asset_sha256_from_expanded_assets(&expanded_assets, asset_name)
+    }
+    .await;
+
+    digest_result.map_err(|digest_error| {
+        format!(
+            "无法读取 {} 的 SHA-256: checksum file: {}; release assets: {}",
+            asset_name,
+            checksum_result.unwrap_err(),
+            digest_error
+        )
+    })
+}
+
+fn github_release_tags_from_atom(feed: &str) -> Result<Vec<String>, String> {
+    use quick_xml::events::Event;
+
+    let mut reader = quick_xml::Reader::from_str(feed);
+    reader.config_mut().trim_text(true);
+    let mut tags = Vec::new();
+    loop {
+        let event = reader
+            .read_event()
+            .map_err(|error| format!("解析 Releases feed 失败: {}", error))?;
+        match event {
+            Event::Start(element) | Event::Empty(element) if element.name().as_ref() == b"link" => {
+                for attribute in element.attributes() {
+                    let attribute = attribute
+                        .map_err(|error| format!("解析 Releases feed 链接失败: {}", error))?;
+                    if attribute.key.as_ref() != b"href" {
+                        continue;
+                    }
+                    let href = attribute
+                        .decoded_and_normalized_value(
+                            quick_xml::XmlVersion::Implicit1_0,
+                            reader.decoder(),
+                        )
+                        .map_err(|error| format!("读取 Releases feed 链接失败: {}", error))?;
+                    let Some((_, tag_path)) = href.split_once("/releases/tag/") else {
+                        continue;
+                    };
+                    let tag = tag_path
+                        .split(['/', '?', '#'])
+                        .next()
+                        .unwrap_or_default()
+                        .trim();
+                    if !tag.is_empty() && !tags.iter().any(|existing| existing == tag) {
+                        tags.push(tag.to_string());
+                    }
+                }
+            }
+            Event::Eof => break,
+            _ => {}
+        }
+    }
+    Ok(tags)
+}
+
+fn select_latest_release_tag(tags: &[String], current_version: &str) -> Option<String> {
+    tags.iter()
+        .filter(|tag| version_is_newer(tag, current_version))
+        .max_by(|left, right| version_numbers(left).cmp(&version_numbers(right)))
+        .cloned()
+}
+
+fn github_asset_sha256_from_expanded_assets(
+    expanded_assets: &str,
+    asset_name: &str,
+) -> Result<String, String> {
+    use quick_xml::events::Event;
+
+    let expected_label = format!("Copy to clipboard digest for {}", asset_name);
+    let mut reader = quick_xml::Reader::from_str(expanded_assets);
+    reader.config_mut().trim_text(true);
+    loop {
+        let event = reader
+            .read_event()
+            .map_err(|error| format!("解析 Release 资产失败: {}", error))?;
+        match event {
+            Event::Start(element) | Event::Empty(element)
+                if element.name().as_ref() == b"clipboard-copy" =>
+            {
+                let mut label = None;
+                let mut value = None;
+                for attribute in element.attributes() {
+                    let attribute = attribute
+                        .map_err(|error| format!("解析 Release 资产属性失败: {}", error))?;
+                    if !matches!(attribute.key.as_ref(), b"aria-label" | b"value") {
+                        continue;
+                    }
+                    let decoded = attribute
+                        .decoded_and_normalized_value(
+                            quick_xml::XmlVersion::Implicit1_0,
+                            reader.decoder(),
+                        )
+                        .map_err(|error| format!("读取 Release 资产属性失败: {}", error))?
+                        .into_owned();
+                    match attribute.key.as_ref() {
+                        b"aria-label" => label = Some(decoded),
+                        b"value" => value = Some(decoded),
+                        _ => {}
+                    }
+                }
+                if label.as_deref() != Some(expected_label.as_str()) {
+                    continue;
+                }
+                let digest = value
+                    .as_deref()
+                    .and_then(|value| value.strip_prefix("sha256:"))
+                    .ok_or_else(|| format!("安装包 {} 缺少 SHA-256 摘要", asset_name))?;
+                if !is_valid_sha256(digest) {
+                    return Err(format!("安装包 {} 的 SHA-256 摘要无效", asset_name));
+                }
+                return Ok(digest.to_ascii_lowercase());
+            }
+            Event::Eof => break,
+            _ => {}
+        }
+    }
+    Err(format!("Release 页面中没有安装包 {}", asset_name))
+}
+
+fn parse_sha256_checksum(checksum: &str) -> Result<String, String> {
+    let digest = checksum
+        .split_whitespace()
+        .next()
+        .ok_or_else(|| "发布的 SHA-256 校验文件为空".to_string())?;
+    if !is_valid_sha256(digest) {
+        return Err("发布的 SHA-256 校验值无效".to_string());
+    }
+    Ok(digest.to_ascii_lowercase())
 }
 
 fn select_app_update(
@@ -755,10 +987,14 @@ fn github_asset_sha256(asset: &GithubAppAsset) -> Result<&str, String> {
         .as_deref()
         .and_then(|value| value.strip_prefix("sha256:"))
         .ok_or_else(|| format!("安装包 {} 缺少 GitHub SHA-256 摘要", asset.name))?;
-    if digest.len() != 64 || !digest.bytes().all(|byte| byte.is_ascii_hexdigit()) {
+    if !is_valid_sha256(digest) {
         return Err(format!("安装包 {} 的 SHA-256 摘要无效", asset.name));
     }
     Ok(digest)
+}
+
+fn is_valid_sha256(digest: &str) -> bool {
+    digest.len() == 64 && digest.bytes().all(|byte| byte.is_ascii_hexdigit())
 }
 
 #[cfg(target_os = "macos")]
@@ -10647,6 +10883,57 @@ requires_openai_auth = true"#;
         assert_eq!(selected.sha256, "a".repeat(64));
         assert!(version_is_newer("v0.1.15", "0.1.14"));
         assert!(!version_is_newer("v0.1.14", "0.1.14"));
+    }
+
+    #[test]
+    fn parses_release_feed_and_selects_the_latest_update() {
+        let feed = r#"<?xml version="1.0" encoding="UTF-8"?>
+            <feed xmlns="http://www.w3.org/2005/Atom">
+              <link href="https://github.com/Cailiang/AgentDock/releases" />
+              <entry><link rel="alternate" href="https://github.com/Cailiang/AgentDock/releases/tag/v0.1.29" /></entry>
+              <entry><link rel="alternate" href="https://github.com/Cailiang/AgentDock/releases/tag/v0.1.28" /></entry>
+            </feed>"#;
+        let tags = github_release_tags_from_atom(feed).unwrap();
+        assert_eq!(tags, vec!["v0.1.29", "v0.1.28"]);
+        assert_eq!(
+            select_latest_release_tag(&tags, "0.1.20").as_deref(),
+            Some("v0.1.29")
+        );
+        assert!(select_latest_release_tag(&tags, "0.1.29").is_none());
+    }
+
+    #[test]
+    fn parses_release_checksum_files() {
+        let digest = "A".repeat(64);
+        assert_eq!(
+            parse_sha256_checksum(&format!("{}  AgentDock_0.1.29_universal.dmg\n", digest))
+                .unwrap(),
+            "a".repeat(64)
+        );
+        assert!(parse_sha256_checksum("not-a-checksum  AgentDock.dmg").is_err());
+        assert!(parse_sha256_checksum("").is_err());
+    }
+
+    #[test]
+    fn parses_github_release_asset_digests() {
+        let expected = "b".repeat(64);
+        let expanded_assets = format!(
+            r#"<div>
+                <clipboard-copy aria-label="Copy to clipboard digest for other.dmg" value="sha256:{}"></clipboard-copy>
+                <clipboard-copy aria-label="Copy to clipboard digest for AgentDock_0.1.28_universal.dmg" value="sha256:{}"></clipboard-copy>
+            </div>"#,
+            "a".repeat(64),
+            expected
+        );
+        assert_eq!(
+            github_asset_sha256_from_expanded_assets(
+                &expanded_assets,
+                "AgentDock_0.1.28_universal.dmg"
+            )
+            .unwrap(),
+            expected
+        );
+        assert!(github_asset_sha256_from_expanded_assets(&expanded_assets, "missing.dmg").is_err());
     }
 
     #[test]

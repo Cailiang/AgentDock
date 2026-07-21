@@ -98,10 +98,11 @@ git merge-base --is-ancestor origin/main HEAD || {
 git push origin main
 
 verify_release() {
-  local release_json expected_asset release_url
+  local release_json expected_asset expected_checksum release_url
   expected_asset="AgentDock_${VERSION}_universal.dmg"
+  expected_checksum="${expected_asset}.sha256"
   release_json="$(gh api "repos/${GITHUB_REPO}/releases/tags/${TAG}")"
-  printf '%s\n' "$release_json" | jq -e --arg tag "$TAG" --arg expected "$expected_asset" '
+  printf '%s\n' "$release_json" | jq -e --arg tag "$TAG" --arg expected "$expected_asset" --arg checksum "$expected_checksum" '
     .tag_name == $tag and
     .draft == false and
     .prerelease == true and
@@ -113,6 +114,7 @@ verify_release() {
     (.body | contains("### Bug Fixes")) and
     (.assets | length) >= 6 and
     any(.assets[]; .name == $expected) and
+    any(.assets[]; .name == $checksum) and
     all(.assets[]; .size > 0 and (.digest | test("^sha256:[0-9a-f]{64}$")))
   ' >/dev/null
   release_url="$(printf '%s\n' "$release_json" | jq -r '.html_url')"

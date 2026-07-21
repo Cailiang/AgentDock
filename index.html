@@ -1130,6 +1130,7 @@
     };
 
     const STARTUP_CACHE_KEY = "agentdock-startup-cache-v2";
+    const APP_UPDATE_CHECK_INTERVAL_MS = 60 * 60 * 1000;
     let startupCache = null;
     let cachedTheme = "system";
     try {
@@ -1140,7 +1141,7 @@
     const defaultSettings = { language: document.documentElement.lang || "zh-CN", theme: cachedTheme, launchOnStartup: false, silentStartup: false, minimizeToTrayOnClose: false, preferredTerminal: "terminal", visibleClients: [...APP_ORDER], clientOrder: [...APP_ORDER], currentWorkingDirectory: "", recentWorkingDirectories: [], skillStorageLocation: "agentdock", skillSyncMethod: "copy" };
 
     const state = {
-      desktop: Boolean(window.__TAURI_INTERNALS__), status: startupCache?.status || null, settings: { ...defaultSettings, ...(startupCache?.settings || {}), language: defaultSettings.language, theme: defaultSettings.theme }, ready: startupCache?.ready || null, providers: startupCache?.providers || [], skills: startupCache?.skills || [], mcpServers: startupCache?.mcpServers || [], softwareCatalog: startupCache?.softwareCatalog || [], appUpdate: null, appUpdateInstalling: false, backgroundRefreshing: false,
+      desktop: Boolean(window.__TAURI_INTERNALS__), status: startupCache?.status || null, settings: { ...defaultSettings, ...(startupCache?.settings || {}), language: defaultSettings.language, theme: defaultSettings.theme }, ready: startupCache?.ready || null, providers: startupCache?.providers || [], skills: startupCache?.skills || [], mcpServers: startupCache?.mcpServers || [], softwareCatalog: startupCache?.softwareCatalog || [], appUpdate: null, appUpdateChecking: false, appUpdateInstalling: false, backgroundRefreshing: false,
       usageStats: null, usageDays: 7, trendMetric: "totalTokens", breakdown: "client",
       activeView: "clients", activeClient: "codex", contextQuery: "", softwareFilter: "all", skillFilter: "all", diagnosticFilter: "all",
       inFlightOperations: new Set(), clientOperations: new Map(), launchingClients: new Set(), workspaceMenuOpen: false, providerModelMenuOpen: false, providerModelOptions: [], providerModelRequest: 0, settingsRevision: 0, settingsSaveChain: Promise.resolve(), logs: [], diagnostics: null, diagnosticRunning: false, ccSwitchImport: null, ccSwitchImportResult: null, ccSwitchImportChecking: false, editingProviderId: null, selectedPresetId: "custom", providerFormDirty: false, providerSecretRequest: 0, editingMcpId: null, selectedMcpPreset: "custom", inspectingMcpId: null, mcpToolsResult: null, mcpToolsError: "", activeMcpToolName: "", mcpToolsRequest: 0, configManuallyEdited: false, configImportRequest: 0, confirmResolve: null
@@ -1552,13 +1553,32 @@
       }
     }
 
-    async function checkForAppUpdate() {
+    let appUpdateCheckTimer = null;
+    let lastAppUpdateCheckAt = 0;
+
+    async function checkForAppUpdate({ force = false } = {}) {
+      if (state.appUpdateChecking || state.appUpdateInstalling) return;
+      if (!force && Date.now() - lastAppUpdateCheckAt < APP_UPDATE_CHECK_INTERVAL_MS) return;
+      state.appUpdateChecking = true;
+      lastAppUpdateCheckAt = Date.now();
       try {
         state.appUpdate = await call("check_app_update");
         renderAppUpdate(); refreshIcons();
       } catch (error) {
         addLog("warn", trf("appUpdate.checkFailed", "检查 AgentDock 更新失败：{error}", { error: errorText(error) }));
+      } finally {
+        state.appUpdateChecking = false;
       }
+    }
+
+    function startAppUpdateChecks() {
+      if (appUpdateCheckTimer !== null) return;
+      void checkForAppUpdate({ force: true });
+      appUpdateCheckTimer = window.setInterval(() => void checkForAppUpdate(), APP_UPDATE_CHECK_INTERVAL_MS);
+    }
+
+    function checkForAppUpdateIfDue() {
+      if (Date.now() - lastAppUpdateCheckAt >= APP_UPDATE_CHECK_INTERVAL_MS) void checkForAppUpdate();
     }
 
     async function installAppUpdate() {
@@ -2607,6 +2627,8 @@
     document.getElementById("mcp-wizard-layer").addEventListener("input", (event) => { if (event.target.matches("input, textarea")) updateMcpWizardPreview(); });
     document.getElementById("mcp-wizard-layer").addEventListener("change", (event) => { if (event.target.matches("input, textarea")) updateMcpWizardPreview(); });
     matchMedia("(prefers-color-scheme: dark)").addEventListener("change", () => { if (state.settings?.theme === "system") applyAppearance(); });
+    window.addEventListener("focus", checkForAppUpdateIfDue);
+    document.addEventListener("visibilitychange", () => { if (document.visibilityState === "visible") checkForAppUpdateIfDue(); });
     document.addEventListener("keydown", (event) => {
       if ((event.metaKey || event.ctrlKey) && event.key.toLowerCase() === "k") { event.preventDefault(); const search = document.getElementById("command-search"); if (!search.disabled) { search.focus(); search.select(); } return; }
       if (event.key !== "Escape") return;
@@ -2622,7 +2644,7 @@
     async function boot() {
       applyAppearance(); renderAll(); addLog("info", state.desktop ? "正在连接 AgentDock 本机服务" : "已进入浏览器交互预览模式");
       await new Promise((resolve) => requestAnimationFrame(() => resolve()));
-      try { await loadAll({ quiet: true }); addLog("ok", `AgentDock ${state.status.appVersion} 已启动`); void checkForAppUpdate(); if (!ccSwitchInitialCheckCompleted()) { rememberCcSwitchInitialCheck(); void checkCcSwitchImport(); } }
+      try { await loadAll({ quiet: true }); addLog("ok", `AgentDock ${state.status.appVersion} 已启动`); startAppUpdateChecks(); if (!ccSwitchInitialCheckCompleted()) { rememberCcSwitchInitialCheck(); void checkCcSwitchImport(); } }
       catch (error) { const message = errorText(error); document.getElementById("backend-state").className = "badge danger"; document.getElementById("backend-state").innerHTML = `<i data-lucide="circle-x"></i>${tr("本机服务连接失败", "本机服务连接失败")}`; addLog("error", message); notify(message, "error"); refreshIcons(); }
     }
     boot();

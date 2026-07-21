@@ -106,10 +106,14 @@ jobs:
           notes_file="release-notes/${GITHUB_REF_NAME}.md"
           expected="AgentDock_${version}_universal.dmg"
           ./scripts/validate-release-notes.sh "$notes_file" "$version"
-          test -n "$(find release-assets -type f -name "$expected" -print -quit)"
+          dmg_path="$(find release-assets -type f -name "$expected" -print -quit)"
+          test -n "$dmg_path"
+          checksum="$(sha256sum "$dmg_path" | cut -d ' ' -f 1)"
+          printf '%s  %s\n' "$checksum" "$expected" > "${dmg_path}.sha256"
           mapfile -d '' assets < <(find release-assets -type f \( \
             -name '*.dmg' -o -name '*.msi' -o -name '*.exe' -o \
-            -name '*.deb' -o -name '*.rpm' -o -name '*.AppImage' \
+            -name '*.deb' -o -name '*.rpm' -o -name '*.AppImage' -o \
+            -name '*.sha256' \
           \) -print0)
           test "${#assets[@]}" -gt 0
           if gh release view "$GITHUB_REF_NAME" --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
