@@ -556,6 +556,7 @@ struct UsageRecord {
     client: String,
     provider: String,
     model: String,
+    requests: u64,
     input_tokens: u64,
     output_tokens: u64,
     cached_tokens: u64,
@@ -6250,6 +6251,7 @@ fn get_usage_stats(days: Option<u32>) -> Result<UsageStats, String> {
     let today = now.date();
     let first_date = today - Duration::days((days - 1) as i64);
     let from_timestamp = first_date.midnight().assume_utc();
+    let dirs = agentdock_dirs()?;
     let providers = list_providers().unwrap_or_default();
     let mut records = Vec::new();
     let mut sources = Vec::new();
@@ -6288,7 +6290,49 @@ fn get_usage_stats(days: Option<u32>) -> Result<UsageStats, String> {
             &mut sources,
             &mut errors,
         );
+        scan_antigravity_usage(
+            &home.join(".gemini/tmp"),
+            from_timestamp,
+            &providers,
+            &mut records,
+            &mut sources,
+            &mut errors,
+        );
     }
+    scan_claude_usage(
+        &dirs.managed_configs_dir.join("claude-code/projects"),
+        from_timestamp,
+        &providers,
+        &mut records,
+        &mut sources,
+        &mut errors,
+    );
+    scan_codex_usage(
+        &dirs.managed_configs_dir.join("codex/sessions"),
+        from_timestamp,
+        &providers,
+        &mut records,
+        &mut sources,
+        &mut errors,
+    );
+    scan_grok_usage(
+        &dirs.managed_configs_dir.join("grok/sessions"),
+        from_timestamp,
+        &providers,
+        &mut records,
+        &mut sources,
+        &mut errors,
+    );
+    scan_antigravity_usage(
+        &dirs
+            .managed_configs_dir
+            .join("antigravity/gemini-cli-home/.gemini/tmp"),
+        from_timestamp,
+        &providers,
+        &mut records,
+        &mut sources,
+        &mut errors,
+    );
 
     records.retain(|record| record.timestamp >= from_timestamp && record.timestamp <= now);
     let mut summary = UsageSummary {
@@ -6315,28 +6359,36 @@ fn get_usage_stats(days: Option<u32>) -> Result<UsageStats, String> {
         summary.input_tokens += record.input_tokens;
         summary.output_tokens += record.output_tokens;
         summary.cached_tokens += record.cached_tokens;
-        summary.requests += 1;
+        summary.requests += record.requests;
         if let Some(cost) = record.cost_usd {
             summary.cost_usd += cost;
         } else {
             summary.unpriced_requests += 1;
         }
         let date = record.timestamp.date().to_string();
-        add_usage_aggregate(trend_map.entry(date).or_default(), total, record.cost_usd);
+        add_usage_aggregate(
+            trend_map.entry(date).or_default(),
+            total,
+            record.cost_usd,
+            record.requests,
+        );
         add_usage_aggregate(
             client_map.entry(record.client.clone()).or_default(),
             total,
             record.cost_usd,
+            record.requests,
         );
         add_usage_aggregate(
             provider_map.entry(record.provider.clone()).or_default(),
             total,
             record.cost_usd,
+            record.requests,
         );
         add_usage_aggregate(
             model_map.entry(record.model.clone()).or_default(),
             total,
             record.cost_usd,
+            record.requests,
         );
     }
     summary.cost_usd = round_cost(summary.cost_usd);
@@ -6373,10 +6425,21 @@ struct UsageAggregate {
     cost: f64,
 }
 
-fn add_usage_aggregate(aggregate: &mut UsageAggregate, tokens: u64, cost: Option<f64>) {
+fn add_usage_aggregate(
+    aggregate: &mut UsageAggregate,
+    tokens: u64,
+    cost: Option<f64>,
+    requests: u64,
+) {
     aggregate.tokens += tokens;
-    aggregate.requests += 1;
+    aggregate.requests += requests;
     aggregate.cost += cost.unwrap_or(0.0);
+}
+
+fn push_usage_source(sources: &mut Vec<String>, source: &str) {
+    if !sources.iter().any(|value| value == source) {
+        sources.push(source.to_string());
+    }
 }
 
 fn usage_breakdown(
@@ -6429,7 +6492,7 @@ fn scan_grok_usage(
     if !root.exists() {
         return;
     }
-    sources.push("Grok 会话".to_string());
+    push_usage_source(sources, "Grok 会话");
     let mut files = Vec::new();
     collect_files_named(root, "signals.json", &mut files);
     let provider = active_provider_name(providers, "grok");
@@ -6444,21 +6507,32 @@ fn scan_grok_usage(
                 continue;
             }
         };
-        let Some(usage) = find_grok_usage(&signals) else {
-            continue;
-        };
-        let input_tokens = json_u64_any(usage, &["inputTokens", "input_tokens"]);
-        let output_tokens = json_u64_any(usage, &["outputTokens", "output_tokens"])
-            + json_u64_any(usage, &["thoughtTokens", "thought_tokens"]);
-        let cached_tokens = json_u64_any(
-            usage,
-            &[
-                "cachedTokens",
-                "cached_tokens",
-                "cachedWriteTokens",
-                "cached_write_tokens",
-            ],
-        );
+        let usage = find_grok_usage(&signals);
+        let input_tokens = usage
+            .map(|usage| json_u64_any(usage, &["inputTokens", "input_tokens"]))
+            .unwrap_or_else(|| {
+                json_u64(&signals, "totalTokensBeforeCompaction")
+                    + json_u64(&signals, "contextTokensUsed")
+            });
+        let output_tokens = usage
+            .map(|usage| {
+                json_u64_any(usage, &["outputTokens", "output_tokens"])
+                    + json_u64_any(usage, &["thoughtTokens", "thought_tokens"])
+            })
+            .unwrap_or(0);
+        let cached_tokens = usage
+            .map(|usage| {
+                json_u64_any(
+                    usage,
+                    &[
+                        "cachedTokens",
+                        "cached_tokens",
+                        "cachedWriteTokens",
+                        "cached_write_tokens",
+                    ],
+                )
+            })
+            .unwrap_or(0);
         if input_tokens + output_tokens + cached_tokens == 0 {
             continue;
         }
@@ -6482,9 +6556,14 @@ fn scan_grok_usage(
         if timestamp < from {
             continue;
         }
-        let model = ["modelId", "model_id", "model"]
+        let model = ["modelId", "model_id", "model", "current_model_id"]
             .iter()
             .find_map(|key| summary.get(*key).and_then(serde_json::Value::as_str))
+            .or_else(|| {
+                signals
+                    .get("primaryModelId")
+                    .and_then(serde_json::Value::as_str)
+            })
             .unwrap_or("未知模型")
             .to_string();
         records.push(UsageRecord {
@@ -6493,10 +6572,97 @@ fn scan_grok_usage(
             provider: provider.clone(),
             cost_usd: estimate_model_cost(&model, input_tokens, output_tokens, cached_tokens),
             model,
+            requests: json_u64(&signals, "assistantMessageCount").max(1),
             input_tokens,
             output_tokens,
             cached_tokens,
         });
+    }
+}
+
+fn scan_antigravity_usage(
+    root: &Path,
+    from: OffsetDateTime,
+    providers: &[ProviderProfile],
+    records: &mut Vec<UsageRecord>,
+    sources: &mut Vec<String>,
+    errors: &mut Vec<String>,
+) {
+    if !root.exists() {
+        return;
+    }
+    push_usage_source(sources, "Antigravity 会话");
+    let mut files = Vec::new();
+    collect_files_with_extension(root, "jsonl", &mut files);
+    let provider = active_provider_name(providers, "antigravity");
+    let mut seen_entries = HashSet::new();
+
+    for path in files {
+        let file = match fs::File::open(&path) {
+            Ok(file) => file,
+            Err(error) => {
+                errors.push(format!(
+                    "Antigravity: 无法读取 {} ({})",
+                    path.display(),
+                    error
+                ));
+                continue;
+            }
+        };
+        for line in BufReader::new(file).lines().map_while(Result::ok) {
+            let Ok(value) = serde_json::from_str::<serde_json::Value>(&line) else {
+                continue;
+            };
+            if value.get("type").and_then(serde_json::Value::as_str) != Some("gemini") {
+                continue;
+            }
+            let timestamp = value
+                .get("timestamp")
+                .and_then(parse_json_timestamp)
+                .unwrap_or(OffsetDateTime::UNIX_EPOCH);
+            if timestamp < from {
+                continue;
+            }
+            let Some(tokens) = value.get("tokens") else {
+                continue;
+            };
+            let cached_tokens = json_u64(tokens, "cached");
+            let input_tokens = json_u64(tokens, "input").saturating_sub(cached_tokens);
+            let output_tokens = json_u64(tokens, "output")
+                + json_u64(tokens, "thoughts")
+                + json_u64(tokens, "tool");
+            if input_tokens + output_tokens + cached_tokens == 0 {
+                continue;
+            }
+            let model = value
+                .get("model")
+                .and_then(serde_json::Value::as_str)
+                .unwrap_or("未知模型")
+                .to_string();
+            let deduplication_key = format!(
+                "{}:{}:{}:{}:{}:{}",
+                path.display(),
+                timestamp.unix_timestamp_nanos(),
+                model,
+                input_tokens,
+                output_tokens,
+                cached_tokens
+            );
+            if !seen_entries.insert(deduplication_key) {
+                continue;
+            }
+            records.push(UsageRecord {
+                timestamp,
+                client: "antigravity".to_string(),
+                provider: provider.clone(),
+                cost_usd: estimate_model_cost(&model, input_tokens, output_tokens, cached_tokens),
+                model,
+                requests: 1,
+                input_tokens,
+                output_tokens,
+                cached_tokens,
+            });
+        }
     }
 }
 
@@ -6532,7 +6698,7 @@ fn scan_claude_usage(
     if !root.exists() {
         return;
     }
-    sources.push("Claude Code 会话".to_string());
+    push_usage_source(sources, "Claude Code 会话");
     let mut files = Vec::new();
     collect_files_with_extension(root, "jsonl", &mut files);
     let mut seen_messages = HashSet::new();
@@ -6594,6 +6760,7 @@ fn scan_claude_usage(
                 provider: provider.clone(),
                 cost_usd: estimate_model_cost(&model, input_tokens, output_tokens, cached_tokens),
                 model,
+                requests: 1,
                 input_tokens,
                 output_tokens,
                 cached_tokens,
@@ -6613,7 +6780,7 @@ fn scan_codex_usage(
     if !root.exists() {
         return;
     }
-    sources.push("Codex 会话".to_string());
+    push_usage_source(sources, "Codex 会话");
     let mut files = Vec::new();
     collect_files_with_extension(root, "jsonl", &mut files);
     let provider = active_provider_name(providers, "codex");
@@ -6686,6 +6853,7 @@ fn scan_codex_usage(
                 provider: provider.clone(),
                 cost_usd: estimate_model_cost(&current_model, delta.0, delta.1, delta.2),
                 model: current_model.clone(),
+                requests: 1,
                 input_tokens: delta.0,
                 output_tokens: delta.1,
                 cached_tokens: delta.2,
@@ -6705,7 +6873,7 @@ fn scan_opencode_usage(
     if !path.exists() {
         return;
     }
-    sources.push("OpenCode 会话".to_string());
+    push_usage_source(sources, "OpenCode 会话");
     let connection = match rusqlite::Connection::open_with_flags(
         path,
         rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY,
@@ -6781,6 +6949,7 @@ fn scan_opencode_usage(
                 estimate_model_cost(&model, input_tokens, output_tokens, cached_tokens)
             }),
             model,
+            requests: 1,
             input_tokens,
             output_tokens,
             cached_tokens,
@@ -11560,6 +11729,114 @@ api_backend = "responses""#,
             .expect("known pricing");
         assert!((cost - 35.5).abs() < f64::EPSILON);
         assert!(estimate_model_cost("unknown-model", 10, 10, 0).is_none());
+    }
+
+    #[test]
+    fn scans_antigravity_usage_and_deduplicates_stream_updates() {
+        let root = env::temp_dir().join(format!(
+            "agentdock-antigravity-usage-test-{}-{}",
+            std::process::id(),
+            OffsetDateTime::now_utc().unix_timestamp_nanos()
+        ));
+        let chat_dir = root.join("project/chats");
+        fs::create_dir_all(&chat_dir).unwrap();
+        let event = serde_json::json!({
+            "id": "response-1",
+            "timestamp": "2026-07-21T02:02:16.527Z",
+            "type": "gemini",
+            "model": "gemini-3-flash",
+            "tokens": {
+                "input": 13_392,
+                "output": 63,
+                "cached": 8_119,
+                "thoughts": 195,
+                "tool": 7,
+                "total": 13_657
+            }
+        });
+        fs::write(
+            chat_dir.join("session.jsonl"),
+            format!("{}\n{}\n{{\"$set\":{{}}}}\n", event, event),
+        )
+        .unwrap();
+        let providers = vec![provider_test_profile(
+            "antigravity-test",
+            &["antigravity"],
+            &["antigravity"],
+        )];
+        let mut records = Vec::new();
+        let mut sources = Vec::new();
+        let mut errors = Vec::new();
+
+        scan_antigravity_usage(
+            &root,
+            OffsetDateTime::UNIX_EPOCH,
+            &providers,
+            &mut records,
+            &mut sources,
+            &mut errors,
+        );
+
+        assert!(errors.is_empty());
+        assert_eq!(sources, vec!["Antigravity 会话"]);
+        assert_eq!(records.len(), 1);
+        assert_eq!(records[0].input_tokens, 5_273);
+        assert_eq!(records[0].output_tokens, 265);
+        assert_eq!(records[0].cached_tokens, 8_119);
+        assert_eq!(records[0].requests, 1);
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn scans_current_grok_session_summary_without_legacy_usage_fields() {
+        let root = env::temp_dir().join(format!(
+            "agentdock-grok-usage-test-{}-{}",
+            std::process::id(),
+            OffsetDateTime::now_utc().unix_timestamp_nanos()
+        ));
+        let session_dir = root.join("session-1");
+        fs::create_dir_all(&session_dir).unwrap();
+        fs::write(
+            session_dir.join("signals.json"),
+            serde_json::json!({
+                "assistantMessageCount": 2,
+                "contextTokensUsed": 1_623,
+                "totalTokensBeforeCompaction": 0,
+                "primaryModelId": "grok-4.5"
+            })
+            .to_string(),
+        )
+        .unwrap();
+        fs::write(
+            session_dir.join("summary.json"),
+            serde_json::json!({
+                "updated_at": "2026-07-20T09:46:37.376277Z",
+                "current_model_id": "grok-4.5"
+            })
+            .to_string(),
+        )
+        .unwrap();
+        let providers = vec![provider_test_profile("grok-test", &["grok"], &["grok"])];
+        let mut records = Vec::new();
+        let mut sources = Vec::new();
+        let mut errors = Vec::new();
+
+        scan_grok_usage(
+            &root,
+            OffsetDateTime::UNIX_EPOCH,
+            &providers,
+            &mut records,
+            &mut sources,
+            &mut errors,
+        );
+
+        assert!(errors.is_empty());
+        assert_eq!(sources, vec!["Grok 会话"]);
+        assert_eq!(records.len(), 1);
+        assert_eq!(records[0].input_tokens, 1_623);
+        assert_eq!(records[0].model, "grok-4.5");
+        assert_eq!(records[0].requests, 2);
+        fs::remove_dir_all(root).unwrap();
     }
 
     #[test]
