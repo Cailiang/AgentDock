@@ -3280,9 +3280,11 @@ fn ensure_managed_cli_path(home: &Path, bin_dir: &Path) -> Result<(), String> {
 #[cfg(windows)]
 fn ensure_managed_cli_path(_home: &Path, bin_dir: &Path) -> Result<(), String> {
     let script = r#"$target=$args[0]; $current=[Environment]::GetEnvironmentVariable('Path','User'); $parts=@($current -split ';' | Where-Object { $_ }); if ($parts -notcontains $target) { [Environment]::SetEnvironmentVariable('Path', (($parts + $target) -join ';'), 'User') }"#;
-    let output = Command::new("powershell.exe")
+    let mut command = Command::new("powershell.exe");
+    command
         .args(["-NoProfile", "-NonInteractive", "-Command", script])
-        .arg(bin_dir)
+        .arg(bin_dir);
+    let output = hidden_command(&mut command)
         .output()
         .map_err(|err| format!("更新用户 PATH 失败: {}", err))?;
     if output.status.success() {
@@ -7303,6 +7305,7 @@ fn round_cost(value: f64) -> f64 {
 pub fn run() {
     let process_args = env::args_os().collect::<Vec<_>>();
     if let Some(request) = managed_cli_request(&process_args) {
+        attach_parent_console_for_cli();
         match request.and_then(|(client_id, args)| run_managed_cli_command(&client_id, &args)) {
             Ok(code) => std::process::exit(code),
             Err(error) => {
@@ -7311,6 +7314,8 @@ pub fn run() {
             }
         }
     }
+
+    detach_console_for_desktop_launch();
 
     let app = tauri::Builder::default()
         .plugin(tauri_plugin_dialog::init())
@@ -7402,6 +7407,34 @@ pub fn run() {
         #[cfg(not(target_os = "macos"))]
         let _ = (app, event);
     });
+}
+
+#[cfg(windows)]
+fn detach_console_for_desktop_launch() {
+    unsafe {
+        FreeConsole();
+    }
+}
+
+#[cfg(not(windows))]
+fn detach_console_for_desktop_launch() {}
+
+#[cfg(windows)]
+fn attach_parent_console_for_cli() {
+    const ATTACH_PARENT_PROCESS: u32 = u32::MAX;
+    unsafe {
+        AttachConsole(ATTACH_PARENT_PROCESS);
+    }
+}
+
+#[cfg(not(windows))]
+fn attach_parent_console_for_cli() {}
+
+#[cfg(windows)]
+#[link(name = "kernel32")]
+unsafe extern "system" {
+    fn AttachConsole(dw_process_id: u32) -> i32;
+    fn FreeConsole() -> i32;
 }
 
 fn show_main_window(app: &tauri::AppHandle) {
@@ -8391,6 +8424,7 @@ fn command_output_with_timeout(
     command: &mut Command,
     timeout: std::time::Duration,
 ) -> Result<std::process::Output, String> {
+    hidden_command(command);
     command.stdout(Stdio::piped()).stderr(Stdio::piped());
     let mut child = command.spawn().map_err(|error| error.to_string())?;
     let started = Instant::now();
@@ -8405,6 +8439,18 @@ fn command_output_with_timeout(
             None => std::thread::sleep(std::time::Duration::from_millis(20)),
         }
     }
+}
+
+#[cfg(windows)]
+fn hidden_command(command: &mut Command) -> &mut Command {
+    use std::os::windows::process::CommandExt;
+    const CREATE_NO_WINDOW: u32 = 0x08000000;
+    command.creation_flags(CREATE_NO_WINDOW)
+}
+
+#[cfg(not(windows))]
+fn hidden_command(command: &mut Command) -> &mut Command {
+    command
 }
 
 fn first_line(value: &str) -> String {
