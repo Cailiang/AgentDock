@@ -1,6 +1,6 @@
 {
   "name": "agentdock",
-  "version": "0.1.30",
+  "version": "0.1.31",
   "private": true,
   "type": "module",
   "description": "A beginner-friendly desktop hub for installing AI coding clients and managing providers, Skills, MCP, usage, and diagnostics.",
