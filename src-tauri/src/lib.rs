@@ -2285,10 +2285,23 @@ fn anthropic_messages_endpoint(base_url: &str) -> String {
 
 fn anthropic_test_payload(model: &str) -> serde_json::Value {
     serde_json::json!({
-        "model": model,
+        "model": anthropic_api_model_name(model),
         "max_tokens": 1,
         "messages": [{ "role": "user", "content": "Reply with OK." }]
     })
+}
+
+fn anthropic_api_model_name(model: &str) -> &str {
+    let model = model.trim();
+    let suffix_start = model.len().saturating_sub(4);
+    if model
+        .get(suffix_start..)
+        .is_some_and(|suffix| suffix.eq_ignore_ascii_case("[1m]"))
+    {
+        model.get(..suffix_start).unwrap_or(model).trim_end()
+    } else {
+        model
+    }
 }
 
 fn gemini_generate_endpoint(base_url: &str, model: &str) -> String {
@@ -4484,6 +4497,7 @@ fn launch_in_terminal(
     request_id: &str,
 ) -> Result<(), String> {
     let settings = read_app_settings(dirs)?;
+    let client_arguments = client_working_directory_arguments(client_id, working_directory);
     #[cfg(target_os = "macos")]
     {
         let launcher = write_unix_launcher(
@@ -4492,6 +4506,7 @@ fn launch_in_terminal(
             executable,
             environment,
             working_directory,
+            &client_arguments,
             request_id,
         )?;
         return launch_macos_terminal_with_fallback(
@@ -4510,6 +4525,7 @@ fn launch_in_terminal(
             executable,
             environment,
             working_directory,
+            &client_arguments,
             request_id,
         )?;
         let powershell_args = [
@@ -4549,6 +4565,7 @@ fn launch_in_terminal(
             executable,
             environment,
             working_directory,
+            &client_arguments,
             request_id,
         )?;
         let terminal_args = |terminal: &str| -> &'static [&'static str] {
@@ -4574,6 +4591,14 @@ fn launch_in_terminal(
             }
         }
         Err("没有找到可用的终端程序".to_string())
+    }
+}
+
+fn client_working_directory_arguments(client_id: &str, working_directory: &Path) -> Vec<String> {
+    if client_id == "grok" {
+        vec!["--cwd".to_string(), working_directory.display().to_string()]
+    } else {
+        Vec::new()
     }
 }
 
@@ -4743,10 +4768,11 @@ fn write_unix_launcher(
     executable: &str,
     environment: &BTreeMap<String, String>,
     working_directory: &Path,
+    arguments: &[String],
     request_id: &str,
 ) -> Result<PathBuf, String> {
     let path = launch_script_path(&dirs.runtime_dir, client_id, request_id, "command");
-    let content = unix_launcher_content(executable, environment, working_directory)?;
+    let content = unix_launcher_content(executable, environment, working_directory, arguments)?;
     fs::write(&path, content).map_err(|err| format!("写入客户端启动器失败: {}", err))?;
     make_private_executable(&path)?;
     Ok(path)
@@ -4757,6 +4783,7 @@ fn unix_launcher_content(
     executable: &str,
     environment: &BTreeMap<String, String>,
     working_directory: &Path,
+    arguments: &[String],
 ) -> Result<String, String> {
     let mut content = String::from("#!/bin/sh\n");
     content.push_str(&format!(
@@ -4768,7 +4795,12 @@ fn unix_launcher_content(
         content.push_str(&format!("export {}={}\n", key, shell_quote(value)));
     }
     content.push_str("/bin/rm -f -- \"$0\"\n");
-    content.push_str(&format!("exec {} \"$@\"\n", shell_quote(executable)));
+    content.push_str(&format!("exec {}", shell_quote(executable)));
+    for argument in arguments {
+        content.push(' ');
+        content.push_str(&shell_quote(argument));
+    }
+    content.push_str(" \"$@\"\n");
     Ok(content)
 }
 
@@ -4779,6 +4811,7 @@ fn write_powershell_launcher(
     executable: &str,
     environment: &BTreeMap<String, String>,
     working_directory: &Path,
+    arguments: &[String],
     request_id: &str,
 ) -> Result<PathBuf, String> {
     let path = launch_script_path(&dirs.runtime_dir, client_id, request_id, "ps1");
@@ -4793,7 +4826,12 @@ fn write_powershell_launcher(
     content.push_str(
         "Remove-Item -LiteralPath $PSCommandPath -Force -ErrorAction SilentlyContinue\r\n",
     );
-    content.push_str(&format!("& {}\r\n", powershell_quote(executable)));
+    content.push_str(&format!("& {}", powershell_quote(executable)));
+    for argument in arguments {
+        content.push(' ');
+        content.push_str(&powershell_quote(argument));
+    }
+    content.push_str("\r\n");
     fs::write(&path, content).map_err(|err| format!("写入客户端启动器失败: {}", err))?;
     Ok(path)
 }
@@ -10695,10 +10733,15 @@ requires_openai_auth = true"#;
             anthropic_messages_endpoint("https://proxy.example.com/v1"),
             "https://proxy.example.com/v1/messages"
         );
-        let payload = anthropic_test_payload("ark-code-latest");
+        let payload = anthropic_test_payload("ark-code-latest[1M]");
         assert_eq!(payload["model"], "ark-code-latest");
         assert_eq!(payload["max_tokens"], 1);
         assert_eq!(payload["messages"][0]["role"], "user");
+        assert_eq!(
+            anthropic_api_model_name("claude-sonnet-test"),
+            "claude-sonnet-test"
+        );
+        assert_eq!(anthropic_api_model_name(" model-name[1m] "), "model-name");
     }
 
     #[test]
@@ -10867,13 +10910,30 @@ requires_openai_auth = true"#;
             .contains("launch-codex-request-codex-123"));
 
         let working_directory = Path::new("/tmp/project with 'quote'");
-        let content =
-            unix_launcher_content("/usr/local/bin/codex", &BTreeMap::new(), working_directory)
-                .unwrap();
+        let content = unix_launcher_content(
+            "/usr/local/bin/codex",
+            &BTreeMap::new(),
+            working_directory,
+            &[],
+        )
+        .unwrap();
         assert!(content.contains("cd -- '/tmp/project with '\"'\"'quote'\"'\"''"));
         assert!(content.contains("/bin/rm -f -- \"$0\""));
         assert!(content.contains("exec '/usr/local/bin/codex' \"$@\""));
         assert!(!content.contains("/.grok/bin/grok"));
+
+        let grok_arguments = client_working_directory_arguments("grok", working_directory);
+        let grok_content = unix_launcher_content(
+            "/usr/local/bin/grok",
+            &BTreeMap::new(),
+            working_directory,
+            &grok_arguments,
+        )
+        .unwrap();
+        assert!(grok_content.contains(
+            "exec '/usr/local/bin/grok' '--cwd' '/tmp/project with '\"'\"'quote'\"'\"'' \"$@\""
+        ));
+        assert!(client_working_directory_arguments("codex", working_directory).is_empty());
     }
 
     #[test]
