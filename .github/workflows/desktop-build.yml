@@ -56,13 +56,91 @@ jobs:
       - name: Install frontend dependencies
         run: npm ci
 
+      - name: Import macOS signing certificate
+        if: runner.os == 'macOS' && startsWith(github.ref, 'refs/tags/v')
+        env:
+          APPLE_CERTIFICATE: ${{ secrets.APPLE_CERTIFICATE }}
+          APPLE_CERTIFICATE_PASSWORD: ${{ secrets.APPLE_CERTIFICATE_PASSWORD }}
+          APPLE_SIGNING_IDENTITY: ${{ secrets.APPLE_SIGNING_IDENTITY }}
+          KEYCHAIN_PASSWORD: ${{ secrets.KEYCHAIN_PASSWORD }}
+        run: |
+          certificate_path="$RUNNER_TEMP/agentdock-signing.p12"
+          intermediate_path="$RUNNER_TEMP/DeveloperIDG2CA.cer"
+          keychain_path="$RUNNER_TEMP/agentdock-signing.keychain-db"
+
+          printf '%s' "$APPLE_CERTIFICATE" | base64 --decode > "$certificate_path"
+          curl --fail --location --silent --show-error \
+            https://www.apple.com/certificateauthority/DeveloperIDG2CA.cer \
+            --output "$intermediate_path"
+          test "$(shasum -a 256 "$intermediate_path" | awk '{print $1}')" = \
+            "f16cd3c54c7f83cea4bf1a3e6a0819c8aaa8e4a1528fd144715f350643d2df3a"
+
+          security create-keychain -p "$KEYCHAIN_PASSWORD" "$keychain_path"
+          security set-keychain-settings -lut 21600 "$keychain_path"
+          security unlock-keychain -p "$KEYCHAIN_PASSWORD" "$keychain_path"
+          security import "$intermediate_path" -k "$keychain_path"
+          security import "$certificate_path" \
+            -k "$keychain_path" \
+            -P "$APPLE_CERTIFICATE_PASSWORD" \
+            -T /usr/bin/codesign
+          security set-key-partition-list \
+            -S apple-tool:,apple:,codesign: \
+            -s -k "$KEYCHAIN_PASSWORD" "$keychain_path"
+          security default-keychain -d user -s "$keychain_path"
+          security find-identity -v -p codesigning "$keychain_path" |
+            grep -F "\"$APPLE_SIGNING_IDENTITY\""
+
       - name: Build desktop app
         if: runner.os != 'macOS'
         run: npm run build
 
       - name: Build universal macOS app
-        if: runner.os == 'macOS'
+        if: runner.os == 'macOS' && !startsWith(github.ref, 'refs/tags/v')
         run: npm run build -- --target universal-apple-darwin
+
+      - name: Build signed and notarized universal macOS app
+        if: runner.os == 'macOS' && startsWith(github.ref, 'refs/tags/v')
+        env:
+          APPLE_ID: ${{ secrets.APPLE_ID }}
+          APPLE_PASSWORD: ${{ secrets.APPLE_PASSWORD }}
+          APPLE_SIGNING_IDENTITY: ${{ secrets.APPLE_SIGNING_IDENTITY }}
+          APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
+        run: npm run build -- --target universal-apple-darwin
+
+      - name: Notarize and verify final macOS bundle
+        if: runner.os == 'macOS' && startsWith(github.ref, 'refs/tags/v')
+        env:
+          APPLE_ID: ${{ secrets.APPLE_ID }}
+          APPLE_PASSWORD: ${{ secrets.APPLE_PASSWORD }}
+          APPLE_SIGNING_IDENTITY: ${{ secrets.APPLE_SIGNING_IDENTITY }}
+          APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
+        run: |
+          version="$(node -p 'require("./package.json").version')"
+          app_path="src-tauri/target/universal-apple-darwin/release/bundle/macos/AgentDock.app"
+          executable_path="$app_path/Contents/MacOS/agentdock"
+          dmg_path="src-tauri/target/universal-apple-darwin/release/bundle/dmg/AgentDock_${version}_universal.dmg"
+          signature_info="$RUNNER_TEMP/agentdock-signature.txt"
+
+          test -d "$app_path"
+          test -f "$executable_path"
+          test -f "$dmg_path"
+          xcrun notarytool submit "$dmg_path" \
+            --apple-id "$APPLE_ID" \
+            --password "$APPLE_PASSWORD" \
+            --team-id "$APPLE_TEAM_ID" \
+            --wait
+          xcrun stapler staple "$dmg_path"
+          codesign --verify --deep --strict --verbose=2 "$app_path"
+          codesign --display --verbose=4 "$app_path" 2> "$signature_info"
+          grep -F "Authority=$APPLE_SIGNING_IDENTITY" "$signature_info"
+          grep -F "TeamIdentifier=$APPLE_TEAM_ID" "$signature_info"
+          codesign --verify --strict --verbose=2 "$dmg_path"
+          spctl --assess --type execute --verbose=4 "$app_path"
+          spctl --assess --type open --context context:primary-signature --verbose=4 "$dmg_path"
+          xcrun stapler validate "$app_path"
+          xcrun stapler validate "$dmg_path"
+          lipo "$executable_path" -verify_arch arm64 x86_64
+          hdiutil verify "$dmg_path"
 
       - name: Upload bundles
         if: startsWith(github.ref, 'refs/tags/v')
@@ -79,6 +157,15 @@ jobs:
             src-tauri/target/release/bundle/**/*.AppImage
           if-no-files-found: error
           retention-days: 1
+
+      - name: Remove temporary macOS signing keychain
+        if: always() && runner.os == 'macOS' && startsWith(github.ref, 'refs/tags/v')
+        run: |
+          keychain_path="$RUNNER_TEMP/agentdock-signing.keychain-db"
+          security default-keychain -d user -s "$HOME/Library/Keychains/login.keychain-db"
+          if [[ -f "$keychain_path" ]]; then
+            security delete-keychain "$keychain_path"
+          fi
 
   release:
     name: Publish desktop release

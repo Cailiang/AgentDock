@@ -2,7 +2,7 @@
   "$schema": "https://schema.tauri.app/config/2",
   "productName": "AgentDock",
   "version": "0.1.31",
-  "identifier": "com.agentdock.desktop",
+  "identifier": "com.shuzilm.agentdock",
   "build": {
     "beforeDevCommand": "npm run dev:ui",
     "beforeBuildCommand": "npm run build:ui",
