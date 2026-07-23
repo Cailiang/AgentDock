@@ -8262,6 +8262,7 @@ fn cached_client_detection() -> Vec<ClientStatus> {
     refresh_client_detection()
 }
 
+#[cfg(test)]
 fn detect_client(
     id: &str,
     name: &str,
@@ -8322,11 +8323,6 @@ fn detect_client_with_search_paths(
     }
 }
 
-fn detect_external_client(id: &str, executable_names: &[&str]) -> (Option<String>, Option<String>) {
-    let search_paths = client_command_search_paths(id);
-    detect_external_client_with_search_paths(id, executable_names, &search_paths)
-}
-
 fn detect_external_client_with_search_paths(
     _id: &str,
     executable_names: &[&str],
@@ -8367,12 +8363,16 @@ fn find_executable(name: &str) -> Option<PathBuf> {
     find_executable_in_paths(name, &command_search_paths())
 }
 
+#[cfg(test)]
 fn client_command_search_paths(client_id: &str) -> Vec<PathBuf> {
     let paths = command_search_paths();
     client_command_search_paths_from_base(client_id, &paths)
 }
 
-fn client_command_search_paths_from_base(client_id: &str, search_paths: &[PathBuf]) -> Vec<PathBuf> {
+fn client_command_search_paths_from_base(
+    client_id: &str,
+    search_paths: &[PathBuf],
+) -> Vec<PathBuf> {
     let mut paths = search_paths.to_vec();
     if client_id == "grok" {
         if let Some(grok_bin) = dirs_home().map(|home| home.join(".grok/bin")) {
