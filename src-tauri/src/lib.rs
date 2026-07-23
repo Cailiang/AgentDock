@@ -3464,6 +3464,9 @@ async fn install_client(client_id: String) -> Result<InstallClientResult, String
     clients.push(record.clone());
     write_json(&managed_clients_path(&dirs), &clients)?;
     let commands = install_managed_cli_access(&record)?;
+    if let Err(error) = sync_mcp_servers() {
+        eprintln!("AgentDock: 安装客户端后同步 MCP 失败: {}", error);
+    }
 
     Ok(InstallClientResult {
         client: record,
@@ -3950,7 +3953,7 @@ fn apply_provider_for_app(
         written_files.push(settings_path.display().to_string());
     }
 
-    if app_id == "grok" {
+    if matches!(app_id, "grok" | "openclaw") {
         let sync = sync_mcp_servers()?;
         for path in sync.written_files {
             if !written_files.contains(&path) {
@@ -4464,10 +4467,13 @@ fn ensure_provider_launch_config(
     app_id: &str,
     provider: &ProviderProfile,
 ) -> Result<(), String> {
-    if app_id == "codex" && provider.provider_type != "official" {
-        let codex_home = dirs.managed_configs_dir.join("codex");
-        if !codex_home_is_ready(&codex_home) {
-            apply_provider_for_app(provider, app_id)?;
+    migrate_managed_mcp_servers(dirs)?;
+    if app_id == "codex" {
+        if provider.provider_type != "official" {
+            let codex_home = dirs.managed_configs_dir.join("codex");
+            if !codex_home_is_ready(&codex_home) {
+                apply_provider_for_app(provider, app_id)?;
+            }
         }
     }
     if app_id == "antigravity" && provider.provider_type != "official" {
@@ -5398,8 +5404,12 @@ async fn list_mcp_servers() -> Result<Vec<McpServerRecord>, String> {
 
 fn list_mcp_servers_inner() -> Result<Vec<McpServerRecord>, String> {
     let dirs = agentdock_dirs()?;
-    ensure_dirs(&dirs)?;
-    let path = mcp_servers_path(&dirs);
+    read_mcp_servers(&dirs)
+}
+
+fn read_mcp_servers(dirs: &AgentDockDirs) -> Result<Vec<McpServerRecord>, String> {
+    ensure_dirs(dirs)?;
+    let path = mcp_servers_path(dirs);
     let mut servers: Vec<McpServerRecord> = read_json_or_seed(&path, default_mcp_servers())?;
     let mut migrated = false;
     for server in &mut servers {
@@ -5415,7 +5425,7 @@ fn list_mcp_servers_inner() -> Result<Vec<McpServerRecord>, String> {
 fn upsert_mcp_server(input: McpServerInput) -> Result<McpServerRecord, String> {
     let dirs = agentdock_dirs()?;
     ensure_dirs(&dirs)?;
-    let mut servers = list_mcp_servers_inner()?;
+    let mut servers = read_mcp_servers(&dirs)?;
     let id = input.id.trim().to_string();
     if id.is_empty() {
         return Err("MCP 服务器 ID 不能为空".to_string());
@@ -5456,7 +5466,7 @@ fn toggle_mcp_app(
 ) -> Result<McpServerRecord, String> {
     let dirs = agentdock_dirs()?;
     ensure_dirs(&dirs)?;
-    let mut servers = list_mcp_servers_inner()?;
+    let mut servers = read_mcp_servers(&dirs)?;
     let server = servers
         .iter_mut()
         .find(|server| server.id == server_id)
@@ -5792,11 +5802,9 @@ fn import_mcp_from_apps() -> Result<McpImportResult, String> {
     let mut scanned_apps = Vec::new();
     let mut errors = Vec::new();
 
-    import_json_mcp_file(
-        &home.join(".claude.json"),
-        "mcpServers",
-        "claude-code",
-        "standard",
+    import_claude_code_mcp_files(
+        &home,
+        &dirs.managed_configs_dir,
         &mut discovered,
         &mut scanned_apps,
         &mut errors,
@@ -5835,54 +5843,36 @@ fn import_mcp_from_apps() -> Result<McpImportResult, String> {
         &mut scanned_apps,
         &mut errors,
     );
-    import_json_mcp_file(
-        &home.join(".openclaw/openclaw.json"),
-        "mcpServers",
-        "openclaw",
-        "standard",
+    import_openclaw_mcp_files(
+        &home,
+        &dirs.managed_configs_dir,
         &mut discovered,
         &mut scanned_apps,
         &mut errors,
     );
-    import_toml_mcp_file(
-        &home.join(".codex/config.toml"),
-        "codex",
+    import_codex_mcp_files(
+        &home,
+        &dirs.managed_configs_dir,
         &mut discovered,
         &mut scanned_apps,
         &mut errors,
     );
-    import_toml_mcp_file(
-        &home.join(".grok/config.toml"),
-        "grok",
+    import_grok_mcp_files(
+        &home,
+        &dirs.managed_configs_dir,
         &mut discovered,
         &mut scanned_apps,
         &mut errors,
     );
-    import_hermes_mcp_file(
-        &home.join(".hermes/config.yaml"),
+    import_hermes_mcp_files(
+        &home,
+        &dirs.clients_dir,
         &mut discovered,
         &mut scanned_apps,
         &mut errors,
     );
 
-    let mut imported = 0;
-    let mut linked = 0;
-    for (app, raw_id, value, style) in discovered {
-        let Some(record) = mcp_record_from_value(&raw_id, &value, &app, &style) else {
-            errors.push(format!("{}: MCP 服务器 {} 的格式无法识别", app, raw_id));
-            continue;
-        };
-        if let Some(existing) = servers.iter_mut().find(|item| item.id == record.id) {
-            if !existing.apps.contains(&app) {
-                existing.apps.push(app);
-                existing.updated_at = now_rfc3339();
-                linked += 1;
-            }
-        } else {
-            servers.push(record);
-            imported += 1;
-        }
-    }
+    let (imported, linked) = merge_discovered_mcp_servers(&mut servers, discovered, &mut errors);
     scanned_apps.sort();
     scanned_apps.dedup();
     if imported > 0 || linked > 0 {
@@ -5910,12 +5900,10 @@ fn sync_mcp_servers() -> Result<SyncResult, String> {
     let mut written_files = Vec::new();
     let mut errors = Vec::new();
 
-    sync_json_mcp_projection(
-        &home.join(".claude.json"),
-        home.join(".claude").exists() || home.join(".claude.json").exists(),
-        "mcpServers",
-        "claude-code",
-        "standard",
+    sync_claude_code_mcp_projections(
+        &home,
+        &dirs.managed_configs_dir,
+        installed_apps.contains("claude-code"),
         &servers,
         &mut written_files,
         &mut errors,
@@ -5953,42 +5941,34 @@ fn sync_mcp_servers() -> Result<SyncResult, String> {
         &mut written_files,
         &mut errors,
     );
-    sync_json_mcp_projection(
-        &home.join(".openclaw/openclaw.json"),
-        home.join(".openclaw").exists(),
-        "mcpServers",
-        "openclaw",
-        "standard",
+    sync_openclaw_mcp_projections(
+        &home,
+        &dirs.managed_configs_dir,
+        installed_apps.contains("openclaw"),
         &servers,
         &mut written_files,
         &mut errors,
     );
-    sync_toml_mcp_projection(
-        &home.join(".codex/config.toml"),
-        home.join(".codex").exists() || installed_apps.contains("codex"),
-        "codex",
+    sync_codex_mcp_projections(
+        &home,
+        &dirs.managed_configs_dir,
+        installed_apps.contains("codex"),
         &servers,
         &mut written_files,
         &mut errors,
     );
-    sync_toml_mcp_projection(
-        &home.join(".grok/config.toml"),
-        home.join(".grok").exists() || installed_apps.contains("grok"),
-        "grok",
-        &servers,
-        &mut written_files,
-        &mut errors,
-    );
-    sync_toml_mcp_projection(
-        &dirs.managed_configs_dir.join("grok/config.toml"),
+    sync_grok_mcp_projections(
+        &home,
+        &dirs.managed_configs_dir,
         installed_apps.contains("grok"),
-        "grok",
         &servers,
         &mut written_files,
         &mut errors,
     );
-    sync_hermes_mcp_projection(
-        &home.join(".hermes/config.yaml"),
+    sync_hermes_mcp_projections(
+        &home,
+        &dirs.clients_dir,
+        installed_apps.contains("hermes"),
         &servers,
         &mut written_files,
         &mut errors,
@@ -6008,6 +5988,413 @@ fn sync_mcp_servers() -> Result<SyncResult, String> {
         written_files,
         message,
     })
+}
+
+fn claude_code_mcp_config_paths(home: &Path, managed_configs_dir: &Path) -> [PathBuf; 2] {
+    [
+        home.join(".claude.json"),
+        managed_configs_dir.join("claude-code/.claude.json"),
+    ]
+}
+
+fn import_claude_code_mcp_files(
+    home: &Path,
+    managed_configs_dir: &Path,
+    discovered: &mut Vec<(String, String, serde_json::Value, String)>,
+    scanned_apps: &mut Vec<String>,
+    errors: &mut Vec<String>,
+) {
+    for path in claude_code_mcp_config_paths(home, managed_configs_dir) {
+        import_json_mcp_file(
+            &path,
+            "mcpServers",
+            "claude-code",
+            "standard",
+            discovered,
+            scanned_apps,
+            errors,
+        );
+    }
+}
+
+fn sync_claude_code_mcp_projections(
+    home: &Path,
+    managed_configs_dir: &Path,
+    claude_code_installed: bool,
+    servers: &[McpServerRecord],
+    written_files: &mut Vec<String>,
+    errors: &mut Vec<String>,
+) {
+    for path in claude_code_mcp_config_paths(home, managed_configs_dir) {
+        let initialized = claude_code_installed
+            || path.exists()
+            || path.parent().map(Path::exists).unwrap_or(false);
+        sync_json_mcp_projection(
+            &path,
+            initialized,
+            "mcpServers",
+            "claude-code",
+            "standard",
+            servers,
+            written_files,
+            errors,
+        );
+    }
+}
+
+fn codex_mcp_config_paths(home: &Path, managed_configs_dir: &Path) -> [PathBuf; 2] {
+    [
+        home.join(".codex/config.toml"),
+        managed_configs_dir.join("codex/config.toml"),
+    ]
+}
+
+fn import_codex_mcp_files(
+    home: &Path,
+    managed_configs_dir: &Path,
+    discovered: &mut Vec<(String, String, serde_json::Value, String)>,
+    scanned_apps: &mut Vec<String>,
+    errors: &mut Vec<String>,
+) {
+    for path in codex_mcp_config_paths(home, managed_configs_dir) {
+        import_toml_mcp_file(&path, "codex", discovered, scanned_apps, errors);
+    }
+}
+
+fn sync_codex_mcp_projections(
+    home: &Path,
+    managed_configs_dir: &Path,
+    codex_installed: bool,
+    servers: &[McpServerRecord],
+    written_files: &mut Vec<String>,
+    errors: &mut Vec<String>,
+) {
+    for path in codex_mcp_config_paths(home, managed_configs_dir) {
+        let initialized =
+            codex_installed || path.exists() || path.parent().map(Path::exists).unwrap_or(false);
+        sync_toml_mcp_projection(&path, initialized, "codex", servers, written_files, errors);
+    }
+}
+
+fn grok_mcp_config_paths(home: &Path, managed_configs_dir: &Path) -> [PathBuf; 2] {
+    [
+        home.join(".grok/config.toml"),
+        managed_configs_dir.join("grok/config.toml"),
+    ]
+}
+
+fn import_grok_mcp_files(
+    home: &Path,
+    managed_configs_dir: &Path,
+    discovered: &mut Vec<(String, String, serde_json::Value, String)>,
+    scanned_apps: &mut Vec<String>,
+    errors: &mut Vec<String>,
+) {
+    for path in grok_mcp_config_paths(home, managed_configs_dir) {
+        import_toml_mcp_file(&path, "grok", discovered, scanned_apps, errors);
+    }
+}
+
+fn sync_grok_mcp_projections(
+    home: &Path,
+    managed_configs_dir: &Path,
+    grok_installed: bool,
+    servers: &[McpServerRecord],
+    written_files: &mut Vec<String>,
+    errors: &mut Vec<String>,
+) {
+    for path in grok_mcp_config_paths(home, managed_configs_dir) {
+        let initialized =
+            grok_installed || path.exists() || path.parent().map(Path::exists).unwrap_or(false);
+        sync_toml_mcp_projection(&path, initialized, "grok", servers, written_files, errors);
+    }
+}
+
+fn openclaw_mcp_config_paths(home: &Path, managed_configs_dir: &Path) -> [PathBuf; 2] {
+    [
+        home.join(".openclaw/openclaw.json"),
+        managed_configs_dir.join("openclaw/provider.json"),
+    ]
+}
+
+fn import_openclaw_mcp_files(
+    home: &Path,
+    managed_configs_dir: &Path,
+    discovered: &mut Vec<(String, String, serde_json::Value, String)>,
+    scanned_apps: &mut Vec<String>,
+    errors: &mut Vec<String>,
+) {
+    for path in openclaw_mcp_config_paths(home, managed_configs_dir) {
+        import_openclaw_mcp_file(&path, discovered, scanned_apps, errors);
+    }
+}
+
+fn sync_openclaw_mcp_projections(
+    home: &Path,
+    managed_configs_dir: &Path,
+    openclaw_installed: bool,
+    servers: &[McpServerRecord],
+    written_files: &mut Vec<String>,
+    errors: &mut Vec<String>,
+) {
+    for path in openclaw_mcp_config_paths(home, managed_configs_dir) {
+        let initialized =
+            openclaw_installed || path.exists() || path.parent().map(Path::exists).unwrap_or(false);
+        sync_openclaw_mcp_projection(&path, initialized, servers, written_files, errors);
+    }
+}
+
+fn hermes_mcp_config_paths(home: &Path, clients_dir: &Path) -> [PathBuf; 2] {
+    [
+        home.join(".hermes/config.yaml"),
+        clients_dir.join("hermes/home/config.yaml"),
+    ]
+}
+
+fn import_hermes_mcp_files(
+    home: &Path,
+    clients_dir: &Path,
+    discovered: &mut Vec<(String, String, serde_json::Value, String)>,
+    scanned_apps: &mut Vec<String>,
+    errors: &mut Vec<String>,
+) {
+    for path in hermes_mcp_config_paths(home, clients_dir) {
+        import_hermes_mcp_file(&path, discovered, scanned_apps, errors);
+    }
+}
+
+fn sync_hermes_mcp_projections(
+    home: &Path,
+    clients_dir: &Path,
+    hermes_installed: bool,
+    servers: &[McpServerRecord],
+    written_files: &mut Vec<String>,
+    errors: &mut Vec<String>,
+) {
+    for path in hermes_mcp_config_paths(home, clients_dir) {
+        let initialized =
+            hermes_installed || path.exists() || path.parent().map(Path::exists).unwrap_or(false);
+        sync_hermes_mcp_projection(&path, initialized, servers, written_files, errors);
+    }
+}
+
+fn merge_discovered_mcp_servers(
+    servers: &mut Vec<McpServerRecord>,
+    discovered: Vec<(String, String, serde_json::Value, String)>,
+    errors: &mut Vec<String>,
+) -> (usize, usize) {
+    let mut imported = 0;
+    let mut linked = 0;
+    for (app, raw_id, value, style) in discovered {
+        let Some(record) = mcp_record_from_value(&raw_id, &value, &app, &style) else {
+            errors.push(format!("{}: MCP 服务器 {} 的格式无法识别", app, raw_id));
+            continue;
+        };
+        if let Some(existing) = servers.iter_mut().find(|item| item.id == record.id) {
+            if !existing.apps.contains(&app) {
+                existing.apps.push(app);
+                existing.updated_at = now_rfc3339();
+                linked += 1;
+            }
+        } else {
+            servers.push(record);
+            imported += 1;
+        }
+    }
+    (imported, linked)
+}
+
+fn migrate_managed_codex_mcp_servers(dirs: &AgentDockDirs) -> Result<(), String> {
+    let marker = dirs.config_dir.join(".managed-codex-mcp-imported-v1");
+    if marker.exists() {
+        return Ok(());
+    }
+
+    let managed_config = dirs.managed_configs_dir.join("codex/config.toml");
+    if !managed_config.exists() {
+        fs::write(&marker, now_rfc3339())
+            .map_err(|error| format!("写入 Codex MCP 迁移标记失败: {}", error))?;
+        return Ok(());
+    }
+
+    let mut discovered = Vec::new();
+    let mut scanned_apps = Vec::new();
+    let mut errors = Vec::new();
+    import_toml_mcp_file(
+        &managed_config,
+        "codex",
+        &mut discovered,
+        &mut scanned_apps,
+        &mut errors,
+    );
+    if !errors.is_empty() {
+        return Err(errors.join("；"));
+    }
+
+    let mut servers = read_mcp_servers(dirs)?;
+    let (imported, linked) = merge_discovered_mcp_servers(&mut servers, discovered, &mut errors);
+    if !errors.is_empty() {
+        return Err(errors.join("；"));
+    }
+    if imported > 0 || linked > 0 {
+        write_json(&mcp_servers_path(dirs), &servers)?;
+    }
+
+    let mut written_files = Vec::new();
+    sync_toml_mcp_projection(
+        &managed_config,
+        true,
+        "codex",
+        &servers,
+        &mut written_files,
+        &mut errors,
+    );
+    if !errors.is_empty() {
+        return Err(errors.join("；"));
+    }
+    fs::write(&marker, now_rfc3339())
+        .map_err(|error| format!("写入 Codex MCP 迁移标记失败: {}", error))
+}
+
+fn migrate_managed_mcp_servers(dirs: &AgentDockDirs) -> Result<(), String> {
+    migrate_managed_codex_mcp_servers(dirs)?;
+
+    let marker = dirs.config_dir.join(".managed-client-mcp-imported-v2");
+    if marker.exists() {
+        return Ok(());
+    }
+
+    let home = dirs_home().ok_or_else(|| "无法确定用户主目录".to_string())?;
+    let [_, managed_claude] = claude_code_mcp_config_paths(&home, &dirs.managed_configs_dir);
+    let [_, managed_grok] = grok_mcp_config_paths(&home, &dirs.managed_configs_dir);
+    let [_, managed_openclaw] = openclaw_mcp_config_paths(&home, &dirs.managed_configs_dir);
+    let [_, managed_hermes] = hermes_mcp_config_paths(&home, &dirs.clients_dir);
+
+    let mut discovered = Vec::new();
+    let mut scanned_apps = Vec::new();
+    let mut errors = Vec::new();
+    import_json_mcp_file(
+        &managed_claude,
+        "mcpServers",
+        "claude-code",
+        "standard",
+        &mut discovered,
+        &mut scanned_apps,
+        &mut errors,
+    );
+    import_toml_mcp_file(
+        &managed_grok,
+        "grok",
+        &mut discovered,
+        &mut scanned_apps,
+        &mut errors,
+    );
+    import_openclaw_mcp_file(
+        &managed_openclaw,
+        &mut discovered,
+        &mut scanned_apps,
+        &mut errors,
+    );
+    import_hermes_mcp_file(
+        &managed_hermes,
+        &mut discovered,
+        &mut scanned_apps,
+        &mut errors,
+    );
+    if !errors.is_empty() {
+        return Err(errors.join("；"));
+    }
+
+    let mut servers = read_mcp_servers(dirs)?;
+    let (imported, linked) = merge_discovered_mcp_servers(&mut servers, discovered, &mut errors);
+    if !errors.is_empty() {
+        return Err(errors.join("；"));
+    }
+    if imported > 0 || linked > 0 {
+        write_json(&mcp_servers_path(dirs), &servers)?;
+    }
+
+    let initialized =
+        |path: &Path| path.exists() || path.parent().map(Path::exists).unwrap_or(false);
+    let mut written_files = Vec::new();
+    sync_json_mcp_projection(
+        &managed_claude,
+        initialized(&managed_claude),
+        "mcpServers",
+        "claude-code",
+        "standard",
+        &servers,
+        &mut written_files,
+        &mut errors,
+    );
+    sync_toml_mcp_projection(
+        &managed_grok,
+        initialized(&managed_grok),
+        "grok",
+        &servers,
+        &mut written_files,
+        &mut errors,
+    );
+    sync_openclaw_mcp_projection(
+        &managed_openclaw,
+        initialized(&managed_openclaw),
+        &servers,
+        &mut written_files,
+        &mut errors,
+    );
+    sync_hermes_mcp_projection(
+        &managed_hermes,
+        initialized(&managed_hermes),
+        &servers,
+        &mut written_files,
+        &mut errors,
+    );
+    if !errors.is_empty() {
+        return Err(errors.join("；"));
+    }
+
+    fs::write(&marker, now_rfc3339())
+        .map_err(|error| format!("写入托管客户端 MCP 迁移标记失败: {}", error))
+}
+
+fn import_openclaw_mcp_file(
+    path: &Path,
+    discovered: &mut Vec<(String, String, serde_json::Value, String)>,
+    scanned_apps: &mut Vec<String>,
+    errors: &mut Vec<String>,
+) {
+    if !path.exists() {
+        return;
+    }
+    scanned_apps.push("openclaw".to_string());
+    let raw = match fs::read_to_string(path) {
+        Ok(raw) => raw,
+        Err(error) => {
+            errors.push(format!("openclaw: 读取失败 ({})", error));
+            return;
+        }
+    };
+    let value: serde_json::Value = match json5::from_str(&raw) {
+        Ok(value) => value,
+        Err(error) => {
+            errors.push(format!("openclaw: 配置不是有效 JSON5 ({})", error));
+            return;
+        }
+    };
+    for map in [value.pointer("/mcp/servers"), value.get("mcpServers")]
+        .into_iter()
+        .flatten()
+        .filter_map(serde_json::Value::as_object)
+    {
+        for (id, spec) in map {
+            discovered.push((
+                "openclaw".to_string(),
+                id.clone(),
+                spec.clone(),
+                "openclaw".to_string(),
+            ));
+        }
+    }
 }
 
 fn import_json_mcp_file(
@@ -6137,12 +6524,12 @@ fn mcp_record_from_value(
     let object = value.as_object()?;
     let raw_type = object
         .get("type")
-        .and_then(serde_json::Value::as_str)
-        .unwrap_or("stdio");
+        .or_else(|| object.get("transport"))
+        .and_then(serde_json::Value::as_str);
     let transport = match raw_type {
-        "local" | "stdio" => "stdio",
-        "remote" | "sse" => "sse",
-        "streamable-http" | "http" => "http",
+        Some("local" | "stdio") => "stdio",
+        Some("remote" | "sse") => "sse",
+        Some("streamable-http" | "http") => "http",
         _ if object.get("url").is_some() => "http",
         _ => "stdio",
     }
@@ -6206,6 +6593,7 @@ fn mcp_record_from_value(
     );
     let known_fields = [
         "type",
+        "transport",
         "command",
         "args",
         "env",
@@ -6257,6 +6645,97 @@ fn json_string_map(value: &serde_json::Value) -> BTreeMap<String, String> {
                 .collect()
         })
         .unwrap_or_default()
+}
+
+fn sync_openclaw_mcp_projection(
+    path: &Path,
+    initialized: bool,
+    servers: &[McpServerRecord],
+    written_files: &mut Vec<String>,
+    errors: &mut Vec<String>,
+) {
+    if !initialized {
+        return;
+    }
+    let result = (|| -> Result<(), String> {
+        let mut root: serde_json::Value = if path.exists() {
+            let raw = fs::read_to_string(path)
+                .map_err(|error| format!("读取 {} 失败: {}", path.display(), error))?;
+            json5::from_str(&raw)
+                .map_err(|error| format!("{} 不是有效 JSON5: {}", path.display(), error))?
+        } else {
+            serde_json::json!({})
+        };
+        let object = root
+            .as_object_mut()
+            .ok_or_else(|| format!("{} 的根配置必须是 JSON 对象", path.display()))?;
+        let mut projection = serde_json::Map::new();
+        for server in servers
+            .iter()
+            .filter(|server| server.enabled && server.apps.iter().any(|item| item == "openclaw"))
+        {
+            projection.insert(server.id.clone(), mcp_openclaw_projection(server));
+        }
+        object.remove("mcpServers");
+        let mcp = object
+            .entry("mcp".to_string())
+            .or_insert_with(|| serde_json::json!({}));
+        let mcp = mcp
+            .as_object_mut()
+            .ok_or_else(|| format!("{} 的 mcp 配置必须是对象", path.display()))?;
+        mcp.insert("servers".to_string(), serde_json::Value::Object(projection));
+        if let Some(parent) = path.parent() {
+            fs::create_dir_all(parent)
+                .map_err(|error| format!("创建 {} 失败: {}", parent.display(), error))?;
+        }
+        write_json(path, &root)
+    })();
+    match result {
+        Ok(()) => written_files.push(path.display().to_string()),
+        Err(error) => errors.push(format!("openclaw: {}", error)),
+    }
+}
+
+fn mcp_openclaw_projection(server: &McpServerRecord) -> serde_json::Value {
+    const EXTRA_FIELDS: [&str; 10] = [
+        "connectionTimeoutMs",
+        "requestTimeoutMs",
+        "supportsParallelToolCalls",
+        "auth",
+        "oauth",
+        "sslVerify",
+        "clientCert",
+        "clientKey",
+        "toolFilter",
+        "codex",
+    ];
+    let mut value: serde_json::Map<String, serde_json::Value> = server
+        .extra
+        .iter()
+        .filter(|(key, _)| EXTRA_FIELDS.contains(&key.as_str()))
+        .map(|(key, value)| (key.clone(), value.clone()))
+        .collect();
+    value.insert("enabled".to_string(), serde_json::Value::Bool(true));
+    if server.transport == "stdio" {
+        value.insert("command".to_string(), serde_json::json!(server.command));
+        value.insert("args".to_string(), serde_json::json!(server.args));
+        value.insert("env".to_string(), serde_json::json!(server.env));
+        if !server.cwd.is_empty() {
+            value.insert("cwd".to_string(), serde_json::json!(server.cwd));
+        }
+    } else {
+        value.insert("url".to_string(), serde_json::json!(server.command));
+        value.insert(
+            "transport".to_string(),
+            serde_json::json!(if server.transport == "sse" {
+                "sse"
+            } else {
+                "streamable-http"
+            }),
+        );
+        value.insert("headers".to_string(), serde_json::json!(server.headers));
+    }
+    serde_json::Value::Object(value)
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -6464,11 +6943,12 @@ fn string_map_to_toml(map: &BTreeMap<String, String>) -> toml::Value {
 
 fn sync_hermes_mcp_projection(
     path: &Path,
+    initialized: bool,
     servers: &[McpServerRecord],
     written_files: &mut Vec<String>,
     errors: &mut Vec<String>,
 ) {
-    if !path.exists() && !path.parent().map(Path::exists).unwrap_or(false) {
+    if !initialized {
         return;
     }
     let result = (|| -> Result<(), String> {
@@ -6491,6 +6971,9 @@ fn sync_hermes_mcp_projection(
             .filter(|server| server.enabled && server.apps.iter().any(|item| item == "hermes"))
         {
             let mut value = mcp_json_projection(server, "standard");
+            if let Some(value) = value.as_object_mut() {
+                value.remove("type");
+            }
             value["enabled"] = serde_json::Value::Bool(true);
             projection.insert(server.id.clone(), value);
         }
@@ -6500,6 +6983,10 @@ fn sync_hermes_mcp_projection(
         );
         let raw = serde_yaml::to_string(&root)
             .map_err(|error| format!("生成 config.yaml 失败: {}", error))?;
+        if let Some(parent) = path.parent() {
+            fs::create_dir_all(parent)
+                .map_err(|error| format!("创建 {} 失败: {}", parent.display(), error))?;
+        }
         fs::write(path, raw).map_err(|error| format!("写入 config.yaml 失败: {}", error))
     })();
     match result {
@@ -7352,6 +7839,12 @@ pub fn run() {
     let app = tauri::Builder::default()
         .plugin(tauri_plugin_dialog::init())
         .setup(|app| {
+            if let Err(error) = agentdock_dirs().and_then(|dirs| {
+                ensure_dirs(&dirs)?;
+                migrate_managed_mcp_servers(&dirs)
+            }) {
+                eprintln!("AgentDock: 迁移托管客户端 MCP 配置失败: {}", error);
+            }
             if let Err(error) = repair_managed_cli_access() {
                 eprintln!("AgentDock: 修复终端命令失败: {}", error);
             }
@@ -9187,6 +9680,9 @@ async fn install_hermes_client(dirs: &AgentDockDirs) -> Result<InstallClientResu
     };
     save_managed_client_record(record.clone())?;
     let commands = install_managed_cli_access(&record)?;
+    if let Err(error) = sync_mcp_servers() {
+        eprintln!("AgentDock: 安装 Hermes 后同步 MCP 失败: {}", error);
+    }
     Ok(InstallClientResult {
         client: record,
         message: format!(
@@ -11902,7 +12398,7 @@ api_backend = "responses""#,
         let mut written = Vec::new();
         let mut errors = Vec::new();
         sync_toml_mcp_projection(&path, true, "grok", &[server], &mut written, &mut errors);
-        assert!(errors.is_empty());
+        assert!(errors.is_empty(), "{}", errors.join("; "));
         let value: toml::Table = fs::read_to_string(&path).unwrap().parse().unwrap();
         assert_eq!(value["models"]["default"].as_str(), Some("agentdock"));
         assert_eq!(
@@ -12298,6 +12794,439 @@ api_backend = "responses""#,
         assert_eq!(records[0].input_tokens, 1_623);
         assert_eq!(records[0].model, "grok-4.5");
         assert_eq!(records[0].requests, 2);
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn managed_mcp_paths_cover_claude_grok_and_hermes() {
+        let root = env::temp_dir().join(format!(
+            "agentdock-managed-mcp-paths-test-{}-{}",
+            std::process::id(),
+            OffsetDateTime::now_utc().unix_timestamp_nanos()
+        ));
+        let home = root.join("home");
+        let managed_configs = root.join("managed-configs");
+        let clients = root.join("clients");
+        let [claude_user, claude_managed] = claude_code_mcp_config_paths(&home, &managed_configs);
+        let [grok_user, grok_managed] = grok_mcp_config_paths(&home, &managed_configs);
+        let [hermes_user, hermes_managed] = hermes_mcp_config_paths(&home, &clients);
+        for path in [
+            &claude_user,
+            &claude_managed,
+            &grok_user,
+            &grok_managed,
+            &hermes_user,
+            &hermes_managed,
+        ] {
+            fs::create_dir_all(path.parent().unwrap()).unwrap();
+        }
+        fs::write(
+            &claude_user,
+            r#"{"theme":"user","mcpServers":{"claude-user":{"command":"npx","args":["claude-user"]}}}"#,
+        )
+        .unwrap();
+        fs::write(
+            &claude_managed,
+            r#"{"theme":"managed","mcpServers":{"claude-managed":{"command":"npx","args":["claude-managed"]}}}"#,
+        )
+        .unwrap();
+        fs::write(
+            &grok_user,
+            "theme = \"user\"\n\n[mcp_servers.grok-user]\ncommand = \"npx\"\nargs = [\"grok-user\"]\n",
+        )
+        .unwrap();
+        fs::write(
+            &grok_managed,
+            "theme = \"managed\"\n\n[mcp_servers.grok-managed]\ncommand = \"npx\"\nargs = [\"grok-managed\"]\n",
+        )
+        .unwrap();
+        fs::write(
+            &hermes_user,
+            "theme: user\nmcp_servers:\n  hermes-user:\n    command: npx\n    args: [hermes-user]\n",
+        )
+        .unwrap();
+        fs::write(
+            &hermes_managed,
+            "theme: managed\nmcp_servers:\n  hermes-managed:\n    command: npx\n    args: [hermes-managed]\n",
+        )
+        .unwrap();
+
+        let mut discovered = Vec::new();
+        let mut scanned_apps = Vec::new();
+        let mut errors = Vec::new();
+        import_claude_code_mcp_files(
+            &home,
+            &managed_configs,
+            &mut discovered,
+            &mut scanned_apps,
+            &mut errors,
+        );
+        import_grok_mcp_files(
+            &home,
+            &managed_configs,
+            &mut discovered,
+            &mut scanned_apps,
+            &mut errors,
+        );
+        import_hermes_mcp_files(
+            &home,
+            &clients,
+            &mut discovered,
+            &mut scanned_apps,
+            &mut errors,
+        );
+        assert!(errors.is_empty(), "{}", errors.join("; "));
+        let mut servers = Vec::new();
+        let (imported, linked) =
+            merge_discovered_mcp_servers(&mut servers, discovered, &mut errors);
+        assert_eq!((imported, linked), (6, 0));
+
+        let mut written = Vec::new();
+        sync_claude_code_mcp_projections(
+            &home,
+            &managed_configs,
+            true,
+            &servers,
+            &mut written,
+            &mut errors,
+        );
+        sync_grok_mcp_projections(
+            &home,
+            &managed_configs,
+            true,
+            &servers,
+            &mut written,
+            &mut errors,
+        );
+        sync_hermes_mcp_projections(&home, &clients, true, &servers, &mut written, &mut errors);
+        assert!(errors.is_empty(), "{}", errors.join("; "));
+        assert_eq!(written.len(), 6);
+
+        for path in [&claude_user, &claude_managed] {
+            let value: serde_json::Value =
+                serde_json::from_str(&fs::read_to_string(path).unwrap()).unwrap();
+            assert!(value["mcpServers"].get("claude-user").is_some());
+            assert!(value["mcpServers"].get("claude-managed").is_some());
+            assert!(value.get("theme").is_some());
+        }
+        for path in [&grok_user, &grok_managed] {
+            let value: toml::Table = fs::read_to_string(path).unwrap().parse().unwrap();
+            assert!(value["mcp_servers"].get("grok-user").is_some());
+            assert!(value["mcp_servers"].get("grok-managed").is_some());
+            assert!(value.get("theme").is_some());
+        }
+        for path in [&hermes_user, &hermes_managed] {
+            let value: serde_yaml::Value =
+                serde_yaml::from_str(&fs::read_to_string(path).unwrap()).unwrap();
+            let value = serde_json::to_value(value).unwrap();
+            assert!(value["mcp_servers"].get("hermes-user").is_some());
+            assert!(value["mcp_servers"].get("hermes-managed").is_some());
+            assert!(value.get("theme").is_some());
+        }
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn openclaw_mcp_uses_nested_json5_schema_and_migrates_legacy_entries() {
+        let root = env::temp_dir().join(format!(
+            "agentdock-openclaw-mcp-test-{}-{}",
+            std::process::id(),
+            OffsetDateTime::now_utc().unix_timestamp_nanos()
+        ));
+        fs::create_dir_all(&root).unwrap();
+        let path = root.join("openclaw.json");
+        fs::write(
+            &path,
+            r#"{
+              // OpenClaw accepts JSON5 configuration.
+              theme: "dark",
+              mcp: { apps: { enabled: true }, servers: {
+                current: { url: "https://mcp.example.com/current", transport: "sse" },
+              } },
+              mcpServers: {
+                legacy: { command: "npx", args: ["legacy"] },
+              },
+            }"#,
+        )
+        .unwrap();
+
+        let mut discovered = Vec::new();
+        let mut scanned_apps = Vec::new();
+        let mut errors = Vec::new();
+        import_openclaw_mcp_file(&path, &mut discovered, &mut scanned_apps, &mut errors);
+        assert!(errors.is_empty(), "{}", errors.join("; "));
+        let mut servers = Vec::new();
+        let (imported, linked) =
+            merge_discovered_mcp_servers(&mut servers, discovered, &mut errors);
+        assert_eq!((imported, linked), (2, 0));
+        assert_eq!(
+            servers
+                .iter()
+                .find(|server| server.id == "current")
+                .map(|server| server.transport.as_str()),
+            Some("sse")
+        );
+
+        let mut written = Vec::new();
+        sync_openclaw_mcp_projection(&path, true, &servers, &mut written, &mut errors);
+        assert!(errors.is_empty(), "{}", errors.join("; "));
+        let value: serde_json::Value =
+            serde_json::from_str(&fs::read_to_string(&path).unwrap()).unwrap();
+        assert_eq!(value["theme"], "dark");
+        assert_eq!(value["mcp"]["apps"]["enabled"], true);
+        assert!(value["mcp"]["servers"].get("current").is_some());
+        assert!(value["mcp"]["servers"].get("legacy").is_some());
+        assert_eq!(value["mcp"]["servers"]["current"]["transport"], "sse");
+        assert!(value.get("mcpServers").is_none());
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn codex_mcp_import_and_sync_cover_user_and_managed_homes() {
+        let root = env::temp_dir().join(format!(
+            "agentdock-codex-mcp-homes-test-{}-{}",
+            std::process::id(),
+            OffsetDateTime::now_utc().unix_timestamp_nanos()
+        ));
+        let home = root.join("home");
+        let managed_configs = root.join("managed-configs");
+        let [user_config, managed_config] = codex_mcp_config_paths(&home, &managed_configs);
+        fs::create_dir_all(user_config.parent().unwrap()).unwrap();
+        fs::create_dir_all(managed_config.parent().unwrap()).unwrap();
+        fs::write(
+            &user_config,
+            "model = \"user-model\"\n\n[mcp_servers.user-server]\ncommand = \"npx\"\nargs = [\"user-server\"]\n",
+        )
+        .unwrap();
+        fs::write(
+            &managed_config,
+            "model = \"managed-model\"\n\n[mcp_servers.managed-server]\nurl = \"https://mcp.example.com/managed\"\n",
+        )
+        .unwrap();
+
+        let mut discovered = Vec::new();
+        let mut scanned_apps = Vec::new();
+        let mut errors = Vec::new();
+        import_codex_mcp_files(
+            &home,
+            &managed_configs,
+            &mut discovered,
+            &mut scanned_apps,
+            &mut errors,
+        );
+        assert!(errors.is_empty());
+        assert_eq!(scanned_apps, vec!["codex", "codex"]);
+
+        let mut servers = Vec::new();
+        let (imported, linked) =
+            merge_discovered_mcp_servers(&mut servers, discovered, &mut errors);
+        assert!(errors.is_empty());
+        assert_eq!((imported, linked), (2, 0));
+
+        let mut written = Vec::new();
+        sync_codex_mcp_projections(
+            &home,
+            &managed_configs,
+            true,
+            &servers,
+            &mut written,
+            &mut errors,
+        );
+        assert!(errors.is_empty());
+        assert_eq!(written.len(), 2);
+
+        for (path, expected_model) in [
+            (&user_config, "user-model"),
+            (&managed_config, "managed-model"),
+        ] {
+            let value: toml::Table = fs::read_to_string(path).unwrap().parse().unwrap();
+            assert_eq!(value["model"].as_str(), Some(expected_model));
+            assert!(value["mcp_servers"].get("user-server").is_some());
+            assert!(value["mcp_servers"].get("managed-server").is_some());
+        }
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn managed_codex_mcp_migration_runs_once_without_resurrecting_deletions() {
+        let root = env::temp_dir().join(format!(
+            "agentdock-managed-codex-mcp-migration-test-{}-{}",
+            std::process::id(),
+            OffsetDateTime::now_utc().unix_timestamp_nanos()
+        ));
+        let dirs = AgentDockDirs {
+            data_dir: root.join("data"),
+            config_dir: root.join("config"),
+            runtime_dir: root.join("data/runtime"),
+            clients_dir: root.join("data/clients"),
+            skills_dir: root.join("data/skills"),
+            mcp_dir: root.join("data/mcp"),
+            backups_dir: root.join("data/backups"),
+            managed_configs_dir: root.join("config/managed-configs"),
+        };
+        ensure_dirs(&dirs).unwrap();
+        let unified = McpServerRecord {
+            id: "customer_analysis_mcp".to_string(),
+            name: "customer_analysis_mcp".to_string(),
+            description: String::new(),
+            homepage: String::new(),
+            docs: String::new(),
+            tags: Vec::new(),
+            transport: "http".to_string(),
+            command: "https://mcp.example.com/customer-analysis".to_string(),
+            args: Vec::new(),
+            env: BTreeMap::new(),
+            headers: BTreeMap::new(),
+            cwd: String::new(),
+            extra: BTreeMap::new(),
+            apps: vec!["codex".to_string()],
+            enabled: true,
+            updated_at: now_rfc3339(),
+        };
+        write_json(&mcp_servers_path(&dirs), &vec![unified]).unwrap();
+        let managed_config = dirs.managed_configs_dir.join("codex/config.toml");
+        fs::create_dir_all(managed_config.parent().unwrap()).unwrap();
+        fs::write(
+            &managed_config,
+            "model = \"managed-model\"\n\n[mcp_servers.legacy_remote]\nurl = \"https://mcp.example.com/legacy\"\n",
+        )
+        .unwrap();
+
+        migrate_managed_codex_mcp_servers(&dirs).unwrap();
+        let mut servers = read_mcp_servers(&dirs).unwrap();
+        assert_eq!(servers.len(), 2);
+        assert!(servers.iter().any(|server| server.id == "legacy_remote"));
+        let managed: toml::Table = fs::read_to_string(&managed_config)
+            .unwrap()
+            .parse()
+            .unwrap();
+        assert_eq!(managed["model"].as_str(), Some("managed-model"));
+        assert!(managed["mcp_servers"]
+            .get("customer_analysis_mcp")
+            .is_some());
+        assert!(dirs
+            .config_dir
+            .join(".managed-codex-mcp-imported-v1")
+            .is_file());
+
+        servers.retain(|server| server.id != "legacy_remote");
+        write_json(&mcp_servers_path(&dirs), &servers).unwrap();
+        migrate_managed_codex_mcp_servers(&dirs).unwrap();
+        assert!(!read_mcp_servers(&dirs)
+            .unwrap()
+            .iter()
+            .any(|server| server.id == "legacy_remote"));
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn managed_client_mcp_migration_imports_runtime_configs_only_once() {
+        let root = env::temp_dir().join(format!(
+            "agentdock-managed-client-mcp-migration-test-{}-{}",
+            std::process::id(),
+            OffsetDateTime::now_utc().unix_timestamp_nanos()
+        ));
+        let dirs = AgentDockDirs {
+            data_dir: root.join("data"),
+            config_dir: root.join("config"),
+            runtime_dir: root.join("data/runtime"),
+            clients_dir: root.join("data/clients"),
+            skills_dir: root.join("data/skills"),
+            mcp_dir: root.join("data/mcp"),
+            backups_dir: root.join("data/backups"),
+            managed_configs_dir: root.join("config/managed-configs"),
+        };
+        ensure_dirs(&dirs).unwrap();
+        let unified = McpServerRecord {
+            id: "customer_analysis_mcp".to_string(),
+            name: "customer_analysis_mcp".to_string(),
+            description: String::new(),
+            homepage: String::new(),
+            docs: String::new(),
+            tags: Vec::new(),
+            transport: "http".to_string(),
+            command: "https://mcp.example.com/customer-analysis".to_string(),
+            args: Vec::new(),
+            env: BTreeMap::new(),
+            headers: BTreeMap::new(),
+            cwd: String::new(),
+            extra: BTreeMap::new(),
+            apps: vec![
+                "claude-code".to_string(),
+                "grok".to_string(),
+                "openclaw".to_string(),
+                "hermes".to_string(),
+            ],
+            enabled: true,
+            updated_at: now_rfc3339(),
+        };
+        write_json(&mcp_servers_path(&dirs), &vec![unified]).unwrap();
+
+        let claude = dirs.managed_configs_dir.join("claude-code/.claude.json");
+        let grok = dirs.managed_configs_dir.join("grok/config.toml");
+        let openclaw = dirs.managed_configs_dir.join("openclaw/provider.json");
+        let hermes = dirs.clients_dir.join("hermes/home/config.yaml");
+        for path in [&claude, &grok, &openclaw, &hermes] {
+            fs::create_dir_all(path.parent().unwrap()).unwrap();
+        }
+        fs::write(
+            &claude,
+            r#"{"theme":"managed","mcpServers":{"claude-legacy":{"command":"npx","args":["claude-legacy"]}}}"#,
+        )
+        .unwrap();
+        fs::write(
+            &grok,
+            "theme = \"managed\"\n\n[mcp_servers.grok-legacy]\ncommand = \"npx\"\nargs = [\"grok-legacy\"]\n",
+        )
+        .unwrap();
+        fs::write(
+            &openclaw,
+            r#"{ theme: "managed", mcp: { servers: {
+              "openclaw-legacy": { url: "https://mcp.example.com/openclaw", transport: "streamable-http" },
+            } } }"#,
+        )
+        .unwrap();
+        fs::write(
+            &hermes,
+            "theme: managed\nmcp_servers:\n  hermes-legacy:\n    command: npx\n    args: [hermes-legacy]\n",
+        )
+        .unwrap();
+
+        migrate_managed_mcp_servers(&dirs).unwrap();
+        let mut servers = read_mcp_servers(&dirs).unwrap();
+        for id in [
+            "customer_analysis_mcp",
+            "claude-legacy",
+            "grok-legacy",
+            "openclaw-legacy",
+            "hermes-legacy",
+        ] {
+            assert!(servers.iter().any(|server| server.id == id), "{id}");
+        }
+        assert!(dirs
+            .config_dir
+            .join(".managed-client-mcp-imported-v2")
+            .is_file());
+
+        let claude_value: serde_json::Value =
+            serde_json::from_str(&fs::read_to_string(&claude).unwrap()).unwrap();
+        assert!(claude_value["mcpServers"]
+            .get("customer_analysis_mcp")
+            .is_some());
+        let openclaw_value: serde_json::Value =
+            serde_json::from_str(&fs::read_to_string(&openclaw).unwrap()).unwrap();
+        assert!(openclaw_value["mcp"]["servers"]
+            .get("customer_analysis_mcp")
+            .is_some());
+        assert!(openclaw_value.get("mcpServers").is_none());
+
+        servers.retain(|server| server.id != "claude-legacy");
+        write_json(&mcp_servers_path(&dirs), &servers).unwrap();
+        migrate_managed_mcp_servers(&dirs).unwrap();
+        assert!(!read_mcp_servers(&dirs)
+            .unwrap()
+            .iter()
+            .any(|server| server.id == "claude-legacy"));
         fs::remove_dir_all(root).unwrap();
     }
 
