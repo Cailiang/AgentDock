@@ -10019,7 +10019,7 @@ fn fallback_models(app_id: &str) -> Vec<String> {
         "claude-code" | "claude-desktop" => {
             &["claude-sonnet-5", "claude-opus-4-8", "claude-haiku-4-5"]
         }
-        "antigravity" => &["gemini-3.5-pro", "gemini-3.5-flash", "gemini-3.1-pro"],
+        "antigravity" => &["gemini-3.6-flash", "gemini-3.5-pro", "gemini-3.5-flash"],
         "grok" => &[
             "grok-4.5",
             "grok-build",
@@ -10695,7 +10695,7 @@ fn ensure_v1_url(url: &str) -> String {
 }
 
 fn default_gemini_model() -> String {
-    "gemini-3.5-pro".to_string()
+    "gemini-3.6-flash".to_string()
 }
 
 fn default_codex_model() -> String {
@@ -11324,6 +11324,13 @@ requires_openai_auth = true"#;
     fn grok_fallback_models_include_grok_4_5_first() {
         let models = fallback_models("grok");
         assert_eq!(models.first().map(String::as_str), Some("grok-4.5"));
+    }
+
+    #[test]
+    fn antigravity_defaults_to_gemini_3_6_flash() {
+        let models = fallback_models("antigravity");
+        assert_eq!(models.first().map(String::as_str), Some("gemini-3.6-flash"));
+        assert_eq!(default_gemini_model(), "gemini-3.6-flash");
     }
 
     #[test]
