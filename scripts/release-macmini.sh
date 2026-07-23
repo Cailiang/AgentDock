@@ -70,7 +70,7 @@ LOCAL_VERSION="$(/usr/libexec/PlistBuddy -c 'Print :CFBundleShortVersionString' 
 lipo "$APP_PATH/Contents/MacOS/agentdock" -verify_arch arm64 x86_64
 hdiutil verify "$DMG_PATH" >/dev/null
 DMG_SHA256="$(shasum -a 256 "$DMG_PATH" | awk '{print $1}')"
-REMOTE_DIR="Library/Caches/com.shuzilm.agentdock/releases/${VERSION}-$(date +%Y%m%d%H%M%S)"
+REMOTE_DIR="Library/Caches/com.agentdock.desktop/releases/${VERSION}-$(date +%Y%m%d%H%M%S)"
 REMOTE_DMG="${REMOTE_DIR}/$(basename "$DMG_PATH")"
 
 printf 'Uploading AgentDock %s to %s...\n' "$VERSION" "$SSH_TARGET"
@@ -133,7 +133,7 @@ staged_version="$(/usr/libexec/PlistBuddy -c 'Print :CFBundleShortVersionString'
 /usr/bin/lipo "$STAGE_PATH/Contents/MacOS/agentdock" -verify_arch arm64 x86_64
 /usr/bin/xattr -dr com.apple.quarantine "$STAGE_PATH" 2>/dev/null || true
 
-/usr/bin/osascript -e 'tell application id "com.shuzilm.agentdock" to quit' >/dev/null 2>&1 || true
+/usr/bin/osascript -e 'tell application id "com.agentdock.desktop" to quit' >/dev/null 2>&1 || true
 for _ in {1..50}; do
   /usr/bin/pgrep -f "$APP_PATH/Contents/MacOS/agentdock" >/dev/null 2>&1 || break
   /bin/sleep 0.2

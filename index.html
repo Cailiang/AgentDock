@@ -1138,7 +1138,7 @@
       const cached = JSON.parse(localStorage.getItem(STARTUP_CACHE_KEY) || "null");
       if (cached?.version === 2 && cached.data && Date.now() - Number(cached.savedAt || 0) < 30 * 24 * 60 * 60 * 1000) startupCache = cached.data;
     } catch {}
-    const defaultSettings = { language: document.documentElement.lang || "zh-CN", theme: cachedTheme, launchOnStartup: false, silentStartup: false, minimizeToTrayOnClose: false, preferredTerminal: "terminal", visibleClients: [...APP_ORDER], clientOrder: [...APP_ORDER], currentWorkingDirectory: "", recentWorkingDirectories: [], skillStorageLocation: "agentdock", skillSyncMethod: "copy" };
+    const defaultSettings = { language: document.documentElement.lang || "zh-CN", theme: cachedTheme, ccSwitchInitialCheckCompleted: false, launchOnStartup: false, silentStartup: false, minimizeToTrayOnClose: false, preferredTerminal: "terminal", visibleClients: [...APP_ORDER], clientOrder: [...APP_ORDER], currentWorkingDirectory: "", recentWorkingDirectories: [], skillStorageLocation: "agentdock", skillSyncMethod: "copy" };
 
     const state = {
       desktop: Boolean(window.__TAURI_INTERNALS__), status: startupCache?.status || null, settings: { ...defaultSettings, ...(startupCache?.settings || {}), language: defaultSettings.language, theme: defaultSettings.theme }, ready: startupCache?.ready || null, providers: startupCache?.providers || [], skills: startupCache?.skills || [], mcpServers: startupCache?.mcpServers || [], softwareCatalog: startupCache?.softwareCatalog || [], appUpdate: null, appUpdateChecking: false, appUpdateInstalling: false, backgroundRefreshing: false,
@@ -1520,20 +1520,25 @@
       try { if (fingerprint) localStorage.setItem(CC_SWITCH_IMPORT_DISMISS_KEY, fingerprint); } catch {}
     }
     function ccSwitchInitialCheckCompleted() {
+      if (state.settings?.ccSwitchInitialCheckCompleted) return true;
+      if (state.providers.some((provider) => provider.id?.startsWith("cc-switch-"))) return true;
       try {
         if (localStorage.getItem(CC_SWITCH_INITIAL_CHECK_KEY) === "true") return true;
-        if (localStorage.getItem(CC_SWITCH_IMPORT_DISMISS_KEY)) { rememberCcSwitchInitialCheck(); return true; }
+        if (localStorage.getItem(CC_SWITCH_IMPORT_DISMISS_KEY)) return true;
         return false;
       } catch { return false; }
     }
-    function rememberCcSwitchInitialCheck() {
+    async function rememberCcSwitchInitialCheck() {
       try { localStorage.setItem(CC_SWITCH_INITIAL_CHECK_KEY, "true"); } catch {}
+      if (state.settings && !state.settings.ccSwitchInitialCheckCompleted) {
+        await queueSettingsSave({ ccSwitchInitialCheckCompleted: true });
+      }
     }
     async function checkCcSwitchImport({ force = false } = {}) {
       if (state.ccSwitchImportChecking) return;
       state.ccSwitchImportChecking = true; renderCcSwitchImportStatus();
       try {
-        const detection = await call("detect_cc_switch_config"); rememberCcSwitchInitialCheck(); state.ccSwitchImport = detection; renderCcSwitchImportStatus();
+        const detection = await call("detect_cc_switch_config"); await rememberCcSwitchInitialCheck(); state.ccSwitchImport = detection; renderCcSwitchImportStatus();
         if (!detection.available) { if (force) notify(tr("未检测到 cc-switch 供应商配置", "未检测到 cc-switch 供应商配置")); return; }
         if (!force && ccSwitchImportWasDismissed(detection.fingerprint)) return;
         const apps = ccSwitchImportApps(detection);
@@ -2644,7 +2649,7 @@
     async function boot() {
       applyAppearance(); renderAll(); addLog("info", state.desktop ? "正在连接 AgentDock 本机服务" : "已进入浏览器交互预览模式");
       await new Promise((resolve) => requestAnimationFrame(() => resolve()));
-      try { await loadAll({ quiet: true }); addLog("ok", `AgentDock ${state.status.appVersion} 已启动`); startAppUpdateChecks(); if (!ccSwitchInitialCheckCompleted()) { rememberCcSwitchInitialCheck(); void checkCcSwitchImport(); } }
+      try { await loadAll({ quiet: true }); addLog("ok", `AgentDock ${state.status.appVersion} 已启动`); startAppUpdateChecks(); const ccSwitchChecked = ccSwitchInitialCheckCompleted(); await rememberCcSwitchInitialCheck(); if (!ccSwitchChecked) void checkCcSwitchImport(); }
       catch (error) { const message = errorText(error); document.getElementById("backend-state").className = "badge danger"; document.getElementById("backend-state").innerHTML = `<i data-lucide="circle-x"></i>${tr("本机服务连接失败", "本机服务连接失败")}`; addLog("error", message); notify(message, "error"); refreshIcons(); }
     }
     boot();

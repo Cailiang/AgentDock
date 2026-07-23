@@ -91,6 +91,7 @@ struct SelectedAppUpdate {
 pub struct AppSettings {
     language: String,
     theme: String,
+    cc_switch_initial_check_completed: bool,
     launch_on_startup: bool,
     silent_startup: bool,
     minimize_to_tray_on_close: bool,
@@ -112,6 +113,7 @@ impl Default for AppSettings {
         Self {
             language: "zh-CN".to_string(),
             theme: "system".to_string(),
+            cc_switch_initial_check_completed: false,
             launch_on_startup: false,
             silent_startup: false,
             minimize_to_tray_on_close: false,
@@ -7555,9 +7557,31 @@ fn app_settings_path(dirs: &AgentDockDirs) -> PathBuf {
 }
 
 fn read_app_settings(dirs: &AgentDockDirs) -> Result<AppSettings, String> {
-    let settings: AppSettings =
-        read_json_or_seed(&app_settings_path(dirs), AppSettings::default())?;
-    Ok(normalize_app_settings(settings))
+    let path = app_settings_path(dirs);
+    if !path.exists() {
+        let settings = normalize_app_settings(AppSettings::default());
+        write_json(&path, &settings)?;
+        return Ok(settings);
+    }
+
+    let raw = fs::read_to_string(&path).map_err(|err| format!("读取配置失败: {}", err))?;
+    let (settings, migrated) = decode_app_settings(&raw)?;
+    if migrated {
+        write_json(&path, &settings)?;
+    }
+    Ok(settings)
+}
+
+fn decode_app_settings(raw: &str) -> Result<(AppSettings, bool), String> {
+    let value: serde_json::Value =
+        serde_json::from_str(raw).map_err(|err| format!("解析配置失败: {}", err))?;
+    let migrated = value.get("ccSwitchInitialCheckCompleted").is_none();
+    let mut settings: AppSettings =
+        serde_json::from_value(value).map_err(|err| format!("解析配置失败: {}", err))?;
+    if migrated {
+        settings.cc_switch_initial_check_completed = true;
+    }
+    Ok((normalize_app_settings(settings), migrated))
 }
 
 fn normalize_app_settings(mut settings: AppSettings) -> AppSettings {
@@ -10413,6 +10437,24 @@ mod tests {
         assert_eq!(settings.visible_clients, vec!["codex"]);
         assert_eq!(settings.skill_storage_location, "agentdock");
         assert_eq!(settings.skill_sync_method, "copy");
+    }
+
+    #[test]
+    fn migrates_legacy_settings_without_repeating_cc_switch_detection() {
+        let mut legacy = serde_json::to_value(AppSettings::default()).unwrap();
+        legacy
+            .as_object_mut()
+            .unwrap()
+            .remove("ccSwitchInitialCheckCompleted");
+
+        let (settings, migrated) = decode_app_settings(&legacy.to_string()).unwrap();
+        assert!(migrated);
+        assert!(settings.cc_switch_initial_check_completed);
+
+        let current = serde_json::to_string(&AppSettings::default()).unwrap();
+        let (settings, migrated) = decode_app_settings(&current).unwrap();
+        assert!(!migrated);
+        assert!(!settings.cc_switch_initial_check_completed);
     }
 
     #[test]
