@@ -1172,7 +1172,16 @@
     if (!state.desktop) document.body.classList.add("preview-mode");
 
     const escapeHtml = (value) => String(value ?? "").replaceAll("&", "&amp;").replaceAll("<", "&lt;").replaceAll(">", "&gt;").replaceAll('"', "&quot;").replaceAll("'", "&#039;");
-    const refreshIcons = () => { localizeLiteralUi(); createIcons({ icons, attrs: { "stroke-width": 1.8 } }); };
+    let iconRefreshScheduled = false;
+    const refreshIcons = () => {
+      if (iconRefreshScheduled) return;
+      iconRefreshScheduled = true;
+      requestAnimationFrame(() => {
+        iconRefreshScheduled = false;
+        localizeLiteralUi();
+        createIcons({ icons, attrs: { "stroke-width": 1.8 } });
+      });
+    };
     const activeLocale = () => state.settings?.language || document.documentElement.lang || "zh-CN";
     const nowLabel = () => new Intl.DateTimeFormat(activeLocale(), { hour: "2-digit", minute: "2-digit", second: "2-digit" }).format(new Date());
     const errorText = (error) => typeof error === "string" ? error : error?.message || String(error);
@@ -1480,10 +1489,8 @@
     async function loadAll({ quiet = false } = {}) {
       state.backgroundRefreshing = true; renderHeader(); renderClients(); renderSourceSidebar(); refreshIcons();
       try {
-        const settings = await call("get_app_settings");
-        state.settings = settings; applyAppearance(); renderSettings(); renderSourceSidebar(); refreshIcons();
-        const status = await call("get_desktop_status");
-        state.status = status; renderHeader(); renderClients(); renderSourceSidebar(); refreshIcons();
+        const [settings, status] = await Promise.all([call("get_app_settings"), call("get_desktop_status")]);
+        state.settings = settings; state.status = status; applyAppearance(); renderSettings(); renderHeader(); renderClients(); renderSourceSidebar(); refreshIcons();
         const [ready, providers, skills, mcpServers, softwareCatalog, usageStats] = await Promise.all([call("run_ready_check"), call("list_providers"), call("list_skills"), call("list_mcp_servers"), call("list_software_catalog"), call("get_usage_stats", { days: state.usageDays })]);
         Object.assign(state, { ready, providers, skills, mcpServers, softwareCatalog, usageStats });
         applyAppearance();
