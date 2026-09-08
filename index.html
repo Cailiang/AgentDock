@@ -1063,7 +1063,8 @@
     const APP_META = {
       "claude-code": { name: "Claude Code", short: "CC", logo: "/client-logos/claude-code.svg", autoInstall: true },
       "claude-desktop": { name: "Claude Desktop", short: "CD", logo: "/client-logos/claude-desktop.svg", autoInstall: false },
-      codex: { name: "Codex", short: "CX", logo: "/client-logos/codex.svg", autoInstall: true },
+      codex: { name: "Codex CLI", short: "CX", logo: "/client-logos/codex.svg", autoInstall: true },
+      "codex-desktop": { name: "Codex Desktop", short: "CD", logo: "/client-logos/codex.svg", autoInstall: false },
       antigravity: { name: "Antigravity", short: "AG", logo: "/client-logos/antigravity.svg", autoInstall: true },
       grok: { name: "Grok", short: "GK", logo: "/client-logos/grok.png", autoInstall: true },
       opencode: { name: "OpenCode", short: "OC", logo: "/client-logos/opencode.svg", autoInstall: true },
@@ -1072,6 +1073,7 @@
     };
     const DEFAULT_GEMINI_MODEL = "gemini-3.6-flash";
     const APP_ORDER = Object.keys(APP_META);
+    const MCP_APP_ORDER = APP_ORDER.filter((id) => id !== "codex-desktop");
     const AGENTS_SKILL_CLIENTS = new Set(["codex", "antigravity", "opencode"]);
     const SKILLS_CLI_CLIENTS = new Set(["claude-code", "codex", "antigravity", "grok", "opencode", "openclaw", "hermes"]);
     const VIEW_META = {
@@ -1236,6 +1238,7 @@
       hermes: COMMON_PRESETS
     };
     PRESETS["claude-desktop"] = PRESETS["claude-code"].filter((preset) => preset.id !== "claude-official");
+    PRESETS["codex-desktop"] = PRESETS.codex;
     for (const appId of ["opencode", "openclaw", "hermes"]) {
       PRESETS[appId] = PRESETS.codex.filter((preset) => preset.id !== "openai-official");
     }
@@ -1311,7 +1314,7 @@
     const mock = {
       status: {
         appVersion: "0.1.21", platform: "browser-preview", dataDir: "/AgentDock/AgentDock", configDir: "/AgentDock/config", homeDir: "/Users/demo", managedRuntimeReady: true,
-        clients: APP_ORDER.map((id) => { const installed = ["codex", "claude-desktop", "grok", "hermes"].includes(id); return { id, name: APP_META[id].name, installed, version: installed ? id === "codex" ? "0.91.0" : "detected" : null, executable: installed ? `/Applications/${id}` : null, configPath: installed ? `/AgentDock/${id}/config` : null, managedByAgentdock: id === "codex", customExecutable: false, desktopApp: id === "claude-desktop", detectionSource: id === "codex" ? "agentdock" : "path" }; })
+        clients: APP_ORDER.map((id) => { const installed = ["codex", "codex-desktop", "claude-desktop", "grok", "hermes"].includes(id); return { id, name: APP_META[id].name, installed, version: installed ? id === "codex" ? "0.91.0" : "detected" : null, executable: installed ? `/Applications/${id}` : null, configPath: installed ? `/AgentDock/${id}/config` : null, managedByAgentdock: id === "codex", customExecutable: false, desktopApp: ["codex-desktop", "claude-desktop"].includes(id), detectionSource: id === "codex" ? "agentdock" : "path" }; })
       },
       appUpdate: { supported: true, available: true, currentVersion: "0.1.21", latestVersion: "0.1.22", downloadSize: 12582912 },
       ccSwitchImport: { available: true, sourcePath: "~/.cc-switch/cc-switch.db", sourceKind: "SQLite", fingerprint: "browser-preview-cc-switch", providerCount: 4, appCounts: { "claude-code": 2, codex: 1, antigravity: 1 } },
@@ -1354,6 +1357,8 @@
     const nowLabel = () => new Intl.DateTimeFormat(activeLocale(), { hour: "2-digit", minute: "2-digit", second: "2-digit" }).format(new Date());
     const errorText = (error) => typeof error === "string" ? error : error?.message || String(error);
     const clientMeta = (id) => APP_META[id] || { name: id, short: id.slice(0, 2).toUpperCase(), logo: "/client-logos/codex.svg", autoInstall: false };
+    const providerClientId = (id) => id === "codex-desktop" ? "codex" : id;
+    const isCodexClient = (id) => providerClientId(id) === "codex";
     const selectedClient = () => state.status?.clients.find((client) => client.id === state.activeClient);
     const clientUsesWorkingDirectory = (client) => client?.id !== "claude-desktop" && !client?.desktopApp && !String(client?.executable || "").toLowerCase().endsWith(".app");
     const directoryName = (path) => cleanDisplayPath(path).split(/[\\/]/).filter(Boolean).at(-1) || cleanDisplayPath(path);
@@ -2204,12 +2209,13 @@
     function renderClientStage() {
       const stage = document.getElementById("client-stage"); const client = selectedClient(); const meta = clientMeta(state.activeClient);
       if (!client) { stage.innerHTML = `<div class="client-empty">${tr("正在检测客户端", "正在检测客户端")}</div>`; return; }
-      const providers = state.providers.filter((provider) => provider.enabledApps?.includes(state.activeClient));
+      const configClientId = providerClientId(state.activeClient);
+      const providers = state.providers.filter((provider) => provider.enabledApps?.includes(configClientId));
       const usableProviders = providers;
       const catalog = state.softwareCatalog.find((item) => item.clientId === client.id);
       const operation = clientOperation(client.id);
-      const currentProvider = usableProviders.find((provider) => provider.activeApps?.includes(state.activeClient));
-      const enabledMcp = state.mcpServers.filter((server) => server.enabled && server.apps?.includes(state.activeClient)).length;
+      const currentProvider = usableProviders.find((provider) => provider.activeApps?.includes(configClientId));
+      const enabledMcp = state.mcpServers.filter((server) => server.enabled && server.apps?.includes(configClientId)).length;
       const currentModel = currentProvider ? providerDefaultModel(currentProvider) || tr("跟随客户端", "跟随客户端") : tr("尚未配置", "尚未配置");
       const clientName = escapeHtml(meta.name);
       const canLocateExecutable = state.status?.platform === "windows";
@@ -2650,13 +2656,13 @@
     }
     function renderMcp() {
       const list = document.getElementById("mcp-list");
-      const counts = Object.fromEntries(APP_ORDER.map((app) => [app, state.mcpServers.filter((server) => server.enabled && server.apps.includes(app)).length]));
-      document.getElementById("mcp-summary").innerHTML = `<span class="mcp-summary-total">${trf("mcp.serverCount", "{count} 个服务器", { count: state.mcpServers.length })}</span><div class="mcp-counts">${APP_ORDER.map((app) => `<span class="mcp-count">${clientMeta(app).name}<strong>${counts[app]}</strong></span>`).join("")}</div>`;
+      const counts = Object.fromEntries(MCP_APP_ORDER.map((app) => [app, state.mcpServers.filter((server) => server.enabled && server.apps.includes(app)).length]));
+      document.getElementById("mcp-summary").innerHTML = `<span class="mcp-summary-total">${trf("mcp.serverCount", "{count} 个服务器", { count: state.mcpServers.length })}</span><div class="mcp-counts">${MCP_APP_ORDER.map((app) => `<span class="mcp-count">${clientMeta(app).name}<strong>${counts[app]}</strong></span>`).join("")}</div>`;
       const servers = state.mcpServers.filter((server) => contextMatches(server.name, server.id, server.description, server.tags?.join(" ")));
       list.innerHTML = servers.length ? servers.map((server) => {
         const detail = (server.id === "filesystem" ? tr(server.description, server.description) : server.description) || server.tags?.join(", ") || ""; const docs = server.docs || server.homepage || "";
         const name = escapeHtml(server.name || server.id);
-        return `<article class="mcp-row"><button class="mcp-inspect-trigger" data-action="inspect-mcp" data-id="${escapeHtml(server.id)}" aria-label="${trf("mcp.openTools", "查看 {name} 的工具列表", { name })}"><div class="mcp-copy"><div class="mcp-name-line"><strong>${name}</strong></div>${detail ? `<small title="${escapeHtml(detail)}">${escapeHtml(detail)}</small>` : ""}</div><i data-lucide="chevron-right"></i></button><div class="mcp-apps">${APP_ORDER.map((app) => { const active = server.enabled && server.apps.includes(app); return `<label class="mcp-app-toggle" title="${trf("mcp.toggleApp", "{action} {name}", { action: active ? tr("停用", "停用") : tr("启用", "启用"), name: clientMeta(app).name })}"><input type="checkbox" data-change="mcp-app" data-id="${escapeHtml(server.id)}" data-app="${app}" ${active ? "checked" : ""}>${clientLogo(app)}</label>`; }).join("")}</div><div class="mcp-row-actions">${docs ? `<button class="icon-btn" data-action="open-external" data-url="${escapeHtml(docs)}" title="${tr("打开文档", "打开文档")}" aria-label="${trf("mcp.openDocs", "打开 {name} 文档", { name })}"><i data-lucide="external-link"></i></button>` : ""}<button class="icon-btn" data-action="edit-mcp" data-id="${escapeHtml(server.id)}" title="${tr("编辑", "编辑")}" aria-label="${trf("provider.edit", "编辑 {name}", { name })}"><i data-lucide="pencil"></i></button><button class="icon-btn" data-action="delete-mcp" data-id="${escapeHtml(server.id)}" title="${tr("删除", "删除")}" aria-label="${trf("provider.delete", "删除 {name}", { name })}"><i data-lucide="trash-2"></i></button></div></article>`;
+        return `<article class="mcp-row"><button class="mcp-inspect-trigger" data-action="inspect-mcp" data-id="${escapeHtml(server.id)}" aria-label="${trf("mcp.openTools", "查看 {name} 的工具列表", { name })}"><div class="mcp-copy"><div class="mcp-name-line"><strong>${name}</strong></div>${detail ? `<small title="${escapeHtml(detail)}">${escapeHtml(detail)}</small>` : ""}</div><i data-lucide="chevron-right"></i></button><div class="mcp-apps">${MCP_APP_ORDER.map((app) => { const active = server.enabled && server.apps.includes(app); return `<label class="mcp-app-toggle" title="${trf("mcp.toggleApp", "{action} {name}", { action: active ? tr("停用", "停用") : tr("启用", "启用"), name: clientMeta(app).name })}"><input type="checkbox" data-change="mcp-app" data-id="${escapeHtml(server.id)}" data-app="${app}" ${active ? "checked" : ""}>${clientLogo(app)}</label>`; }).join("")}</div><div class="mcp-row-actions">${docs ? `<button class="icon-btn" data-action="open-external" data-url="${escapeHtml(docs)}" title="${tr("打开文档", "打开文档")}" aria-label="${trf("mcp.openDocs", "打开 {name} 文档", { name })}"><i data-lucide="external-link"></i></button>` : ""}<button class="icon-btn" data-action="edit-mcp" data-id="${escapeHtml(server.id)}" title="${tr("编辑", "编辑")}" aria-label="${trf("provider.edit", "编辑 {name}", { name })}"><i data-lucide="pencil"></i></button><button class="icon-btn" data-action="delete-mcp" data-id="${escapeHtml(server.id)}" title="${tr("删除", "删除")}" aria-label="${trf("provider.delete", "删除 {name}", { name })}"><i data-lucide="trash-2"></i></button></div></article>`;
       }).join("") : `<div class="empty"><div>${state.mcpServers.length ? tr("没有匹配的 MCP 服务器", "没有匹配的 MCP 服务器") : tr("还没有 MCP 服务器", "还没有 MCP 服务器")}</div><button class="btn primary" data-action="import-mcp"><i data-lucide="import"></i>${tr("导入已有配置", "导入已有配置")}</button></div>`;
     }
     function renderStats() {
@@ -3083,7 +3089,7 @@
     function renderPresetGrid() { document.getElementById("preset-grid").innerHTML = visiblePresets().map((preset) => `<button type="button" class="preset-option ${state.selectedPresetId === preset.id ? "active" : ""}" data-action="select-provider-preset" data-id="${preset.id}">${providerLogoMarkup(preset, "mini-logo")}<span>${escapeHtml(preset.name)}</span></button>`).join(""); refreshIcons(); }
 
     const CONFIG_FILENAMES = {
-      codex: ["auth.json", "config.toml"], "claude-code": ["", "settings.json"], "claude-desktop": ["", "settings.json"],
+      codex: ["auth.json", "config.toml"], "codex-desktop": ["auth.json", "config.toml"], "claude-code": ["", "settings.json"], "claude-desktop": ["", "settings.json"],
       antigravity: ["", "settings.json"], grok: ["", "config.toml"], opencode: ["", "opencode.json"], openclaw: ["", "openclaw.json"], hermes: ["", "provider.json"]
     };
     const configKeyPlaceholder = "${AGENTDOCK_API_KEY}";
@@ -3152,7 +3158,7 @@
     function generatedProviderConfig() {
       const form = document.getElementById("provider-form"); const app = state.activeClient; const official = configValue(form, "provider-type") === "official";
       const name = configValue(form, "provider-name", "custom"); const baseUrl = configValue(form, "provider-base-url"); const model = configValue(form, "provider-model", app === "antigravity" ? DEFAULT_GEMINI_MODEL : app === "grok" ? "grok-4.5" : app.startsWith("claude") ? "claude-sonnet-5" : "gpt-5.6-sol");
-      if (app === "codex") {
+      if (isCodexClient(app)) {
         const auth = official ? {} : { OPENAI_API_KEY: configKeyPlaceholder };
         const wireApi = configValue(form, "provider-api-format") === "chat-completions" ? "chat" : "responses";
         const config = official ? `model = ${JSON.stringify(model)}\n` : `model_provider = "custom"\nmodel = ${JSON.stringify(model)}\nmodel_reasoning_effort = "high"\n\n[model_providers.custom]\nname = ${JSON.stringify(name)}\nbase_url = ${JSON.stringify(baseUrl)}\nwire_api = ${JSON.stringify(wireApi)}\nenv_key = "OPENAI_API_KEY"\n`;
@@ -3193,7 +3199,7 @@
       if (!provider?.settingsConfig) return regenerateProviderConfig();
       try {
         const stored = JSON.parse(provider.settingsConfig);
-        if (state.activeClient === "codex") { form.elements["provider-auth-config"].value = JSON.stringify(stored.auth || {}, null, 2); form.elements["provider-main-config"].value = typeof stored.config === "string" ? stored.config : ""; }
+        if (isCodexClient(state.activeClient)) { form.elements["provider-auth-config"].value = JSON.stringify(stored.auth || {}, null, 2); form.elements["provider-main-config"].value = typeof stored.config === "string" ? stored.config : ""; }
         else if (state.activeClient === "grok") { form.elements["provider-auth-config"].value = ""; form.elements["provider-main-config"].value = typeof stored.config === "string" ? stored.config : ""; }
         else { form.elements["provider-auth-config"].value = ""; form.elements["provider-main-config"].value = JSON.stringify(stored, null, 2); if (state.activeClient.startsWith("claude")) loadClaudeFieldsFromSettings(stored); }
         setConfigEditState(true);
@@ -3218,7 +3224,7 @@
       if (parsed.model) {
         const options = [...document.getElementById("provider-model-options").options].map((option) => option.value).filter(Boolean);
         setModelOptions([...new Set([parsed.model, ...options])], parsed.model, trf("provider.importSource", "{format} 配置导入", { format: parsed.sourceFormat })); fields.push(tr("默认模型", "默认模型"));
-        if (["codex", "grok", "opencode", "openclaw", "hermes"].includes(state.activeClient)) form.elements["advanced-codex-model"].value = parsed.model;
+        if (isCodexClient(state.activeClient) || ["grok", "opencode", "openclaw", "hermes"].includes(state.activeClient)) form.elements["advanced-codex-model"].value = parsed.model;
         if (state.activeClient.startsWith("claude")) { setClaudeFallback(parsed.model); if (!form.elements["advanced-claude-sonnet"].value.trim()) setClaudeModelRow(CLAUDE_MODEL_ROWS[0], parsed.model); }
       }
       if (importedFormat && [...form.elements["provider-api-format"].options].some((option) => option.value === importedFormat)) {
@@ -3230,7 +3236,7 @@
     async function importProviderConfig(content) {
       const request = ++state.configImportRequest;
       try {
-        const parsed = await call("parse_provider_config", { appId: state.activeClient, content });
+        const parsed = await call("parse_provider_config", { appId: providerClientId(state.activeClient), content });
         if (request !== state.configImportRequest || document.getElementById("provider-editor").hidden) return;
         applyParsedProviderConfig(parsed);
       } catch (error) {
@@ -3239,7 +3245,7 @@
     }
     function collectProviderSettingsConfig() {
       const form = document.getElementById("provider-form"); const main = form.elements["provider-main-config"].value.trim();
-      if (state.activeClient === "codex") {
+      if (isCodexClient(state.activeClient)) {
         let auth; try { auth = JSON.parse(form.elements["provider-auth-config"].value || "{}"); } catch { throw new Error(tr("auth.json 不是有效 JSON", "auth.json 不是有效 JSON")); }
         if (!auth || Array.isArray(auth) || typeof auth !== "object") throw new Error(tr("auth.json 必须是 JSON 对象", "auth.json 必须是 JSON 对象"));
         if (!main) throw new Error(tr("config.toml 不能为空", "config.toml 不能为空"));
@@ -3321,7 +3327,7 @@
       form.elements["provider-name"].value = preset.id === "custom" ? "" : preset.name;
       form.elements["provider-base-url"].value = preset.baseUrl;
       setModelOptions(preset.model ? [preset.model] : [], preset.model, tr("正在读取供应商模型", "正在读取供应商模型")); form.elements["provider-api-format"].value = preset.format;
-      if (["codex", "grok"].includes(state.activeClient)) form.elements["advanced-codex-model"].value = preset.model || (state.activeClient === "grok" ? "grok-4.5" : "gpt-5.6-sol");
+      if (isCodexClient(state.activeClient) || state.activeClient === "grok") form.elements["advanced-codex-model"].value = preset.model || (state.activeClient === "grok" ? "grok-4.5" : "gpt-5.6-sol");
       if (state.activeClient.startsWith("claude")) applyClaudeMapping(claudePresetMapping(preset));
       updateProviderFormPresentation(preset); renderPresetGrid(); regenerateProviderConfig();
     }
@@ -3379,13 +3385,14 @@
       const form = document.getElementById("provider-form"); const official = form.elements["provider-type"].value === "official";
       if (!form.reportValidity()) throw new Error(official ? tr("请填写供应商名称", "请填写供应商名称") : tr("请完整填写供应商名称、请求地址和 API Key", "请完整填写供应商名称、请求地址和 API Key"));
       const old = state.providers.find((provider) => provider.id === state.editingProviderId); const preset = findPreset(form.elements["provider-preset-id"].value); const isClaude = state.activeClient.startsWith("claude"); const model = isClaude ? claudeInputModel("advanced-claude-fallback", "advanced-claude-fallback-1m") : form.elements["provider-model"].value.trim();
-      return { id: form.elements["provider-id"].value || null, name: form.elements["provider-name"].value.trim(), notes: form.elements["provider-notes"].value.trim(), websiteUrl: old?.websiteUrl || preset?.website || "", presetId: form.elements["provider-preset-id"].value, providerType: form.elements["provider-type"].value, baseUrl: form.elements["provider-base-url"].value.trim(), apiKey: form.elements["provider-api-key"].value.trim() || null, apiFormat: form.elements["provider-api-format"].value, settingsConfig: collectProviderSettingsConfig(), enabledApps: [state.activeClient], activeApps: [...new Set([...(old?.activeApps || []).filter((app) => app !== state.activeClient), state.activeClient])], codexModel: state.activeClient !== "antigravity" ? model : form.elements["advanced-codex-model"].value.trim(), geminiModel: state.activeClient === "antigravity" ? model : old?.geminiModel || DEFAULT_GEMINI_MODEL, claudeSonnetModel: claudeInputModel("advanced-claude-sonnet", "advanced-claude-sonnet-1m"), claudeHaikuModel: configValue(form, "advanced-claude-haiku"), claudeOpusModel: claudeInputModel("advanced-claude-opus", "advanced-claude-opus-1m"), active: true };
+      const configClientId = providerClientId(state.activeClient);
+      return { id: form.elements["provider-id"].value || null, name: form.elements["provider-name"].value.trim(), notes: form.elements["provider-notes"].value.trim(), websiteUrl: old?.websiteUrl || preset?.website || "", presetId: form.elements["provider-preset-id"].value, providerType: form.elements["provider-type"].value, baseUrl: form.elements["provider-base-url"].value.trim(), apiKey: form.elements["provider-api-key"].value.trim() || null, apiFormat: form.elements["provider-api-format"].value, settingsConfig: collectProviderSettingsConfig(), enabledApps: [configClientId], activeApps: [...new Set([...(old?.activeApps || []).filter((app) => app !== configClientId), configClientId])], codexModel: state.activeClient !== "antigravity" ? model : form.elements["advanced-codex-model"].value.trim(), geminiModel: state.activeClient === "antigravity" ? model : old?.geminiModel || DEFAULT_GEMINI_MODEL, claudeSonnetModel: claudeInputModel("advanced-claude-sonnet", "advanced-claude-sonnet-1m"), claudeHaikuModel: configValue(form, "advanced-claude-haiku"), claudeOpusModel: claudeInputModel("advanced-claude-opus", "advanced-claude-opus-1m"), active: true };
     }
     async function saveProvider() {
-      hideProviderError(); const appId = state.activeClient; const saved = await call("save_provider", { input: providerInput() });
+      hideProviderError(); const clientId = state.activeClient; const appId = providerClientId(clientId); const saved = await call("save_provider", { input: providerInput() });
       const provider = await call("activate_provider", { providerId: saved.id, appId });
       const applied = await call("apply_provider_config", { providerId: provider.id, appId });
-      addLog("ok", trf("provider.appliedFiles", "{client} 已使用供应商 {provider}，写入 {count} 个配置文件", { client: clientMeta(appId).name, provider: provider.name, count: applied.writtenFiles.length }));
+      addLog("ok", trf("provider.appliedFiles", "{client} 已使用供应商 {provider}，写入 {count} 个配置文件", { client: clientMeta(clientId).name, provider: provider.name, count: applied.writtenFiles.length }));
       notify(trf("provider.added", "{name} 已添加并启用", { name: provider.name })); closeProviderEditor(); commitActiveProvider(provider, appId);
     }
 
@@ -3578,7 +3585,7 @@
       if (action === "reset-provider-config") { state.providerFormDirty = true; regenerateProviderConfig(); notify(tr("action.configRegenerated", "配置文件已从表单重新生成")); return; }
       if (action === "save-provider") return withBusy(button, saveProvider);
       if (action === "edit-provider") return openProviderEditor(state.providers.find((provider) => provider.id === id));
-      if (action === "activate-provider") return withBusy(button, async () => { const appId = state.activeClient; const provider = await call("activate_provider", { providerId: id, appId }); await call("apply_provider_config", { providerId: id, appId }); addLog("ok", trf("action.applied", "{provider} 已应用到 {client}", { provider: provider.name, client: clientMeta(appId).name })); notify(trf("action.using", "正在使用 {name}", { name: provider.name })); commitActiveProvider(provider, appId); });
+      if (action === "activate-provider") return withBusy(button, async () => { const clientId = state.activeClient; const appId = providerClientId(clientId); const provider = await call("activate_provider", { providerId: id, appId }); await call("apply_provider_config", { providerId: id, appId }); addLog("ok", trf("action.applied", "{provider} 已应用到 {client}", { provider: provider.name, client: clientMeta(clientId).name })); notify(trf("action.using", "正在使用 {name}", { name: provider.name })); commitActiveProvider(provider, appId); });
       if (action === "test-provider") return withBusy(button, async () => { const result = await call("test_provider", { providerId: id }); addLog(result.ok ? "ok" : "warn", `${result.message} (${result.latencyMs}ms)`); notify(tr(result.message, result.message), result.ok ? "ok" : "error"); });
       if (action === "delete-provider") { const provider = state.providers.find((item) => item.id === id); const name = provider?.name || id; if (!await confirmAction(tr("confirm.deleteProvider", "删除供应商"), trf("confirm.deleteProviderMessage", "确定删除“{name}”？已写入客户端的配置不会自动清空。", { name }))) return; return withBusy(button, async () => { const result = await call("delete_provider", { providerId: id }); state.providers = state.providers.filter((item) => item.id !== id); state.diagnostics = null; persistStartupCache(); renderAll(); addLog("warn", result.message); notify(trf("action.providerDeleted", "{name} 已删除", { name })); refreshProviderReadyState(); }); }
       if (action === "install-skill") return withBusy(button, async () => { const current = state.skills.find((item) => item.id === id); const skill = await call("install_skill", { input: { id: current?.name || id, apps: current?.apps?.length ? current.apps : ["codex"] } }); await refreshInstalledSkills(); notify(trf("action.installed", "{name} 已安装", { name: skill.name })); });

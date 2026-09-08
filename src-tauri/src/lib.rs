@@ -1436,10 +1436,10 @@ fn set_custom_client_executable(
         .map(str::trim)
         .filter(|value| !value.is_empty())
     {
-        let path = validate_custom_client_executable(&client_id, value)?;
+        let target = validate_custom_client_executable(&client_id, value)?;
         settings
             .custom_client_executables
-            .insert(client_id.clone(), display_path(&path));
+            .insert(client_id.clone(), target);
     } else {
         settings.custom_client_executables.remove(&client_id);
     }
@@ -1453,13 +1453,14 @@ fn set_custom_client_executable(
         .ok_or_else(|| "未找到客户端".to_string())
 }
 
-fn validate_custom_client_executable(client_id: &str, value: &str) -> Result<PathBuf, String> {
+fn validate_custom_client_executable(client_id: &str, value: &str) -> Result<String, String> {
     let path = PathBuf::from(value);
     if !path.is_absolute() {
         return Err("客户端可执行文件必须使用绝对路径".to_string());
     }
-    if !path.is_file() {
-        return Err("所选客户端可执行文件不存在".to_string());
+    #[cfg(windows)]
+    if let Some(candidate) = windows_appx_candidate_for_executable(&path) {
+        return Ok(candidate.executable);
     }
     let file_name = path
         .file_stem()
@@ -1476,6 +1477,7 @@ fn validate_custom_client_executable(client_id: &str, value: &str) -> Result<Pat
         .unwrap_or_default();
     let manual_names: &[&str] = match client_id {
         "claude-desktop" => &["claude"],
+        "codex-desktop" => &["codex"],
         "antigravity" => &["antigravity"],
         _ => &[],
     };
@@ -1493,7 +1495,10 @@ fn validate_custom_client_executable(client_id: &str, value: &str) -> Result<Pat
             client_spec(client_id)?.name
         ));
     }
-    Ok(path)
+    if !path.is_file() {
+        return Err("所选客户端可执行文件不存在".to_string());
+    }
+    Ok(display_path(&path))
 }
 
 #[tauri::command]
@@ -1729,7 +1734,7 @@ fn parse_json_provider_config(
                 ("model", &["env", "GEMINI_MODEL"]),
             ],
         ),
-        "codex" => {
+        "codex" | "codex-desktop" => {
             apply_json_paths(
                 result,
                 value,
@@ -1909,7 +1914,7 @@ fn parse_toml_provider_config(
         }
     }
 
-    if app_id == "codex" {
+    if matches!(app_id, "codex" | "codex-desktop") {
         if let Some(model) = root.get("model").and_then(toml::Value::as_str) {
             apply_imported_entry(result, "model", model);
         }
@@ -2941,7 +2946,7 @@ fn run_ready_check_inner() -> Result<ReadyCheck, String> {
 
     if !clients
         .iter()
-        .any(|client| client.id == "codex" && client.installed)
+        .any(|client| matches!(client.id.as_str(), "codex" | "codex-desktop") && client.installed)
     {
         blockers.push("Codex 尚未安装".to_string());
     }
@@ -4202,7 +4207,7 @@ fn apply_provider_for_app(
     fs::create_dir_all(&backup_dir).map_err(|err| format!("创建备份目录失败: {}", err))?;
 
     let (relative_path, content, env_content) = match app_id {
-        "codex" => (
+        "codex" | "codex-desktop" => (
             "codex/config.toml".to_string(),
             custom_settings
                 .as_ref()
@@ -4282,7 +4287,7 @@ fn apply_provider_for_app(
         _ => return Err("不支持的客户端".to_string()),
     };
 
-    if app_id == "codex" {
+    if matches!(app_id, "codex" | "codex-desktop") {
         let auth = codex_auth_for_provider(custom_settings.as_ref(), &api_key);
         let managed_dir = dirs.managed_configs_dir.join("codex");
         let mut written_files = write_codex_config_pair(
@@ -4623,10 +4628,11 @@ fn provider_is_active_for_diagnostics(
     provider: &ProviderProfile,
     installed_client_ids: &HashSet<String>,
 ) -> bool {
-    provider
-        .active_apps
-        .iter()
-        .any(|app| installed_client_ids.contains(app))
+    provider.active_apps.iter().any(|app| {
+        installed_client_ids
+            .iter()
+            .any(|client_id| provider_config_client_id(client_id) == provider_config_client_id(app))
+    })
 }
 
 fn diagnostic_check(
@@ -4739,16 +4745,17 @@ fn launch_client_inner(
         None
     };
 
+    let provider_app_id = provider_config_client_id(&client_id);
     let active_provider = list_providers_inner()?.into_iter().find(|provider| {
         provider
             .active_apps
             .iter()
-            .any(|active_app| active_app == &client_id)
+            .any(|active_app| active_app == provider_app_id)
     });
     let environment = match active_provider.as_ref() {
         Some(provider) => {
-            ensure_provider_launch_config(&dirs, &client_id, provider)?;
-            provider_launch_environment(&dirs, &client_id, provider)?
+            ensure_provider_launch_config(&dirs, provider_app_id, provider)?;
+            provider_launch_environment(&dirs, provider_app_id, provider)?
         }
         None => BTreeMap::new(),
     };
@@ -4830,6 +4837,14 @@ fn validate_launch_request(client_id: &str, request_id: &str) -> Result<(), Stri
     Ok(())
 }
 
+fn provider_config_client_id(client_id: &str) -> &str {
+    if client_id == "codex-desktop" {
+        "codex"
+    } else {
+        client_id
+    }
+}
+
 fn client_uses_working_directory(client: &ClientStatus) -> bool {
     client.id != "claude-desktop" && !client.desktop_app
 }
@@ -4837,18 +4852,23 @@ fn client_uses_working_directory(client: &ClientStatus) -> bool {
 #[cfg(not(target_os = "macos"))]
 fn launch_desktop_client(target: &str) -> Result<(), String> {
     #[cfg(windows)]
-    let mut command = if target.starts_with(r"shell:AppsFolder\") {
-        let mut command = Command::new("explorer.exe");
-        command.arg(target);
-        command
-    } else {
-        Command::new(target)
-    };
+    let mut command = windows_desktop_launch_command(target);
     #[cfg(not(windows))]
     let mut command = Command::new(target);
     traced_spawn(&mut command)
         .map(|_| ())
         .map_err(|error| format!("无法启动 {}: {}", target, error))
+}
+
+#[cfg(any(test, windows))]
+fn windows_desktop_launch_command(target: &str) -> Command {
+    if is_windows_appx_target(target) {
+        let mut command = Command::new("explorer.exe");
+        command.arg(target);
+        command
+    } else {
+        Command::new(target)
+    }
 }
 
 fn traced_spawn(command: &mut Command) -> Result<std::process::Child, std::io::Error> {
@@ -4898,12 +4918,10 @@ fn ensure_provider_launch_config(
     provider: &ProviderProfile,
 ) -> Result<(), String> {
     migrate_managed_mcp_servers(dirs)?;
-    if app_id == "codex" {
-        if provider.provider_type != "official" {
-            let codex_home = dirs.managed_configs_dir.join("codex");
-            if !codex_home_is_ready(&codex_home) {
-                apply_provider_for_app(provider, app_id)?;
-            }
+    if matches!(app_id, "codex" | "codex-desktop") && provider.provider_type != "official" {
+        let codex_home = dirs.managed_configs_dir.join("codex");
+        if !codex_home_is_ready(&codex_home) {
+            apply_provider_for_app(provider, app_id)?;
         }
     }
     if app_id == "antigravity" && provider.provider_type != "official" {
@@ -5033,7 +5051,11 @@ fn provider_launch_environment(
 
     let materialized_settings = materialized_provider_settings(provider, app_id, &api_key)?;
     if let Some(settings) = materialized_settings.as_ref() {
-        let section = if app_id == "codex" { "auth" } else { "env" };
+        let section = if matches!(app_id, "codex" | "codex-desktop") {
+            "auth"
+        } else {
+            "env"
+        };
         if let Some(values) = settings.get(section).and_then(serde_json::Value::as_object) {
             for (key, value) in values {
                 if let Some(value) = value.as_str() {
@@ -5044,7 +5066,7 @@ fn provider_launch_environment(
     }
 
     match app_id {
-        "codex" => {
+        "codex" | "codex-desktop" => {
             environment
                 .entry("OPENAI_API_KEY".to_string())
                 .or_insert(api_key);
@@ -9011,7 +9033,7 @@ fn sync_mcp_servers() -> Result<SyncResult, String> {
     sync_codex_mcp_projections(
         &home,
         &dirs.managed_configs_dir,
-        installed_apps.contains("codex"),
+        installed_apps.contains("codex") || installed_apps.contains("codex-desktop"),
         &servers,
         &mut written_files,
         &mut errors,
@@ -11502,13 +11524,43 @@ fn read_app_settings(dirs: &AgentDockDirs) -> Result<AppSettings, String> {
 fn decode_app_settings(raw: &str) -> Result<(AppSettings, bool), String> {
     let value: serde_json::Value =
         serde_json::from_str(raw).map_err(|err| format!("解析配置失败: {}", err))?;
-    let migrated = value.get("ccSwitchInitialCheckCompleted").is_none();
+    let mut migrated = value.get("ccSwitchInitialCheckCompleted").is_none();
     let mut settings: AppSettings =
         serde_json::from_value(value).map_err(|err| format!("解析配置失败: {}", err))?;
     if migrated {
         settings.cc_switch_initial_check_completed = true;
     }
-    Ok((normalize_app_settings(settings), migrated))
+    if !settings.client_order.iter().any(|id| id == "codex-desktop") {
+        settings.visible_clients.push("codex-desktop".to_string());
+        migrated = true;
+    }
+    let settings = normalize_app_settings(settings);
+    let reordered = settings.client_order != normalize_codex_client_order(&settings.client_order);
+    let mut settings = settings;
+    if reordered {
+        settings.client_order = normalize_codex_client_order(&settings.client_order);
+        settings.visible_clients = settings
+            .client_order
+            .iter()
+            .filter(|client| settings.visible_clients.contains(*client))
+            .cloned()
+            .collect();
+    }
+    Ok((settings, migrated || reordered))
+}
+
+fn normalize_codex_client_order(client_order: &[String]) -> Vec<String> {
+    let mut order = client_order
+        .iter()
+        .filter(|client| client.as_str() != "codex-desktop")
+        .cloned()
+        .collect::<Vec<_>>();
+    let insert_at = order
+        .iter()
+        .position(|client| client == "codex")
+        .map_or(order.len(), |index| index + 1);
+    order.insert(insert_at, "codex-desktop".to_string());
+    order
 }
 
 fn normalize_app_settings(mut settings: AppSettings) -> AppSettings {
@@ -11552,8 +11604,8 @@ fn normalize_app_settings(mut settings: AppSettings) -> AppSettings {
         .custom_client_executables
         .retain(|client_id, value| {
             supported_provider_apps().contains(&client_id.as_str())
-                && Path::new(value).is_absolute()
-                && Path::new(value).is_file()
+                && (cfg!(windows) && is_windows_appx_target(value)
+                    || Path::new(value).is_absolute() && Path::new(value).is_file())
         });
 
     let supported = supported_provider_apps();
@@ -11841,7 +11893,7 @@ fn validate_provider_settings_config(app_id: &str, raw: &str) -> Result<String, 
     if !settings.is_object() {
         return Err("配置文件内容必须是 JSON 对象".to_string());
     }
-    if app_id == "codex" {
+    if matches!(app_id, "codex" | "codex-desktop") {
         let config = settings
             .get("config")
             .and_then(serde_json::Value::as_str)
@@ -11922,7 +11974,7 @@ fn synchronize_provider_settings_value(
                 serde_json::Value::String(provider.gemini_model.clone()),
             );
         }
-        "codex" => {
+        "codex" | "codex-desktop" => {
             let config = root
                 .get("config")
                 .and_then(serde_json::Value::as_str)
@@ -12220,7 +12272,8 @@ fn detect_clients_with_inputs(
 
 fn client_detection_specs() -> Vec<(&'static str, &'static str, &'static [&'static str])> {
     vec![
-        ("codex", "Codex", &["codex"]),
+        ("codex", "Codex CLI", &["codex"]),
+        ("codex-desktop", "Codex Desktop", &[]),
         ("claude-code", "Claude Code", &["claude"]),
         (
             "claude-desktop",
@@ -12397,6 +12450,10 @@ fn detect_external_client_with_search_paths(
     platform_candidate: Option<&ExternalClientCandidate>,
     span: Option<&telemetry::SpanContext>,
 ) -> Option<ExternalClientCandidate> {
+    if let Some(candidate) = custom_executable.and_then(custom_windows_appx_candidate) {
+        return Some(candidate);
+    }
+
     if let Some(path) = custom_executable
         .map(Path::new)
         .filter(|path| path.is_file())
@@ -12417,6 +12474,10 @@ fn detect_external_client_with_search_paths(
         });
     }
 
+    if platform_candidate.is_some_and(|candidate| candidate.source == "windows-appx") {
+        return platform_candidate.cloned();
+    }
+
     if let Some(path) = executable_names
         .iter()
         .find_map(|name| find_executable_in_paths(name, &search_paths))
@@ -12432,7 +12493,11 @@ fn detect_external_client_with_search_paths(
     }
 
     if let Some(candidate) = platform_candidate {
-        return Some(candidate.clone());
+        let mut candidate = candidate.clone();
+        if !candidate.desktop_app && candidate.version.is_none() {
+            candidate.version = client_version_for_detection(&candidate.executable, span);
+        }
+        return Some(candidate);
     }
 
     #[cfg(target_os = "macos")]
@@ -12448,6 +12513,33 @@ fn detect_external_client_with_search_paths(
     }
 
     None
+}
+
+#[cfg(not(windows))]
+fn custom_windows_appx_candidate(_target: &str) -> Option<ExternalClientCandidate> {
+    None
+}
+
+#[cfg(windows)]
+fn custom_windows_appx_candidate(target: &str) -> Option<ExternalClientCandidate> {
+    if is_windows_appx_target(target) {
+        return Some(ExternalClientCandidate {
+            executable: target.to_string(),
+            version: None,
+            desktop_app: true,
+            source: "manual-appx".to_string(),
+            custom: true,
+        });
+    }
+    let path = Path::new(target);
+    if !path.is_absolute() {
+        return None;
+    }
+    windows_appx_candidate_for_executable(path).map(|mut candidate| {
+        candidate.source = "manual-appx".to_string();
+        candidate.custom = true;
+        candidate
+    })
 }
 
 fn client_version_for_detection(
@@ -12481,14 +12573,56 @@ fn platform_client_candidates() -> HashMap<String, ExternalClientCandidate> {
 
 #[cfg(windows)]
 fn platform_client_candidates() -> HashMap<String, ExternalClientCandidate> {
-    let mut candidates = windows_registry_client_candidates();
+    // Packaged apps may also register a physical WindowsApps executable. Prefer
+    // their AUMID so Windows activates them through the shell instead of CreateProcess.
+    let mut candidates = windows_appx_client_candidates();
+    for (client_id, candidate) in windows_registry_client_candidates() {
+        candidates.entry(client_id).or_insert(candidate);
+    }
     for (client_id, candidate) in windows_common_install_candidates() {
         candidates.entry(client_id).or_insert(candidate);
     }
-    for (client_id, candidate) in windows_appx_client_candidates() {
-        candidates.entry(client_id).or_insert(candidate);
+    if let Some(candidate) = windows_codex_desktop_cli_candidate() {
+        candidates.entry("codex".to_string()).or_insert(candidate);
     }
     candidates
+}
+
+#[cfg(windows)]
+fn windows_codex_desktop_cli_candidate() -> Option<ExternalClientCandidate> {
+    let local_app_data = env::var_os("LOCALAPPDATA").map(PathBuf::from)?;
+    let executable = find_windows_codex_desktop_cli(&local_app_data)?;
+    let executable = display_path(&executable);
+    Some(ExternalClientCandidate {
+        version: None,
+        executable,
+        desktop_app: false,
+        source: "codex-desktop-cli".to_string(),
+        custom: false,
+    })
+}
+
+#[cfg(any(test, windows))]
+fn find_windows_codex_desktop_cli(local_app_data: &Path) -> Option<PathBuf> {
+    let bin = local_app_data.join("OpenAI").join("Codex").join("bin");
+    let mut candidates = Vec::new();
+    let direct = bin.join("codex.exe");
+    if direct.is_file() {
+        candidates.push(direct);
+    }
+    candidates.extend(
+        fs::read_dir(&bin)
+            .ok()?
+            .flatten()
+            .map(|entry| entry.path().join("codex.exe"))
+            .filter(|path| path.is_file()),
+    );
+    candidates.into_iter().max_by(|left, right| {
+        let modified = |path: &Path| fs::metadata(path).and_then(|value| value.modified()).ok();
+        modified(left)
+            .cmp(&modified(right))
+            .then_with(|| left.cmp(right))
+    })
 }
 
 #[cfg(windows)]
@@ -12496,7 +12630,7 @@ fn windows_desktop_client_spec(
     client_id: &str,
 ) -> Option<(&'static [&'static str], &'static [&'static str])> {
     match client_id {
-        "codex" => Some((&["codex.exe"], &["Codex", "OpenAI Codex", "OpenAI/Codex"])),
+        "codex-desktop" => Some((&["codex.exe"], &["Codex", "OpenAI Codex"])),
         "claude-desktop" => Some((
             &["claude.exe", "claude-desktop.exe"],
             &["Claude", "Claude Desktop", "Anthropic/Claude"],
@@ -12524,7 +12658,7 @@ fn windows_registry_client_candidates() -> HashMap<String, ExternalClientCandida
     let mut candidates = HashMap::new();
 
     for root in &roots {
-        for client_id in ["codex", "claude-desktop", "opencode", "openclaw"] {
+        for client_id in ["codex-desktop", "claude-desktop", "opencode", "openclaw"] {
             let Some((executable_names, _)) = windows_desktop_client_spec(client_id) else {
                 continue;
             };
@@ -12625,7 +12759,7 @@ fn windows_client_id_from_display_name(display_name: &str) -> Option<&'static st
         .flat_map(char::to_lowercase)
         .collect::<String>();
     if normalized == "codex" || normalized.contains("openaicodex") {
-        Some("codex")
+        Some("codex-desktop")
     } else if normalized == "claude"
         || normalized.contains("claudedesktop")
         || normalized.contains("anthropicclaude")
@@ -12677,7 +12811,7 @@ fn windows_common_install_candidates() -> HashMap<String, ExternalClientCandidat
     let program_files = env::var_os("ProgramFiles").map(PathBuf::from);
     let program_files_x86 = env::var_os("ProgramFiles(x86)").map(PathBuf::from);
     let mut candidates = HashMap::new();
-    for client_id in ["codex", "claude-desktop", "opencode", "openclaw"] {
+    for client_id in ["codex-desktop", "claude-desktop", "opencode", "openclaw"] {
         let Some((_, folder_names)) = windows_desktop_client_spec(client_id) else {
             continue;
         };
@@ -12748,7 +12882,7 @@ fn windows_desktop_client_spec_for_test(
     client_id: &str,
 ) -> Option<(&'static [&'static str], &'static [&'static str])> {
     match client_id {
-        "codex" => Some((&["codex.exe"], &["Codex", "OpenAI Codex", "OpenAI/Codex"])),
+        "codex-desktop" => Some((&["codex.exe"], &["Codex", "OpenAI Codex"])),
         "claude-desktop" => Some((
             &["claude.exe", "claude-desktop.exe"],
             &["Claude", "Claude Desktop", "Anthropic/Claude"],
@@ -12762,21 +12896,75 @@ fn windows_desktop_client_spec_for_test(
     }
 }
 
-#[cfg(windows)]
+#[cfg(any(test, windows))]
 #[derive(Debug, Deserialize)]
 #[serde(rename_all = "camelCase")]
 struct WindowsAppxClient {
+    #[serde(default)]
+    display_name: String,
+    #[serde(default)]
     name: String,
+    #[serde(default)]
     publisher: String,
     family: String,
+    #[serde(default)]
     version: String,
     app_id: String,
+    #[serde(default)]
     executable: String,
 }
 
 #[cfg(windows)]
 fn windows_appx_client_candidates() -> HashMap<String, ExternalClientCandidate> {
-    let script = r#"$ErrorActionPreference='SilentlyContinue'; [Console]::OutputEncoding=[System.Text.UTF8Encoding]::new($false); $packages=@(); foreach($pattern in @('*Codex*','*OpenAI*','*Claude*','*Anthropic*','*OpenCode*','*OpenClaw*')) { $packages += @(Get-AppxPackage -Name $pattern) }; $items=@(); foreach($pkg in @($packages | Sort-Object PackageFullName -Unique)) { try { $manifest=Get-AppxPackageManifest -Package $pkg.PackageFullName -ErrorAction Stop; foreach($app in @($manifest.Package.Applications.Application)) { $items += [PSCustomObject]@{ name=[string]$pkg.Name; publisher=[string]$pkg.Publisher; family=[string]$pkg.PackageFamilyName; version=[string]$pkg.Version; appId=[string]$app.Id; executable=[string]$app.Executable } } } catch {} }; ConvertTo-Json -Compress -InputObject @($items)"#;
+    let script = r#"
+$ErrorActionPreference='SilentlyContinue'
+[Console]::OutputEncoding=[System.Text.UTF8Encoding]::new($false)
+$packages=@{}
+foreach($pkg in @(Get-AppxPackage)) {
+  $packages[[string]$pkg.PackageFamilyName]=$pkg
+}
+$items=@()
+$seen=@{}
+foreach($start in @(Get-StartApps)) {
+  $aumid=[string]$start.AppID
+  $separator=$aumid.IndexOf('!')
+  if($separator -lt 1) { continue }
+  $family=$aumid.Substring(0,$separator)
+  $appId=$aumid.Substring($separator+1)
+  $pkg=$packages[$family]
+  $items += [PSCustomObject]@{
+    displayName=[string]$start.Name
+    name=[string]$pkg.Name
+    publisher=[string]$pkg.Publisher
+    family=$family
+    version=[string]$pkg.Version
+    appId=$appId
+    executable=''
+  }
+  $seen[$aumid]=$true
+}
+foreach($pkg in @($packages.Values)) {
+  $identity="$($pkg.Name) $($pkg.PackageFamilyName) $($pkg.Publisher)"
+  if($identity -notmatch '(?i)codex|openai|claude|anthropic|opencode|openclaw') { continue }
+  try {
+    $manifest=Get-AppxPackageManifest -Package $pkg.PackageFullName -ErrorAction Stop
+    foreach($app in @($manifest.Package.Applications.Application)) {
+      $aumid="$($pkg.PackageFamilyName)!$($app.Id)"
+      if($seen.ContainsKey($aumid)) { continue }
+      $items += [PSCustomObject]@{
+        displayName=''
+        name=[string]$pkg.Name
+        publisher=[string]$pkg.Publisher
+        family=[string]$pkg.PackageFamilyName
+        version=[string]$pkg.Version
+        appId=[string]$app.Id
+        executable=[string]$app.Executable
+      }
+    }
+  } catch {}
+}
+ConvertTo-Json -Compress -InputObject @($items)
+"#;
     let mut command = Command::new("powershell.exe");
     command.args(["-NoProfile", "-NonInteractive", "-Command", script]);
     let Ok(output) = command_output_with_timeout_message(
@@ -12792,40 +12980,119 @@ fn windows_appx_client_candidates() -> HashMap<String, ExternalClientCandidate> 
     let Ok(records) = serde_json::from_slice::<Vec<WindowsAppxClient>>(&output.stdout) else {
         return HashMap::new();
     };
+    windows_appx_candidates_from_records(records)
+}
+
+#[cfg(any(test, windows))]
+fn windows_appx_candidates_from_records(
+    records: Vec<WindowsAppxClient>,
+) -> HashMap<String, ExternalClientCandidate> {
     let mut candidates = HashMap::new();
     for record in records {
         let identity = format!(
-            "{} {} {} {}",
-            record.name, record.publisher, record.family, record.executable
+            "{} {} {} {} {}",
+            record.display_name, record.name, record.publisher, record.family, record.executable
         );
-        let Some(client_id) = windows_client_id_from_display_name(&identity) else {
+        let Some(client_id) = windows_client_id_from_display_name(&record.display_name)
+            .or_else(|| windows_client_id_from_display_name(&identity))
+        else {
             continue;
         };
-        if record.family.trim().is_empty() || record.app_id.trim().is_empty() {
+        let Some(candidate) = windows_appx_candidate_from_record(record) else {
             continue;
-        }
-        candidates
-            .entry(client_id.to_string())
-            .or_insert_with(|| ExternalClientCandidate {
-                executable: format!(r"shell:AppsFolder\{}!{}", record.family, record.app_id),
-                version: (!record.version.trim().is_empty()).then_some(record.version),
-                desktop_app: true,
-                source: "windows-appx".to_string(),
-                custom: false,
-            });
+        };
+        candidates.entry(client_id.to_string()).or_insert(candidate);
     }
     candidates
 }
 
+#[cfg(windows)]
+fn windows_appx_candidate_for_executable(path: &Path) -> Option<ExternalClientCandidate> {
+    let script = r#"
+$ErrorActionPreference='SilentlyContinue'
+[Console]::OutputEncoding=[System.Text.UTF8Encoding]::new($false)
+$selected=[IO.Path]::GetFullPath($env:AGENTDOCK_CLIENT_EXECUTABLE)
+$items=@()
+foreach($pkg in @(Get-AppxPackage)) {
+  $root=[string]$pkg.InstallLocation
+  if([string]::IsNullOrWhiteSpace($root)) { continue }
+  $prefix=$root.TrimEnd('\')+'\'
+  if(!$selected.StartsWith($prefix,[StringComparison]::OrdinalIgnoreCase)) { continue }
+  try {
+    $manifest=Get-AppxPackageManifest -Package $pkg.PackageFullName -ErrorAction Stop
+    foreach($app in @($manifest.Package.Applications.Application)) {
+      $relative=[string]$app.Executable
+      if([string]::IsNullOrWhiteSpace($relative)) { continue }
+      $candidate=[IO.Path]::GetFullPath((Join-Path $root $relative))
+      if($selected.Equals($candidate,[StringComparison]::OrdinalIgnoreCase)) {
+        $items += [PSCustomObject]@{
+          displayName=''
+          name=[string]$pkg.Name
+          publisher=[string]$pkg.Publisher
+          family=[string]$pkg.PackageFamilyName
+          version=[string]$pkg.Version
+          appId=[string]$app.Id
+          executable=$relative
+        }
+      }
+    }
+  } catch {}
+}
+ConvertTo-Json -Compress -InputObject @($items)
+"#;
+    let mut command = Command::new("powershell.exe");
+    command
+        .args(["-NoProfile", "-NonInteractive", "-Command", script])
+        .env("AGENTDOCK_CLIENT_EXECUTABLE", path.as_os_str());
+    let output = command_output_with_timeout_message(
+        &mut command,
+        std::time::Duration::from_secs(5),
+        "读取 Windows 应用包超时",
+    )
+    .ok()?;
+    if !output.status.success() {
+        return None;
+    }
+    let records = serde_json::from_slice::<Vec<WindowsAppxClient>>(&output.stdout).ok()?;
+    records
+        .into_iter()
+        .find_map(windows_appx_candidate_from_record)
+}
+
+#[cfg(any(test, windows))]
+fn windows_appx_candidate_from_record(
+    record: WindowsAppxClient,
+) -> Option<ExternalClientCandidate> {
+    if record.family.trim().is_empty() || record.app_id.trim().is_empty() {
+        return None;
+    }
+    Some(ExternalClientCandidate {
+        executable: format!(r"shell:AppsFolder\{}!{}", record.family, record.app_id),
+        version: (!record.version.trim().is_empty()).then_some(record.version),
+        desktop_app: true,
+        source: "windows-appx".to_string(),
+        custom: false,
+    })
+}
+
+fn is_windows_appx_target(target: &str) -> bool {
+    let Some(aumid) = target.strip_prefix(r"shell:AppsFolder\") else {
+        return false;
+    };
+    let Some((family, app_id)) = aumid.split_once('!') else {
+        return false;
+    };
+    !family.trim().is_empty() && !app_id.trim().is_empty()
+}
+
 fn client_target_is_available(client: &ClientStatus) -> bool {
     client.executable.as_deref().is_some_and(|executable| {
-        client.desktop_app && executable.starts_with(r"shell:AppsFolder\")
-            || Path::new(executable).exists()
+        client.desktop_app && is_windows_appx_target(executable) || Path::new(executable).exists()
     })
 }
 
 fn custom_client_is_desktop_app(client_id: &str, path: &Path) -> bool {
-    if client_id == "claude-desktop" {
+    if matches!(client_id, "claude-desktop" | "codex-desktop") {
         return true;
     }
     #[cfg(target_os = "macos")]
@@ -12863,6 +13130,9 @@ fn client_command_search_paths_from_base(
     search_paths: &[PathBuf],
 ) -> Vec<PathBuf> {
     let mut paths = search_paths.to_vec();
+    if cfg!(windows) && client_id == "codex" {
+        paths.retain(|path| !is_windows_app_execution_alias_dir(path));
+    }
     if client_id == "grok" {
         if let Some(grok_bin) = dirs_home().map(|home| home.join(".grok/bin")) {
             paths.retain(|path| path != &grok_bin);
@@ -12870,6 +13140,11 @@ fn client_command_search_paths_from_base(
         }
     }
     paths
+}
+
+fn is_windows_app_execution_alias_dir(path: &Path) -> bool {
+    let normalized = path.to_string_lossy().replace('/', "\\").to_lowercase();
+    normalized.ends_with(r"\microsoft\windowsapps")
 }
 
 fn find_executable_in_paths(name: &str, paths: &[PathBuf]) -> Option<PathBuf> {
@@ -12899,7 +13174,7 @@ fn find_macos_client_app(id: &str) -> Option<PathBuf> {
 #[cfg(target_os = "macos")]
 fn find_macos_client_app_in_roots(id: &str, roots: &[PathBuf]) -> Option<PathBuf> {
     let app_names: &[&str] = match id {
-        "codex" => &["Codex.app"],
+        "codex-desktop" => &["Codex.app"],
         "claude-desktop" => &["Claude.app", "Claude Desktop.app"],
         "opencode" => &["OpenCode.app", "OpenCode Desktop.app"],
         "openclaw" => &["OpenClaw.app"],
@@ -13145,7 +13420,7 @@ fn client_user_config_dir(client_id: &str) -> Option<PathBuf> {
 
 fn client_user_config_dir_in(home: &Path, client_id: &str) -> Option<PathBuf> {
     let relative = match client_id {
-        "codex" => ".codex",
+        "codex" | "codex-desktop" => ".codex",
         "claude-code" => ".claude",
         "antigravity" => ".agy",
         "grok" => ".grok",
@@ -13197,7 +13472,11 @@ fn client_spec(client_id: &str) -> Result<ClientSpec, String> {
     match client_id {
         "codex" => Ok(ClientSpec {
             id: "codex",
-            name: "Codex",
+            name: "Codex CLI",
+        }),
+        "codex-desktop" => Ok(ClientSpec {
+            id: "codex-desktop",
+            name: "Codex Desktop",
         }),
         "claude-code" | "claude" => Ok(ClientSpec {
             id: "claude-code",
@@ -13944,7 +14223,7 @@ fn built_in_software_catalog() -> Vec<SoftwareCatalogSeed> {
         SoftwareCatalogSeed {
             id: "codex".to_string(),
             client_id: "codex".to_string(),
-            name: "Codex".to_string(),
+            name: "Codex CLI".to_string(),
             description: "OpenAI 官方终端编程代理，适合代码生成、修改和自动化任务。".to_string(),
             publisher: "OpenAI".to_string(),
             website_url: "https://github.com/openai/codex".to_string(),
@@ -14025,6 +14304,18 @@ fn built_in_software_catalog() -> Vec<SoftwareCatalogSeed> {
             description: "Anthropic 桌面客户端，AgentDock 可检测并同步 MCP 配置。".to_string(),
             publisher: "Anthropic".to_string(),
             website_url: "https://claude.ai/download".to_string(),
+            category: "桌面客户端".to_string(),
+            recommended: false,
+            install_supported: false,
+        },
+        SoftwareCatalogSeed {
+            id: "codex-desktop".to_string(),
+            client_id: "codex-desktop".to_string(),
+            name: "Codex Desktop".to_string(),
+            description: "OpenAI Codex 桌面客户端，与 Codex CLI 共享供应商和 MCP 配置。"
+                .to_string(),
+            publisher: "OpenAI".to_string(),
+            website_url: "https://openai.com/codex/".to_string(),
             category: "桌面客户端".to_string(),
             recommended: false,
             install_supported: false,
@@ -14251,6 +14542,7 @@ fn normalize_app_id(app: &str) -> Option<String> {
         "claude" | "claude-code" => "claude-code",
         "claude-desktop" => "claude-desktop",
         "codex" | "openai-codex" => "codex",
+        "codex-desktop" | "openai-codex-desktop" => "codex-desktop",
         "antigravity" | "antigravity-cli" | "gemini" | "gemini-cli" => "antigravity",
         "grok" | "grok-build" | "grokbuild" => "grok",
         "open-code" | "opencode" => "opencode",
@@ -14791,11 +15083,12 @@ fn default_providers() -> Vec<ProviderProfile> {
     Vec::new()
 }
 
-fn supported_provider_apps() -> [&'static str; 8] {
+fn supported_provider_apps() -> [&'static str; 9] {
     [
         "claude-code",
         "claude-desktop",
         "codex",
+        "codex-desktop",
         "antigravity",
         "grok",
         "opencode",
@@ -15333,6 +15626,84 @@ mod tests {
         let (settings, migrated) = decode_app_settings(&current).unwrap();
         assert!(!migrated);
         assert!(!settings.cc_switch_initial_check_completed);
+    }
+
+    #[test]
+    fn adds_codex_desktop_to_existing_client_settings_once() {
+        let mut previous = AppSettings::default();
+        previous
+            .client_order
+            .retain(|client| client != "codex-desktop");
+        previous
+            .visible_clients
+            .retain(|client| client != "codex-desktop");
+
+        let raw = serde_json::to_string(&previous).unwrap();
+        let (settings, migrated) = decode_app_settings(&raw).unwrap();
+        assert!(migrated);
+        assert!(settings
+            .client_order
+            .iter()
+            .any(|client| client == "codex-desktop"));
+        assert!(settings
+            .visible_clients
+            .iter()
+            .any(|client| client == "codex-desktop"));
+        let codex_index = settings
+            .client_order
+            .iter()
+            .position(|client| client == "codex")
+            .unwrap();
+        assert_eq!(
+            settings
+                .client_order
+                .get(codex_index + 1)
+                .map(String::as_str),
+            Some("codex-desktop")
+        );
+
+        let current = serde_json::to_string(&settings).unwrap();
+        assert!(!decode_app_settings(&current).unwrap().1);
+    }
+
+    #[test]
+    fn moves_an_appended_codex_desktop_next_to_codex_once() {
+        let mut previous = AppSettings::default();
+        previous
+            .client_order
+            .retain(|client| client != "codex-desktop");
+        previous.client_order.push("codex-desktop".to_string());
+
+        let (settings, migrated) =
+            decode_app_settings(&serde_json::to_string(&previous).unwrap()).unwrap();
+        assert!(migrated);
+        let codex_index = settings
+            .client_order
+            .iter()
+            .position(|client| client == "codex")
+            .unwrap();
+        assert_eq!(
+            settings
+                .client_order
+                .get(codex_index + 1)
+                .map(String::as_str),
+            Some("codex-desktop")
+        );
+        assert!(
+            !decode_app_settings(&serde_json::to_string(&settings).unwrap())
+                .unwrap()
+                .1
+        );
+    }
+
+    #[test]
+    fn codex_desktop_uses_the_codex_provider_configuration() {
+        assert_eq!(provider_config_client_id("codex"), "codex");
+        assert_eq!(provider_config_client_id("codex-desktop"), "codex");
+        assert_eq!(
+            provider_config_client_id("claude-desktop"),
+            "claude-desktop"
+        );
     }
 
     #[test]
@@ -17505,6 +17876,9 @@ requires_openai_auth = true"#;
 
     #[test]
     fn parses_windows_registry_paths_and_client_metadata() {
+        let (_, codex_desktop_folders) =
+            windows_desktop_client_spec_for_test("codex-desktop").unwrap();
+        assert!(!codex_desktop_folders.contains(&"OpenAI/Codex"));
         assert_eq!(
             split_windows_path_value(OsStr::new(r#" "C:\Tools" ; D:\Apps;; "#)),
             vec![PathBuf::from(r"C:\Tools"), PathBuf::from(r"D:\Apps")]
@@ -17515,7 +17889,7 @@ requires_openai_auth = true"#;
         );
         assert_eq!(
             windows_client_id_from_display_name("OpenAI.Codex_123 Codex.exe"),
-            Some("codex")
+            Some("codex-desktop")
         );
         assert_eq!(
             windows_client_id_from_display_name("Anthropic.Claude Desktop"),
@@ -17538,12 +17912,64 @@ requires_openai_auth = true"#;
         );
         assert!(windows_executable_path_matches_client(
             Path::new(r"C:\Program Files\Codex\Codex.exe"),
-            "codex"
+            "codex-desktop"
         ));
         assert!(!windows_executable_path_matches_client(
             Path::new(r"C:\Program Files\Codex\codex.ico"),
-            "codex"
+            "codex-desktop"
         ));
+    }
+
+    #[test]
+    fn detects_windows_store_client_from_registered_display_name() {
+        let candidates = windows_appx_candidates_from_records(vec![WindowsAppxClient {
+            display_name: "Codex".to_string(),
+            name: "Opaque.Package.Identity".to_string(),
+            publisher: "CN=Example".to_string(),
+            family: "Opaque.Package_abc123".to_string(),
+            version: "2.4.6.0".to_string(),
+            app_id: "Desktop".to_string(),
+            executable: String::new(),
+        }]);
+
+        let codex = candidates.get("codex-desktop").expect("Codex Store app");
+        assert_eq!(
+            codex.executable,
+            r"shell:AppsFolder\Opaque.Package_abc123!Desktop"
+        );
+        assert_eq!(codex.version.as_deref(), Some("2.4.6.0"));
+        assert!(codex.desktop_app);
+        assert_eq!(codex.source, "windows-appx");
+    }
+
+    #[test]
+    fn validates_and_brokers_windows_store_launch_targets() {
+        let target = r"shell:AppsFolder\OpenAI.Codex_abc123!App";
+        assert!(is_windows_appx_target(target));
+        assert!(!is_windows_appx_target(
+            r"shell:AppsFolder\OpenAI.Codex_abc123"
+        ));
+        assert!(!is_windows_appx_target(
+            r"C:\Program Files\WindowsApps\Codex.exe"
+        ));
+
+        let command = windows_desktop_launch_command(target);
+        assert_eq!(command.get_program(), OsStr::new("explorer.exe"));
+        assert_eq!(
+            command.get_args().collect::<Vec<_>>(),
+            vec![OsStr::new(target)]
+        );
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn keeps_manually_linked_windows_store_target_available() {
+        let target = r"shell:AppsFolder\OpenAI.Codex_abc123!App";
+        let candidate = custom_windows_appx_candidate(target).expect("manual Store target");
+        assert_eq!(candidate.executable, target);
+        assert!(candidate.desktop_app);
+        assert!(candidate.custom);
+        assert_eq!(candidate.source, "manual-appx");
     }
 
     #[test]
@@ -17557,13 +17983,80 @@ requires_openai_auth = true"#;
         fs::create_dir_all(executable.parent().unwrap()).unwrap();
         fs::write(&executable, "fixture").unwrap();
 
-        let found = find_windows_client_executable(&root, "codex", 3).unwrap();
+        let found = find_windows_client_executable(&root, "codex-desktop", 3).unwrap();
         assert!(found.is_file());
         assert!(found
             .file_name()
             .and_then(|name| name.to_str())
             .is_some_and(|name| name.eq_ignore_ascii_case("Codex.exe")));
         assert_eq!(find_windows_client_executable(&root, "grok", 3), None);
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn finds_the_public_cli_bundled_with_codex_desktop() {
+        let root = env::temp_dir().join(format!(
+            "agentdock-codex-desktop-cli-test-{}-{}",
+            std::process::id(),
+            OffsetDateTime::now_utc().unix_timestamp_nanos()
+        ));
+        let executable = root.join("OpenAI/Codex/bin/release-id/codex.exe");
+        fs::create_dir_all(executable.parent().unwrap()).unwrap();
+        fs::write(&executable, "codex cli").unwrap();
+        fs::write(
+            executable
+                .parent()
+                .unwrap()
+                .join("codex-command-runner.exe"),
+            "internal runner",
+        )
+        .unwrap();
+
+        assert_eq!(find_windows_codex_desktop_cli(&root), Some(executable));
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn uses_the_codex_desktop_bundled_cli_as_a_terminal_client_fallback() {
+        let root = env::temp_dir().join(format!(
+            "agentdock-codex-desktop-cli-fallback-test-{}-{}",
+            std::process::id(),
+            OffsetDateTime::now_utc().unix_timestamp_nanos()
+        ));
+        let executable = root.join(if cfg!(windows) { "codex.cmd" } else { "codex" });
+        fs::create_dir_all(&root).unwrap();
+        fs::write(
+            &executable,
+            if cfg!(windows) {
+                "@echo codex-cli 1.2.3\r\n"
+            } else {
+                "#!/bin/sh\nprintf 'codex-cli 1.2.3'\n"
+            },
+        )
+        .unwrap();
+        #[cfg(unix)]
+        make_executable(&executable).unwrap();
+        let candidate = ExternalClientCandidate {
+            executable: display_path(&executable),
+            version: None,
+            desktop_app: false,
+            source: "codex-desktop-cli".to_string(),
+            custom: false,
+        };
+
+        let statuses = detect_clients_with_inputs(
+            &[],
+            &[],
+            &BTreeMap::new(),
+            &HashMap::from([("codex".to_string(), candidate)]),
+            None,
+        );
+        let codex = statuses.iter().find(|client| client.id == "codex").unwrap();
+        assert_eq!(codex.executable.as_deref(), executable.to_str());
+        assert_eq!(codex.version.as_deref(), Some("codex-cli 1.2.3"));
+        assert!(!codex.desktop_app);
+        assert_eq!(codex.detection_source, "codex-desktop-cli");
+        assert!(client_uses_working_directory(codex));
         fs::remove_dir_all(root).unwrap();
     }
 
@@ -17668,10 +18161,61 @@ requires_openai_auth = true"#;
     }
 
     #[test]
+    fn detects_codex_cli_and_windows_store_desktop_separately() {
+        let root = env::temp_dir().join(format!(
+            "agentdock-store-alias-test-{}-{}",
+            std::process::id(),
+            OffsetDateTime::now_utc().unix_timestamp_nanos()
+        ));
+        fs::create_dir_all(&root).unwrap();
+        let alias = root.join(if cfg!(windows) { "codex.cmd" } else { "codex" });
+        fs::write(
+            &alias,
+            if cfg!(windows) {
+                "@echo codex-cli 1.2.3\r\n"
+            } else {
+                "#!/bin/sh\nprintf 'codex-cli 1.2.3'\n"
+            },
+        )
+        .unwrap();
+        #[cfg(unix)]
+        make_executable(&alias).unwrap();
+        let appx = ExternalClientCandidate {
+            executable: r"shell:AppsFolder\Opaque.Package_abc123!Desktop".to_string(),
+            version: Some("2.4.6.0".to_string()),
+            desktop_app: true,
+            source: "windows-appx".to_string(),
+            custom: false,
+        };
+
+        let statuses = detect_clients_with_inputs(
+            &[],
+            std::slice::from_ref(&root),
+            &BTreeMap::new(),
+            &HashMap::from([("codex-desktop".to_string(), appx.clone())]),
+            None,
+        );
+
+        let cli = statuses.iter().find(|client| client.id == "codex").unwrap();
+        assert_eq!(cli.executable.as_deref(), alias.to_str());
+        assert!(!cli.desktop_app);
+        assert_eq!(cli.detection_source, "path");
+
+        let desktop = statuses
+            .iter()
+            .find(|client| client.id == "codex-desktop")
+            .unwrap();
+        assert_eq!(desktop.executable, Some(appx.executable));
+        assert!(desktop.desktop_app);
+        assert_eq!(desktop.detection_source, "windows-appx");
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
     fn appx_desktop_target_is_available_without_a_filesystem_path() {
         let status = ClientStatus {
-            id: "codex".to_string(),
-            name: "Codex".to_string(),
+            id: "codex-desktop".to_string(),
+            name: "Codex Desktop".to_string(),
             installed: true,
             version: Some("1.2.3".to_string()),
             executable: Some(r"shell:AppsFolder\OpenAI.Codex_123!App".to_string()),
@@ -17989,7 +18533,7 @@ requires_openai_auth = true"#;
         fs::write(bundle.join("Contents/Info.plist"), "test plist").unwrap();
 
         assert_eq!(
-            find_macos_client_app_in_roots("codex", std::slice::from_ref(&root)),
+            find_macos_client_app_in_roots("codex-desktop", std::slice::from_ref(&root)),
             Some(bundle)
         );
         assert_eq!(
@@ -18762,12 +19306,17 @@ api_backend = "responses""#,
     #[test]
     fn diagnostics_only_test_active_providers_for_installed_clients() {
         let installed = HashSet::from(["codex".to_string()]);
+        let desktop_installed = HashSet::from(["codex-desktop".to_string()]);
         let inactive = provider_test_profile("inactive", &["codex"], &[]);
         let active = provider_test_profile("active", &["codex"], &["codex"]);
         let other_client = provider_test_profile("other-client", &["openclaw"], &["openclaw"]);
 
         assert!(!provider_is_active_for_diagnostics(&inactive, &installed));
         assert!(provider_is_active_for_diagnostics(&active, &installed));
+        assert!(provider_is_active_for_diagnostics(
+            &active,
+            &desktop_installed
+        ));
         assert!(!provider_is_active_for_diagnostics(
             &other_client,
             &installed
