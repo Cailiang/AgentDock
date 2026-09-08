@@ -11531,22 +11531,11 @@ fn decode_app_settings(raw: &str) -> Result<(AppSettings, bool), String> {
         settings.cc_switch_initial_check_completed = true;
     }
     if !settings.client_order.iter().any(|id| id == "codex-desktop") {
+        settings.client_order = normalize_codex_client_order(&settings.client_order);
         settings.visible_clients.push("codex-desktop".to_string());
         migrated = true;
     }
-    let settings = normalize_app_settings(settings);
-    let reordered = settings.client_order != normalize_codex_client_order(&settings.client_order);
-    let mut settings = settings;
-    if reordered {
-        settings.client_order = normalize_codex_client_order(&settings.client_order);
-        settings.visible_clients = settings
-            .client_order
-            .iter()
-            .filter(|client| settings.visible_clients.contains(*client))
-            .cloned()
-            .collect();
-    }
-    Ok((settings, migrated || reordered))
+    Ok((normalize_app_settings(settings), migrated))
 }
 
 fn normalize_codex_client_order(client_order: &[String]) -> Vec<String> {
@@ -15667,28 +15656,21 @@ mod tests {
     }
 
     #[test]
-    fn moves_an_appended_codex_desktop_next_to_codex_once() {
+    fn preserves_custom_codex_desktop_order_and_visibility() {
         let mut previous = AppSettings::default();
         previous
             .client_order
             .retain(|client| client != "codex-desktop");
         previous.client_order.push("codex-desktop".to_string());
+        previous
+            .visible_clients
+            .retain(|client| client != "codex-desktop");
 
         let (settings, migrated) =
             decode_app_settings(&serde_json::to_string(&previous).unwrap()).unwrap();
-        assert!(migrated);
-        let codex_index = settings
-            .client_order
-            .iter()
-            .position(|client| client == "codex")
-            .unwrap();
-        assert_eq!(
-            settings
-                .client_order
-                .get(codex_index + 1)
-                .map(String::as_str),
-            Some("codex-desktop")
-        );
+        assert!(!migrated);
+        assert_eq!(settings.client_order, previous.client_order);
+        assert_eq!(settings.visible_clients, previous.visible_clients);
         assert!(
             !decode_app_settings(&serde_json::to_string(&settings).unwrap())
                 .unwrap()
