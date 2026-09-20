@@ -17,7 +17,7 @@
 
 AgentDock 用一个原生桌面程序完成 AI 编程客户端、供应商、Skills 和 MCP 服务器的安装与管理。它面向希望直接使用 Codex、Claude Code、Grok 等智能代理，但不想手动安装运行时或编辑 JSON、TOML、环境变量文件的用户。
 
-> AgentDock `0.1.21` 仍处于早期预览阶段。使用供应商切换或 MCP 同步前，请保留重要客户端配置的备份。
+> AgentDock `0.1.48` 仍处于早期预览阶段。使用供应商切换或 MCP 同步前，请保留重要客户端配置的备份。
 
 ## 为什么选择 AgentDock？
 
@@ -31,6 +31,35 @@ AgentDock 把新手流程放在首位：
 4. 测试连接、检查生成的配置，然后启动客户端。
 
 最终用户不需要另外安装 Node.js、npm、Python，也不需要手动编辑配置。客户端需要运行时时，AgentDock 会在自己的数据目录中自动准备托管环境。
+
+## 运行界面一览
+
+AgentDock 把日常流程集中在一个桌面窗口中：选择客户端、配置供应商、同步 MCP，并查看用量统计。下面的截图使用内置预览数据，不包含真实凭据。
+
+<table>
+  <tr>
+    <td width="50%"><img src="docs/readme/01-clients.png" alt="AgentDock 客户端管理界面"></td>
+    <td width="50%"><img src="docs/readme/02-provider-editor.png" alt="AgentDock 供应商预设与配置编辑界面"></td>
+  </tr>
+  <tr>
+    <td align="center"><strong>客户端全生命周期</strong><br>集中查看已安装客户端、就绪状态、当前供应商、MCP 覆盖和启动操作。</td>
+    <td align="center"><strong>供应商配置</strong><br>从预设开始，或添加兼容 API，并在同一流程中查看生成的客户端配置。</td>
+  </tr>
+  <tr>
+    <td width="50%"><img src="docs/readme/03-mcp.png" alt="AgentDock MCP 服务器管理界面"></td>
+    <td width="50%"><img src="docs/readme/04-stats.png" alt="AgentDock 用量统计界面"></td>
+  </tr>
+  <tr>
+    <td align="center"><strong>MCP 同步</strong><br>一次管理服务器，并查看配置会同步到哪些编程客户端。</td>
+    <td align="center"><strong>用量可视化</strong><br>查看 Token、请求次数、估算成本、趋势，以及客户端、供应商和模型拆分。</td>
+  </tr>
+  <tr>
+    <td colspan="2"><img src="docs/readme/05-diagnostics.png" alt="AgentDock 诊断中心界面"></td>
+  </tr>
+  <tr>
+    <td colspan="2" align="center"><strong>诊断中心</strong><br>检查本机目录、客户端、供应商、MCP 和统计数据，同时不把密钥值写入报告。</td>
+  </tr>
+</table>
 
 ## 核心功能
 

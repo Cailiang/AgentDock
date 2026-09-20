@@ -17,7 +17,7 @@ English | [简体中文](README_ZH.md) | [日本語](README_JA.md) | [Deutsch](R
 
 AgentDock installs and manages AI coding clients, providers, Skills, and MCP servers from one native desktop app. It is designed for users who want to start with Codex, Claude Code, Grok, or other agents without manually installing runtimes or editing JSON, TOML, and environment files.
 
-> AgentDock `0.1.21` is an early preview. Keep a backup of important client configuration before using provider switching or MCP synchronization.
+> AgentDock `0.1.48` is an early preview. Keep a backup of important client configuration before using provider switching or MCP synchronization.
 
 ## Why AgentDock?
 
@@ -31,6 +31,35 @@ AgentDock puts the beginner workflow first:
 4. Test the connection, review the generated configuration, and launch the client.
 
 No separate Node.js, npm, Python, or manual configuration is required for end users. AgentDock provisions managed runtimes when a client needs them.
+
+## See AgentDock in action
+
+AgentDock brings the day-to-day workflow into one focused desktop window: select a client, configure a provider, synchronize MCP servers, and review usage. These screenshots use the built-in preview data and contain no real credentials.
+
+<table>
+  <tr>
+    <td width="50%"><img src="docs/readme/01-clients.png" alt="AgentDock client lifecycle view"></td>
+    <td width="50%"><img src="docs/readme/02-provider-editor.png" alt="AgentDock provider preset and configuration editor"></td>
+  </tr>
+  <tr>
+    <td align="center"><strong>Client lifecycle</strong><br>See installed clients, readiness, active providers, MCP coverage, and launch actions at a glance.</td>
+    <td align="center"><strong>Provider setup</strong><br>Start from a preset or add a compatible API, with generated client configuration shown in the same flow.</td>
+  </tr>
+  <tr>
+    <td width="50%"><img src="docs/readme/03-mcp.png" alt="AgentDock MCP server management view"></td>
+    <td width="50%"><img src="docs/readme/04-stats.png" alt="AgentDock usage statistics view"></td>
+  </tr>
+  <tr>
+    <td align="center"><strong>MCP synchronization</strong><br>Manage a server once and see which coding clients receive its configuration.</td>
+    <td align="center"><strong>Usage visibility</strong><br>Track tokens, requests, estimated cost, trends, and client/provider/model breakdowns.</td>
+  </tr>
+  <tr>
+    <td colspan="2"><img src="docs/readme/05-diagnostics.png" alt="AgentDock diagnostics center view"></td>
+  </tr>
+  <tr>
+    <td colspan="2" align="center"><strong>Diagnostics</strong><br>Check local directories, clients, providers, MCP, and usage sources while keeping secret values out of the report.</td>
+  </tr>
+</table>
 
 ## Core Features
 
